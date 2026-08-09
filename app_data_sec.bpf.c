@@ -9,7 +9,7 @@
 
 #define MAX_PROTECTED_PATHS 5000
 #define MAX_ALLOWED_PROGRAMS 10
-#define MAX_DEPTH 20
+#define MAX_DEPTH 100
 #define MAX_NAME_LEN 32
 
 // Карта для хранения целевых inode (HASH - быстрый поиск)
@@ -105,7 +105,6 @@ static __always_inline int is_protected_inode(struct dentry *dentry)
     struct dentry *current = dentry;
 
     // Поднимаемся по дереву директорий
-    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH; depth++) {
         if (!current) {
             break;
@@ -194,7 +193,6 @@ static __always_inline int is_allowed_process_tree(void)
 
     struct task_struct *task = current_task;
 
-    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH; depth++) {
         if (!task) {
             break;

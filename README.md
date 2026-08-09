@@ -1,5 +1,14 @@
 # linux_app_data_sec
 
+Ограничения 
+#define MAX_PROTECTED_PATHS 5000 - максимальное количество защищаемых папок
+#define MAX_ALLOWED_PROGRAMS 10 сколько исполняемых файлов возможно для каждой папки из MAX_PROTECTED_PATHS
+#define MAX_DEPTH 100 - максимальный уровень вложенности исполняемых файлов и защищаемых папок
+#define MAX_NAME_LEN 32 - только для логирования
+
+
+
+
 
 
 ## Getting started
