@@ -7,7 +7,14 @@ su
 apt-get install llvm-common libbpf-devel kernel-headers-6.12
 apt-get install kernel-headers-modules-6.12
 sudo update-kernel
+apt-get install linux-tools
+apt-get install libelf-devel zlib-devel
+
+только из su -
 sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+
+собрать: из su -
+make
 
 где 6.12 это версия ядра
 и
