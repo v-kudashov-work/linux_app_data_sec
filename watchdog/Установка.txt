@@ -1,1 +1,16 @@
 sudo apt-get install libgtk+3-devel pkg-config
+
+проверка сервиса app_data_sec_watchdog -z -d
+
+
+# 1. Сделать скрипт исполняемым
+chmod +x install_watchdog.sh
+
+# 2. Запустить установку
+sudo ./install_watchdog.sh
+
+# 3. Проверить статус
+sudo systemctl status app_data_sec_watchdog
+
+# 4. Посмотреть логи
+sudo journalctl -u app_data_sec_watchdog -f
