@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <string.h>      // Добавлено для strcmp, strncpy, memcpy
+#include <string.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -18,13 +18,13 @@
 #define MAX_LINE_LEN 1024
 #define MAX_PATHS 5000
 #define MAX_ALLOWED 10
-#define CHECK_INTERVAL 2          // Проверка конфига каждые 2 секунды
-#define RETRY_INTERVAL 30         // Проверка новых папок каждые 30 секунд
+#define CHECK_INTERVAL 5
+#define RETRY_INTERVAL 30
 
 // ============================================================================
-// ОТЛАДКА - включить/выключить
+// ОТЛАДКА
 // ============================================================================
-#define DEBUG_ENABLED 1   // 1 - включить отладку, 0 - выключить
+#define DEBUG_ENABLED 0
 
 #ifdef DEBUG_ENABLED
 #define DEBUG_PRINT(fmt, ...) \
@@ -48,8 +48,19 @@ struct protect_entry {
     time_t last_check;
 };
 
+// Структура для хранения шаблона с ~
+struct protect_template {
+    char pattern[PATH_MAX];          // Исходный шаблон с ~
+    char subpath[PATH_MAX];          // Часть после ~
+    __u64 allowed_inodes[MAX_ALLOWED];
+    int allowed_count;
+    int enabled;
+};
+
 struct protect_entry entries[MAX_PATHS];
+struct protect_template templates[MAX_PATHS];
 int entry_count = 0;
+int template_count = 0;
 int config_enabled = 0;
 time_t config_mtime = 0;
 
@@ -77,41 +88,33 @@ static __u64 get_inode_from_path(const char *path) {
     return st.st_ino;
 }
 
-// Безопасное разворачивание ~ только для /home/
-// Функция для поиска всех пользователей и разворачивания ~
-static int expand_for_all_users(const char *pattern, char **expanded_paths, int *count) {
+// Проверка, существует ли путь
+static int path_exists(const char *path) {
+    if (!path) return 0;
+    struct stat st;
+    return (stat(path, &st) == 0);
+}
+
+// Сканирование всех домашних директорий и поиск папок по шаблону
+static int scan_home_for_template(const char *subpath, char **found_paths, int max_paths) {
     struct passwd *pw;
     int idx = 0;
 
-    if (!pattern || !expanded_paths || !count) {
-        return -1;
-    }
-
-    // Если путь не начинается с ~, добавляем как есть
-    if (pattern[0] != '~') {
-        expanded_paths[idx] = strdup(pattern);
-        if (expanded_paths[idx]) {
-            idx++;
-        }
-        *count = idx;
+    if (!subpath || !found_paths || max_paths == 0) {
         return 0;
     }
 
-    const char *subpath = pattern + 1;  // часть после ~
-
     // Перебираем всех пользователей
     setpwent();
-    while ((pw = getpwent()) != NULL && idx < MAX_PATHS) {
+    while ((pw = getpwent()) != NULL && idx < max_paths) {
         if (!pw->pw_dir || pw->pw_dir[0] != '/') {
             continue;
         }
 
-        // Проверяем, что домашняя директория начинается с /home/
         if (strncmp(pw->pw_dir, "/home/", 6) != 0) {
             continue;
         }
 
-        // Проверяем, что это обычный пользователь (UID >= 1000)
         if (pw->pw_uid < 1000) {
             continue;
         }
@@ -122,22 +125,20 @@ static int expand_for_all_users(const char *pattern, char **expanded_paths, int 
             continue;
         }
 
-        // Проверяем, существует ли папка
-        struct stat st;
-        if (stat(expanded, &st) == 0) {
-            expanded_paths[idx] = strdup(expanded);
-            if (expanded_paths[idx]) {
+        if (path_exists(expanded)) {
+            found_paths[idx] = strdup(expanded);
+            if (found_paths[idx]) {
                 idx++;
             }
         }
     }
     endpwent();
 
-    // Дополнительно сканируем /home/ на случай удалённых пользователей
+    // Дополнительно сканируем /home/
     DIR *dir = opendir("/home/");
     if (dir) {
         struct dirent *entry;
-        while ((entry = readdir(dir)) != NULL && idx < MAX_PATHS) {
+        while ((entry = readdir(dir)) != NULL && idx < max_paths) {
             if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
                 continue;
             }
@@ -166,15 +167,15 @@ static int expand_for_all_users(const char *pattern, char **expanded_paths, int 
             // Проверяем, не добавлена ли уже эта папка
             int already_added = 0;
             for (int i = 0; i < idx; i++) {
-                if (expanded_paths[i] && strcmp(expanded_paths[i], expanded) == 0) {
+                if (found_paths[i] && strcmp(found_paths[i], expanded) == 0) {
                     already_added = 1;
                     break;
                 }
             }
 
-            if (!already_added && stat(expanded, &st) == 0) {
-                expanded_paths[idx] = strdup(expanded);
-                if (expanded_paths[idx]) {
+            if (!already_added && path_exists(expanded)) {
+                found_paths[idx] = strdup(expanded);
+                if (found_paths[idx]) {
                     idx++;
                 }
             }
@@ -182,8 +183,7 @@ static int expand_for_all_users(const char *pattern, char **expanded_paths, int 
         closedir(dir);
     }
 
-    *count = idx;
-    return 0;
+    return idx;
 }
 
 // Парсинг конфигурации
@@ -201,10 +201,13 @@ static int parse_config(void) {
     char line[MAX_LINE_LEN];
     int line_num = 0;
     int new_entry_count = 0;
+    int new_template_count = 0;
     int new_config_enabled = 0;
 
     memset(entries, 0, sizeof(entries));
+    memset(templates, 0, sizeof(templates));
     entry_count = 0;
+    template_count = 0;
 
     DEBUG_PRINT("parse_config: reading lines");
 
@@ -249,7 +252,6 @@ static int parse_config(void) {
                 continue;
             }
 
-            // Извлекаем путь до первого пробела
             char raw_path[PATH_MAX];
             char *path_end = ptr;
             while (*path_end && *path_end != ' ' && *path_end != '\t') path_end++;
@@ -262,9 +264,9 @@ static int parse_config(void) {
             DEBUG_PRINT("parse_config: raw_path = %s", raw_path);
 
             // Извлекаем разрешенные программы
-            char *allowed[MAX_ALLOWED];
+            __u64 allowed_inodes[MAX_ALLOWED];
             int allowed_count = 0;
-            memset(allowed, 0, sizeof(allowed));
+            memset(allowed_inodes, 0, sizeof(allowed_inodes));
 
             ptr = path_end;
             while (*ptr) {
@@ -276,86 +278,96 @@ static int parse_config(void) {
 
                 size_t arg_len = arg_end - ptr;
                 if (arg_len > 0 && allowed_count < MAX_ALLOWED) {
-                    allowed[allowed_count] = malloc(arg_len + 1);
-                    if (allowed[allowed_count]) {
-                        strncpy(allowed[allowed_count], ptr, arg_len);
-                        allowed[allowed_count][arg_len] = '\0';
-                        allowed_count++;
+                    char prog_path[PATH_MAX];
+                    strncpy(prog_path, ptr, arg_len);
+                    prog_path[arg_len] = '\0';
+
+                    char real_allowed_path[PATH_MAX];
+                    if (realpath(prog_path, real_allowed_path) != NULL) {
+                        __u64 allowed_inode = get_inode_from_path(real_allowed_path);
+                        if (allowed_inode != 0) {
+                            allowed_inodes[allowed_count] = allowed_inode;
+                            allowed_count++;
+                            printf("Config: allowed program: %s (inode: %lu)\n",
+                                   real_allowed_path, (unsigned long)allowed_inode);
+                        }
+                    } else {
+                        fprintf(stderr, "Warning: Allowed program '%s' does not exist\n", prog_path);
                     }
                 }
 
                 ptr = arg_end;
             }
 
-            // Разворачиваем ~ для всех пользователей
-            char *expanded_paths[MAX_PATHS];
-            int expanded_count = 0;
-            memset(expanded_paths, 0, sizeof(expanded_paths));
-
+            // Если путь с ~, сохраняем шаблон для периодического сканирования
             if (raw_path[0] == '~') {
-                expand_for_all_users(raw_path, expanded_paths, &expanded_count);
+                struct protect_template *tmpl = &templates[new_template_count];
+                safe_strcpy(tmpl->pattern, raw_path, sizeof(tmpl->pattern));
+
+                // Копируем часть после ~
+                const char *subpath = raw_path + 1;
+                safe_strcpy(tmpl->subpath, subpath, sizeof(tmpl->subpath));
+
+                // Копируем разрешенные inode
+                for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
+                    tmpl->allowed_inodes[i] = allowed_inodes[i];
+                }
+                tmpl->allowed_count = allowed_count;
+                tmpl->enabled = 1;
+
+                printf("Config: template ~%s (will scan all users)\n", tmpl->subpath);
+                new_template_count++;
+
+                // Сразу сканируем существующие папки
+                char *found_paths[MAX_PATHS];
+                int found_count = scan_home_for_template(tmpl->subpath, found_paths, MAX_PATHS);
+
+                for (int i = 0; i < found_count && new_entry_count < MAX_PATHS; i++) {
+                    struct protect_entry *entry = &entries[new_entry_count];
+                    safe_strcpy(entry->path, found_paths[i], sizeof(entry->path));
+
+                    entry->inode = get_inode_from_path(entry->path);
+                    entry->is_active = (entry->inode != 0);
+                    entry->allowed_count = 0;
+                    entry->last_check = time(NULL);
+
+                    // Копируем разрешенные inode
+                    for (int j = 0; j < tmpl->allowed_count && j < MAX_ALLOWED; j++) {
+                        entry->allowed_inodes[j] = tmpl->allowed_inodes[j];
+                        entry->allowed_count++;
+                    }
+
+                    if (entry->inode != 0) {
+                        printf("Config: protect %s (inode: %lu)\n", entry->path, (unsigned long)entry->inode);
+                    } else {
+                        printf("Config: protect %s (NOT FOUND YET, will retry)\n", entry->path);
+                    }
+
+                    new_entry_count++;
+                    free(found_paths[i]);
+                }
             } else {
-                expanded_paths[0] = strdup(raw_path);
-                expanded_count = 1;
-            }
-
-            if (expanded_count == 0) {
-                printf("Config: protect %s (NO MATCHING FOLDERS FOUND)\n", raw_path);
-                for (int j = 0; j < allowed_count; j++) {
-                    free(allowed[j]);
-                }
-                continue;
-            }
-
-            for (int i = 0; i < expanded_count && new_entry_count < MAX_PATHS; i++) {
-                if (!expanded_paths[i]) {
-                    continue;
-                }
-
+                // Обычный путь (без ~)
                 struct protect_entry *entry = &entries[new_entry_count];
-                safe_strcpy(entry->path, expanded_paths[i], sizeof(entry->path));
+                safe_strcpy(entry->path, raw_path, sizeof(entry->path));
 
-                struct stat st;
-                int exists = (stat(entry->path, &st) == 0);
-                entry->inode = exists ? st.st_ino : 0;
-                entry->is_active = exists;
+                entry->inode = get_inode_from_path(entry->path);
+                entry->is_active = (entry->inode != 0);
                 entry->allowed_count = 0;
                 entry->last_check = time(NULL);
 
-                // Добавляем разрешенные программы
-                for (int j = 0; j < allowed_count && j < MAX_ALLOWED; j++) {
-                    if (!allowed[j]) {
-                        continue;
-                    }
-
-                    char real_allowed_path[PATH_MAX];
-                    if (realpath(allowed[j], real_allowed_path) == NULL) {
-                        fprintf(stderr, "Warning: Allowed program '%s' does not exist\n", allowed[j]);
-                        continue;
-                    }
-                    __u64 allowed_inode = get_inode_from_path(real_allowed_path);
-                    if (allowed_inode != 0) {
-                        entry->allowed_inodes[entry->allowed_count] = allowed_inode;
-                        entry->allowed_count++;
-                        printf("Config: protect %s allowed: %s (inode: %lu)\n",
-                               entry->path, real_allowed_path, (unsigned long)allowed_inode);
-                    }
+                for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
+                    entry->allowed_inodes[i] = allowed_inodes[i];
+                    entry->allowed_count++;
                 }
 
-                if (exists) {
+                if (entry->inode != 0) {
                     printf("Config: protect %s (inode: %lu)\n", entry->path, (unsigned long)entry->inode);
                 } else {
                     printf("Config: protect %s (NOT FOUND YET, will retry)\n", entry->path);
                 }
 
                 new_entry_count++;
-                free(expanded_paths[i]);
-                expanded_paths[i] = NULL;
-            }
-
-            for (int j = 0; j < allowed_count; j++) {
-                free(allowed[j]);
-                allowed[j] = NULL;
             }
         }
     }
@@ -363,6 +375,7 @@ static int parse_config(void) {
     fclose(fp);
 
     entry_count = new_entry_count;
+    template_count = new_template_count;
     config_enabled = new_config_enabled;
 
     struct stat st;
@@ -370,8 +383,8 @@ static int parse_config(void) {
         config_mtime = st.st_mtime;
     }
 
-    printf("Config: loaded %d entries\n", entry_count);
-    DEBUG_PRINT("parse_config: done, entry_count = %d", entry_count);
+    printf("Config: loaded %d entries, %d templates\n", entry_count, template_count);
+    DEBUG_PRINT("parse_config: done, entry_count = %d, template_count = %d", entry_count, template_count);
     return 0;
 }
 
@@ -544,6 +557,89 @@ static int reload_all_entries(struct bpf_object *obj) {
 }
 
 // ============================================================================
+// ПРОВЕРКА НОВЫХ ПАПОК ПО ШАБЛОНАМ
+// ============================================================================
+
+static int scan_templates_and_load(struct bpf_object *obj) {
+    int found_new = 0;
+    int total_found = 0;
+
+    for (int t = 0; t < template_count; t++) {
+        if (!templates[t].enabled) continue;
+
+        DEBUG_PRINT("scanning template: ~%s", templates[t].subpath);
+
+        char *found_paths[MAX_PATHS];
+        int found_count = scan_home_for_template(templates[t].subpath, found_paths, MAX_PATHS);
+
+        if (found_count == 0) {
+            DEBUG_PRINT("  no folders found for template ~%s", templates[t].subpath);
+            continue;
+        }
+
+        DEBUG_PRINT("  found %d folders for template ~%s", found_count, templates[t].subpath);
+
+        for (int i = 0; i < found_count; i++) {
+            if (!found_paths[i]) continue;
+
+            // Проверяем, есть ли уже такая запись
+            int already_exists = 0;
+            for (int j = 0; j < entry_count; j++) {
+                if (strcmp(entries[j].path, found_paths[i]) == 0) {
+                    already_exists = 1;
+                    break;
+                }
+            }
+
+            if (already_exists) {
+                free(found_paths[i]);
+                continue;
+            }
+
+            // Добавляем новую запись
+            if (entry_count < MAX_PATHS) {
+                struct protect_entry *entry = &entries[entry_count];
+                safe_strcpy(entry->path, found_paths[i], sizeof(entry->path));
+
+                entry->inode = get_inode_from_path(entry->path);
+                entry->is_active = (entry->inode != 0);
+                entry->last_check = time(NULL);
+                entry->allowed_count = 0;
+
+                // Копируем разрешенные inode из шаблона
+                for (int j = 0; j < templates[t].allowed_count && j < MAX_ALLOWED; j++) {
+                    entry->allowed_inodes[j] = templates[t].allowed_inodes[j];
+                    entry->allowed_count++;
+                }
+
+                if (entry->inode != 0) {
+                    printf("  New folder found from template: %s (inode: %lu)\n",
+                           entry->path, (unsigned long)entry->inode);
+                    if (load_entry_to_bpf(obj, entry, entry_count) == 0) {
+                        found_new = 1;
+                    }
+                } else {
+                    printf("  New folder found but not exists: %s\n", entry->path);
+                }
+
+                entry_count++;
+                free(found_paths[i]);
+                total_found++;
+            } else {
+                fprintf(stderr, "Warning: Max entries reached, cannot add %s\n", found_paths[i]);
+                free(found_paths[i]);
+            }
+        }
+    }
+
+    if (found_new) {
+        reload_all_entries(obj);
+    }
+
+    return total_found;
+}
+
+// ============================================================================
 // ПРОВЕРКА ИЗМЕНЕНИЯ КОНФИГА
 // ============================================================================
 
@@ -608,7 +704,9 @@ int main(int argc, char **argv) {
     DEBUG_PRINT("main: before memset");
 
     memset(entries, 0, sizeof(entries));
+    memset(templates, 0, sizeof(templates));
     entry_count = 0;
+    template_count = 0;
     config_enabled = 0;
     config_mtime = 0;
 
@@ -619,14 +717,15 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    DEBUG_PRINT("main: after parse_config, enabled=%d, count=%d", config_enabled, entry_count);
+    DEBUG_PRINT("main: after parse_config, enabled=%d, count=%d, templates=%d",
+                config_enabled, entry_count, template_count);
 
     if (!config_enabled) {
         printf("Config: module disabled, exiting\n");
         return 0;
     }
 
-    if (entry_count == 0) {
+    if (entry_count == 0 && template_count == 0) {
         printf("No valid protect entries found, exiting\n");
         return 0;
     }
@@ -683,7 +782,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("✅ eBPF LSM programs attached. %d entries loaded\n", entry_count);
+    printf("✅ eBPF LSM programs attached. %d entries loaded, %d templates\n",
+           entry_count, template_count);
     printf("📁 GETATTR: folder VISIBLE, contents PROTECTED\n");
     printf("🔒 ALL other operations: folder AND contents BLOCKED\n");
     printf("Log level: %d (0=off, 1=blocked only, 2=everything)\n", requested_log_level);
@@ -714,7 +814,9 @@ int main(int argc, char **argv) {
 
             // Перезагружаем конфиг
             memset(entries, 0, sizeof(entries));
+            memset(templates, 0, sizeof(templates));
             entry_count = 0;
+            template_count = 0;
             config_enabled = 0;
             config_mtime = 0;
 
@@ -746,22 +848,24 @@ int main(int argc, char **argv) {
             }
 
             reload_all_entries(g_bpf_obj);
-            last_folder_check = time(NULL);  // Сбрасываем таймер проверки папок
+            last_folder_check = time(NULL);
         }
 
         // === Проверка новых папок ===
         if (now - last_folder_check >= RETRY_INTERVAL) {
             DEBUG_PRINT("checking for new folders...");
 
+            // 1. Проверяем НЕАКТИВНЫЕ записи (inode == 0)
             int found_new = 0;
-
-            // Проверяем новые папки (inode == 0)
             for (int i = 0; i < entry_count; i++) {
                 if (entries[i].path[0] == '\0') continue;
                 if (entries[i].is_active && entries[i].inode != 0) continue;
 
                 __u64 current_inode = get_inode_from_path(entries[i].path);
-                if (current_inode == 0) continue;
+                if (current_inode == 0) {
+                    DEBUG_PRINT("  %s - still not exists", entries[i].path);
+                    continue;
+                }
 
                 entries[i].inode = current_inode;
                 entries[i].is_active = 1;
@@ -775,7 +879,7 @@ int main(int argc, char **argv) {
                 }
             }
 
-            // Проверяем пересозданные папки (изменился inode)
+            // 2. Проверяем пересозданные папки
             int found_recreated = 0;
             for (int i = 0; i < entry_count; i++) {
                 if (entries[i].path[0] == '\0') continue;
@@ -799,7 +903,10 @@ int main(int argc, char **argv) {
                 }
             }
 
-            if (found_new || found_recreated) {
+            // 3. Сканируем шаблоны с ~ для новых папок
+            int found_from_templates = scan_templates_and_load(g_bpf_obj);
+
+            if (found_new || found_recreated || found_from_templates) {
                 reload_all_entries(g_bpf_obj);
             }
 
