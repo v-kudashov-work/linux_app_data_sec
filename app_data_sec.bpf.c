@@ -7,23 +7,34 @@
 #define EPERM 1
 #endif
 
-#define MAX_PROTECTED_PATHS 10
+#define MAX_PROTECTED_PATHS 5000
+#define MAX_ALLOWED_PROGRAMS 10
+#define MAX_DEPTH 20
+#define MAX_NAME_LEN 32
 
-// Карта для хранения целевых inode (массив)
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, MAX_PROTECTED_PATHS);
-    __type(key, __u32);
-    __type(value, __u64);
-} target_inode_map SEC(".maps");
-
-// Карта для хранения inode разрешенной программы
+// Карта для хранения целевых inode (HASH - быстрый поиск)
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1);
+    __uint(max_entries, MAX_PROTECTED_PATHS);
+    __type(key, __u64);      // inode папки
+    __type(value, __u8);     // флаг: 1 - защищена
+} target_inode_map SEC(".maps");
+
+// Карта для хранения разрешенных inode программ (массив)
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_ALLOWED_PROGRAMS);
     __type(key, __u32);
     __type(value, __u64);
 } allowed_inode_map SEC(".maps");
+
+// Карта для хранения количества разрешенных программ
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} allowed_count_map SEC(".maps");
 
 // Карта для хранения уровня логирования
 struct {
@@ -51,12 +62,12 @@ static __always_inline void get_dentry_name(struct dentry *dentry, char *name)
 
     unsigned long len = 0;
     bpf_probe_read_kernel(&len, sizeof(len), &dentry->d_name.len);
-    if (len >= 32) {
-        len = 31;
+    if (len >= MAX_NAME_LEN) {
+        len = MAX_NAME_LEN - 1;
     }
 
     #pragma unroll
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < MAX_NAME_LEN; i++) {
         name[i] = 0;
         if (i < len) {
             unsigned char c;
@@ -64,7 +75,7 @@ static __always_inline void get_dentry_name(struct dentry *dentry, char *name)
             name[i] = c;
         }
     }
-    name[31] = '\0';
+    name[MAX_NAME_LEN - 1] = '\0';
 }
 
 // Функция для получения имени родительской директории
@@ -84,7 +95,7 @@ static __always_inline void get_parent_name(struct dentry *dentry, char *name)
     get_dentry_name(parent, name);
 }
 
-// Функция для проверки, является ли inode защищенным
+// Функция для проверки, является ли inode защищенным (HASH - O(1))
 static __always_inline int is_protected_inode(struct dentry *dentry)
 {
     if (!dentry) {
@@ -92,11 +103,10 @@ static __always_inline int is_protected_inode(struct dentry *dentry)
     }
 
     struct dentry *current = dentry;
-    int depth = 0;
-    const int MAX_DEPTH = 20;
 
+    // Поднимаемся по дереву директорий
     #pragma unroll
-    for (depth = 0; depth < MAX_DEPTH; depth++) {
+    for (int depth = 0; depth < MAX_DEPTH; depth++) {
         if (!current) {
             break;
         }
@@ -108,14 +118,10 @@ static __always_inline int is_protected_inode(struct dentry *dentry)
             __u64 inode_num = 0;
             bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
 
-            // Проверяем все защищенные inode
-            #pragma unroll
-            for (int i = 0; i < MAX_PROTECTED_PATHS; i++) {
-                __u32 key = i;
-                __u64 *target_inode = bpf_map_lookup_elem(&target_inode_map, &key);
-                if (target_inode && *target_inode == inode_num) {
-                    return 1;
-                }
+            // Быстрый поиск в HASH карте - O(1)
+            __u8 *protected = bpf_map_lookup_elem(&target_inode_map, &inode_num);
+            if (protected && *protected == 1) {
+                return 1;
             }
         }
 
@@ -175,9 +181,9 @@ static __always_inline struct task_struct *get_parent_task(struct task_struct *t
 // Функция для проверки, является ли процесс или любой из его родителей разрешенным
 static __always_inline int is_allowed_process_tree(void)
 {
-    __u32 key = 0;
-    __u64 *allowed_inode = bpf_map_lookup_elem(&allowed_inode_map, &key);
-    if (!allowed_inode) {
+    __u32 count_key = 0;
+    __u32 *allowed_count = bpf_map_lookup_elem(&allowed_count_map, &count_key);
+    if (!allowed_count || *allowed_count == 0) {
         return 0;
     }
 
@@ -187,18 +193,24 @@ static __always_inline int is_allowed_process_tree(void)
     }
 
     struct task_struct *task = current_task;
-    int depth = 0;
-    const int MAX_DEPTH = 20;
 
     #pragma unroll
-    for (depth = 0; depth < MAX_DEPTH; depth++) {
+    for (int depth = 0; depth < MAX_DEPTH; depth++) {
         if (!task) {
             break;
         }
 
         __u64 inode_num = get_process_exe_inode(task);
-        if (inode_num == *allowed_inode) {
-            return 1;
+        if (inode_num != 0) {
+            // Проверяем все разрешенные inode
+            #pragma unroll
+            for (int i = 0; i < MAX_ALLOWED_PROGRAMS; i++) {
+                __u32 key = i;
+                __u64 *allowed_inode = bpf_map_lookup_elem(&allowed_inode_map, &key);
+                if (allowed_inode && *allowed_inode == inode_num) {
+                    return 1;
+                }
+            }
         }
 
         task = get_parent_task(task);
@@ -236,8 +248,8 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     char comm[16] = {};
     bpf_get_current_comm(&comm, sizeof(comm));
 
-    char name[32] = {};
-    char parent_name[32] = {};
+    char name[MAX_NAME_LEN] = {};
+    char parent_name[MAX_NAME_LEN] = {};
     get_dentry_name(dentry, name);
     get_parent_name(dentry, parent_name);
 

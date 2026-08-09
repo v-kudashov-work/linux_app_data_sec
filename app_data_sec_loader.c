@@ -15,7 +15,7 @@
 
 #define CONFIG_PATH "/etc/app_data_sec.conf"
 #define MAX_LINE_LEN 1024
-#define MAX_PATHS 100
+#define MAX_PATHS 5000
 #define MAX_ALLOWED 10
 
 struct protect_entry {
@@ -54,30 +54,81 @@ static int expand_for_all_users(const char *pattern, char **expanded_paths, int 
 
     const char *subpath = pattern + 1;
 
+    // 1. Сначала добавляем папки активных пользователей из /etc/passwd
     setpwent();
     while ((pw = getpwent()) != NULL && idx < MAX_PATHS) {
         if (!pw->pw_dir || pw->pw_dir[0] != '/') {
             continue;
         }
 
-        // Проверяем, что это реальный пользователь (UID >= 1000)
-        if (pw->pw_uid < 1000) {
-            continue;
-        }
-
-        // Проверяем, что домашняя директория начинается с /home/
         if (strncmp(pw->pw_dir, "/home/", 6) != 0) {
             continue;
         }
 
         char expanded[PATH_MAX];
-        snprintf(expanded, sizeof(expanded), "%s%s", pw->pw_dir, subpath);
-        expanded_paths[idx] = strdup(expanded);
-        if (expanded_paths[idx]) {
-            idx++;
+        int ret = snprintf(expanded, sizeof(expanded), "%s%s", pw->pw_dir, subpath);
+        if (ret < 0 || ret >= (int)sizeof(expanded)) {
+            continue;
+        }
+
+        struct stat st;
+        if (stat(expanded, &st) == 0) {
+            expanded_paths[idx] = strdup(expanded);
+            if (expanded_paths[idx]) {
+                idx++;
+            }
         }
     }
     endpwent();
+
+    // 2. Сканируем все папки в /home/ на случай, если пользователь был удалён
+    DIR *dir = opendir("/home/");
+    if (dir) {
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL && idx < MAX_PATHS) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                continue;
+            }
+
+            if (entry->d_name[0] == '.') {
+                continue;
+            }
+
+            char user_home[PATH_MAX];
+            int ret = snprintf(user_home, sizeof(user_home), "/home/%s", entry->d_name);
+            if (ret < 0 || ret >= (int)sizeof(user_home)) {
+                continue;
+            }
+
+            struct stat st;
+            if (stat(user_home, &st) != 0 || !S_ISDIR(st.st_mode)) {
+                continue;
+            }
+
+            char expanded[PATH_MAX];
+            ret = snprintf(expanded, sizeof(expanded), "/home/%s%s", entry->d_name, subpath);
+            if (ret < 0 || ret >= (int)sizeof(expanded)) {
+                continue;
+            }
+
+            // Проверяем, не добавлена ли уже эта папка
+            int already_added = 0;
+            for (int i = 0; i < idx; i++) {
+                if (strcmp(expanded_paths[i], expanded) == 0) {
+                    already_added = 1;
+                    break;
+                }
+            }
+
+            if (!already_added && stat(expanded, &st) == 0) {
+                expanded_paths[idx] = strdup(expanded);
+                if (expanded_paths[idx]) {
+                    idx++;
+                }
+            }
+        }
+        closedir(dir);
+    }
 
     *count = idx;
     return 0;
@@ -236,6 +287,7 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
         return 0;
     }
 
+    // ======== Загружаем защищенные папки (HASH карта) ========
     map = bpf_object__find_map_by_name(obj, "target_inode_map");
     if (!map) {
         fprintf(stderr, "Failed to find target_inode_map\n");
@@ -249,38 +301,81 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
     }
 
     int loaded = 0;
-    printf("Loading %d entries to BPF map...\n", entry_count);
+    printf("Loading %d protected folders to BPF map...\n", entry_count);
 
     for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
-        key = i;
-        err = bpf_map_update_elem(fd, &key, &entries[i].inode, BPF_ANY);
+        __u64 inode = entries[i].inode;
+        __u8 value = 1;
+
+        err = bpf_map_update_elem(fd, &inode, &value, BPF_ANY);
         if (err < 0) {
             fprintf(stderr, "Failed to update target_inode_map[%d]: %d (inode: %lu, path: %s)\n",
                     i, err, (unsigned long)entries[i].inode, entries[i].path);
         } else {
-            printf("  [%d] Loaded inode: %lu (path: %s)\n",
+            printf("  [%d] Loaded protected inode: %lu (path: %s)\n",
                    i, (unsigned long)entries[i].inode, entries[i].path);
             loaded++;
         }
     }
 
-    if (entries[0].allowed_count > 0) {
-        map = bpf_object__find_map_by_name(obj, "allowed_inode_map");
-        if (map) {
-            fd = bpf_map__fd(map);
-            if (fd >= 0) {
-                key = 0;
-                err = bpf_map_update_elem(fd, &key, &entries[0].allowed_inodes[0], BPF_ANY);
+    // ======== Загружаем разрешенные программы ========
+    // Собираем все уникальные разрешенные inode
+    __u64 all_allowed[MAX_ALLOWED];
+    int all_allowed_count = 0;
+
+    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+        for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
+            __u64 inode = entries[i].allowed_inodes[j];
+
+            // Проверяем, не добавлен ли уже этот inode
+            int already_added = 0;
+            for (int k = 0; k < all_allowed_count; k++) {
+                if (all_allowed[k] == inode) {
+                    already_added = 1;
+                    break;
+                }
+            }
+
+            if (!already_added && all_allowed_count < MAX_ALLOWED) {
+                all_allowed[all_allowed_count++] = inode;
+            }
+        }
+    }
+
+    // Загружаем разрешенные программы в BPF карту
+    map = bpf_object__find_map_by_name(obj, "allowed_inode_map");
+    if (map) {
+        fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            for (int i = 0; i < all_allowed_count && i < MAX_ALLOWED; i++) {
+                key = i;
+                err = bpf_map_update_elem(fd, &key, &all_allowed[i], BPF_ANY);
                 if (err < 0) {
-                    fprintf(stderr, "Failed to update allowed_inode_map: %d\n", err);
+                    fprintf(stderr, "Failed to update allowed_inode_map[%d]: %d\n", i, err);
                 } else {
-                    printf("Loaded allowed inode: %lu\n", (unsigned long)entries[0].allowed_inodes[0]);
+                    printf("  Loaded allowed inode[%d]: %lu\n", i, (unsigned long)all_allowed[i]);
                 }
             }
         }
     }
 
-    printf("Total loaded: %d entries\n", loaded);
+    // Загружаем количество разрешенных программ
+    map = bpf_object__find_map_by_name(obj, "allowed_count_map");
+    if (map) {
+        fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            __u32 key = 0;
+            __u32 count = all_allowed_count;
+            err = bpf_map_update_elem(fd, &key, &count, BPF_ANY);
+            if (err < 0) {
+                fprintf(stderr, "Failed to update allowed_count_map: %d\n", err);
+            } else {
+                printf("Total allowed programs: %d\n", all_allowed_count);
+            }
+        }
+    }
+
+    printf("Total loaded: %d protected folders, %d allowed programs\n", loaded, all_allowed_count);
     return 0;
 }
 
@@ -304,7 +399,7 @@ int main(int argc, char **argv) {
     struct bpf_program *prog;
     struct bpf_map *map;
     int err;
-    int log_level = 2;
+    int log_level = 1;
     const char *bpf_file = "app_data_sec.bpf.o";
 
     // Парсим аргументы
@@ -333,7 +428,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Сохраняем log_level в переменную для вывода
     int requested_log_level = log_level;
 
     printf("Loading config from %s\n", CONFIG_PATH);
@@ -366,7 +460,7 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    // Устанавливаем уровень логирования в BPF карту
+    // Устанавливаем уровень логирования
     map = bpf_object__find_map_by_name(obj, "log_level_map");
     if (map) {
         int fd = bpf_map__fd(map);
