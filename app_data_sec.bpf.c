@@ -7,10 +7,12 @@
 #define EPERM 1
 #endif
 
-// Карта для хранения целевого inode (папка, которую защищаем)
+#define MAX_PROTECTED_PATHS 10
+
+// Карта для хранения целевых inode (массив)
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_PROTECTED_PATHS);
     __type(key, __u32);
     __type(value, __u64);
 } target_inode_map SEC(".maps");
@@ -83,9 +85,9 @@ static __always_inline void get_parent_name(struct dentry *dentry, char *name)
 }
 
 // Функция для проверки, является ли inode защищенным
-static __always_inline int is_protected_inode(struct dentry *dentry, __u64 *target_inode)
+static __always_inline int is_protected_inode(struct dentry *dentry)
 {
-    if (!dentry || !target_inode) {
+    if (!dentry) {
         return 0;
     }
 
@@ -105,8 +107,15 @@ static __always_inline int is_protected_inode(struct dentry *dentry, __u64 *targ
         if (inode) {
             __u64 inode_num = 0;
             bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
-            if (inode_num == *target_inode) {
-                return 1;
+
+            // Проверяем все защищенные inode
+            #pragma unroll
+            for (int i = 0; i < MAX_PROTECTED_PATHS; i++) {
+                __u32 key = i;
+                __u64 *target_inode = bpf_map_lookup_elem(&target_inode_map, &key);
+                if (target_inode && *target_inode == inode_num) {
+                    return 1;
+                }
             }
         }
 
@@ -215,12 +224,6 @@ static __always_inline int get_log_level(void)
 // Функция проверки доступа
 static __always_inline int check_access(struct dentry *dentry, const char *operation, int block_self)
 {
-    __u32 key = 0;
-    __u64 *target_inode = bpf_map_lookup_elem(&target_inode_map, &key);
-    if (!target_inode) {
-        return 0;
-    }
-
     if (!dentry) {
         return 0;
     }
@@ -239,13 +242,13 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     get_parent_name(dentry, parent_name);
 
     int allowed = is_allowed_process_tree();
-    int is_self = is_protected_inode(dentry, target_inode);
+    int is_self = is_protected_inode(dentry);
 
     struct dentry *parent_dentry = NULL;
     bpf_probe_read_kernel(&parent_dentry, sizeof(parent_dentry), &dentry->d_parent);
     int is_inside = 0;
     if (parent_dentry) {
-        is_inside = is_protected_inode(parent_dentry, target_inode);
+        is_inside = is_protected_inode(parent_dentry);
     }
 
     int blocked = 0;

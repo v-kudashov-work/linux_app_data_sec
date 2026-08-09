@@ -38,6 +38,7 @@ static __u64 get_inode_from_path(const char *path) {
     return st.st_ino;
 }
 
+// Функция для поиска всех пользователей и разворачивания ~
 static int expand_for_all_users(const char *pattern, char **expanded_paths, int *count) {
     struct passwd *pw;
     int idx = 0;
@@ -55,13 +56,25 @@ static int expand_for_all_users(const char *pattern, char **expanded_paths, int 
 
     setpwent();
     while ((pw = getpwent()) != NULL && idx < MAX_PATHS) {
-        if (pw->pw_dir && pw->pw_dir[0] == '/') {
-            char expanded[PATH_MAX];
-            snprintf(expanded, sizeof(expanded), "%s%s", pw->pw_dir, subpath);
-            expanded_paths[idx] = strdup(expanded);
-            if (expanded_paths[idx]) {
-                idx++;
-            }
+        if (!pw->pw_dir || pw->pw_dir[0] != '/') {
+            continue;
+        }
+
+        // Проверяем, что это реальный пользователь (UID >= 1000)
+        if (pw->pw_uid < 1000) {
+            continue;
+        }
+
+        // Проверяем, что домашняя директория начинается с /home/
+        if (strncmp(pw->pw_dir, "/home/", 6) != 0) {
+            continue;
+        }
+
+        char expanded[PATH_MAX];
+        snprintf(expanded, sizeof(expanded), "%s%s", pw->pw_dir, subpath);
+        expanded_paths[idx] = strdup(expanded);
+        if (expanded_paths[idx]) {
+            idx++;
         }
     }
     endpwent();
@@ -209,6 +222,80 @@ static int parse_config(void) {
 }
 
 // ============================================================================
+// ФУНКЦИЯ load_entries_to_bpf
+// ============================================================================
+
+static int load_entries_to_bpf(struct bpf_object *obj) {
+    struct bpf_map *map;
+    int err;
+    __u32 key;
+    int fd;
+
+    if (entry_count == 0) {
+        printf("No entries to load\n");
+        return 0;
+    }
+
+    map = bpf_object__find_map_by_name(obj, "target_inode_map");
+    if (!map) {
+        fprintf(stderr, "Failed to find target_inode_map\n");
+        return -1;
+    }
+
+    fd = bpf_map__fd(map);
+    if (fd < 0) {
+        fprintf(stderr, "Failed to get map fd\n");
+        return fd;
+    }
+
+    int loaded = 0;
+    printf("Loading %d entries to BPF map...\n", entry_count);
+
+    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+        key = i;
+        err = bpf_map_update_elem(fd, &key, &entries[i].inode, BPF_ANY);
+        if (err < 0) {
+            fprintf(stderr, "Failed to update target_inode_map[%d]: %d (inode: %lu, path: %s)\n",
+                    i, err, (unsigned long)entries[i].inode, entries[i].path);
+        } else {
+            printf("  [%d] Loaded inode: %lu (path: %s)\n",
+                   i, (unsigned long)entries[i].inode, entries[i].path);
+            loaded++;
+        }
+    }
+
+    if (entries[0].allowed_count > 0) {
+        map = bpf_object__find_map_by_name(obj, "allowed_inode_map");
+        if (map) {
+            fd = bpf_map__fd(map);
+            if (fd >= 0) {
+                key = 0;
+                err = bpf_map_update_elem(fd, &key, &entries[0].allowed_inodes[0], BPF_ANY);
+                if (err < 0) {
+                    fprintf(stderr, "Failed to update allowed_inode_map: %d\n", err);
+                } else {
+                    printf("Loaded allowed inode: %lu\n", (unsigned long)entries[0].allowed_inodes[0]);
+                }
+            }
+        }
+    }
+
+    printf("Total loaded: %d entries\n", loaded);
+    return 0;
+}
+
+// ============================================================================
+// ПЕЧАТЬ ПОМОЩИ
+// ============================================================================
+
+static void print_usage(const char *prog) {
+    fprintf(stderr, "Usage: %s [options]\n", prog);
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -l, --log-level <0-2>  Set log level (0=off, 1=blocked only, 2=everything, default=2)\n");
+    fprintf(stderr, "  -h, --help             Show this help\n");
+}
+
+// ============================================================================
 // ОСНОВНАЯ ФУНКЦИЯ
 // ============================================================================
 
@@ -219,6 +306,35 @@ int main(int argc, char **argv) {
     int err;
     int log_level = 2;
     const char *bpf_file = "app_data_sec.bpf.o";
+
+    // Парсим аргументы
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--log-level") == 0) {
+            if (i + 1 < argc) {
+                log_level = atoi(argv[i + 1]);
+                if (log_level < 0 || log_level > 2) {
+                    fprintf(stderr, "Error: log_level must be 0, 1, or 2\n");
+                    print_usage(argv[0]);
+                    return 1;
+                }
+                i++;
+            } else {
+                fprintf(stderr, "Error: --log-level requires a value\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else {
+            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            print_usage(argv[0]);
+            return 1;
+        }
+    }
+
+    // Сохраняем log_level в переменную для вывода
+    int requested_log_level = log_level;
 
     printf("Loading config from %s\n", CONFIG_PATH);
     parse_config();
@@ -233,74 +349,43 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    // Открываем BPF объект напрямую
     obj = bpf_object__open_file(bpf_file, NULL);
     if (libbpf_get_error(obj)) {
         fprintf(stderr, "Failed to open BPF object %s\n", bpf_file);
         return 1;
     }
 
-    // Загружаем BPF программу
     err = bpf_object__load(obj);
     if (err) {
         fprintf(stderr, "Failed to load BPF object: %d\n", err);
         goto cleanup;
     }
 
-    // Находим карты
-    map = bpf_object__find_map_by_name(obj, "target_inode_map");
-    if (!map) {
-        fprintf(stderr, "Failed to find target_inode_map\n");
+    err = load_entries_to_bpf(obj);
+    if (err) {
         goto cleanup;
     }
 
-    // Загружаем данные в карту
-    __u32 key = 0;
-    struct protect_entry *first = &entries[0];
-    int fd = bpf_map__fd(map);
-    if (fd < 0) {
-        fprintf(stderr, "Failed to get map fd\n");
-        goto cleanup;
-    }
-
-    err = bpf_map_update_elem(fd, &key, &first->inode, BPF_ANY);
-    if (err < 0) {
-        fprintf(stderr, "Failed to update target_inode_map: %d\n", err);
-        goto cleanup;
-    }
-    printf("Loaded target inode: %lu\n", (unsigned long)first->inode);
-
-    // Разрешенная программа
-    if (first->allowed_count > 0) {
-        map = bpf_object__find_map_by_name(obj, "allowed_inode_map");
-        if (map) {
-            fd = bpf_map__fd(map);
-            if (fd >= 0) {
-                err = bpf_map_update_elem(fd, &key, &first->allowed_inodes[0], BPF_ANY);
-                if (err < 0) {
-                    fprintf(stderr, "Failed to update allowed_inode_map: %d\n", err);
-                } else {
-                    printf("Loaded allowed inode: %lu\n", (unsigned long)first->allowed_inodes[0]);
-                }
-            }
-        }
-    }
-
-    // Уровень логирования
+    // Устанавливаем уровень логирования в BPF карту
     map = bpf_object__find_map_by_name(obj, "log_level_map");
     if (map) {
-        fd = bpf_map__fd(map);
+        int fd = bpf_map__fd(map);
         if (fd >= 0) {
-            __u32 log_level_val = log_level;
-            bpf_map_update_elem(fd, &key, &log_level_val, BPF_ANY);
+            __u32 key = 0;
+            __u32 log_level_val = requested_log_level;
+            err = bpf_map_update_elem(fd, &key, &log_level_val, BPF_ANY);
+            if (err < 0) {
+                fprintf(stderr, "Failed to update log_level_map: %d\n", err);
+            }
         }
+    } else {
+        fprintf(stderr, "Warning: log_level_map not found\n");
     }
 
     // Прикрепляем LSM программы
     bpf_object__for_each_program(prog, obj) {
         const char *name = bpf_program__name(prog);
 
-        // Пропускаем программы, которые не являются LSM
         if (strncmp(name, "block_", 6) != 0) {
             continue;
         }
@@ -316,7 +401,7 @@ int main(int argc, char **argv) {
     printf("✅ eBPF LSM programs attached. %d entries loaded\n", entry_count);
     printf("📁 GETATTR: folder VISIBLE, contents PROTECTED\n");
     printf("🔒 ALL other operations: folder AND contents BLOCKED\n");
-    printf("Log level: %d\n", log_level);
+    printf("Log level: %d (0=off, 1=blocked only, 2=everything)\n", requested_log_level);
     printf("Press Ctrl-C to stop...\n");
 
     while (1) {

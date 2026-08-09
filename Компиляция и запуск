@@ -21,6 +21,46 @@ make
 apt-get install clang15.0
 
 
+
+
+
+# 1. Собрать
+make clean
+make all
+
+# 2. Установить конфиг
+sudo make install
+
+# 3. Отредактировать конфиг
+sudo nano /etc/app_data_sec.conf
+
+# 4. Запустить
+sudo ./app_data_sec_loader
+
+# Запуск с уровнем логирования 2 (всё, по умолчанию)
+sudo ./app_data_sec_loader
+
+# Запуск с уровнем логирования 1 (только блокировки)
+sudo ./app_data_sec_loader -l 1
+
+# Запуск с уровнем логирования 0 (без логов)
+sudo ./app_data_sec_loader -l 0
+
+# Помощь
+sudo ./app_data_sec_loader -h
+
+# Или с полными опциями
+sudo ./app_data_sec_loader --log-level 1
+
+
+bash
+# Просмотр сообщений от eBPF
+sudo cat /sys/kernel/debug/tracing/trace_pipe
+
+
+
+
+//Устаревшее:
 # 2. Создайте тестовую папку
 mkdir -p /home/user/.test_app
 

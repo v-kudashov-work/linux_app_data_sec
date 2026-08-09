@@ -35,8 +35,8 @@ install:
 		echo "# protect <path> [allowed_prog1] [allowed_prog2] ..." >> /etc/app_data_sec.conf; \
 		echo "" >> /etc/app_data_sec.conf; \
 		echo "enable = yes" >> /etc/app_data_sec.conf; \
-		echo "protect /home/user/.test_app /bin/konsole" >> /etc/app_data_sec.conf; \
-		echo "protect ~/.secret_folder /bin/my_app" >> /etc/app_data_sec.conf; \
+		echo "protect /home/vbox_user_vladimir/.test_app /bin/konsole" >> /etc/app_data_sec.conf; \
+		echo "protect ~/.test_user_folder /bin/konsole" >> /etc/app_data_sec.conf; \
 		echo "Config file created at /etc/app_data_sec.conf"; \
 	fi
 
