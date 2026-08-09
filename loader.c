@@ -25,9 +25,8 @@ int main(int argc, char **argv) {
     char real_path[PATH_MAX];
     __u64 inode;
     struct stat st;
-    int log_level = 2;  // По умолчанию логируем всё
+    int log_level = 2;
 
-    // Обработка аргументов
     if (argc < 2 || argc > 3) {
         fprintf(stderr, "Usage: %s <path_to_target_folder> [log_level]\n", argv[0]);
         fprintf(stderr, "  log_level: 0 - no logging, 1 - log only blocked, 2 - log everything (default)\n");
@@ -70,7 +69,6 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    // Передаем inode в BPF-карту
     __u32 key = 0;
     err = bpf_map__update_elem(skel->maps.target_inode_map, &key, sizeof(key), &inode, sizeof(inode), BPF_ANY);
     if (err) {
@@ -78,7 +76,6 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    // Передаем уровень логирования в BPF-карту
     __u32 log_level_val = log_level;
     err = bpf_map__update_elem(skel->maps.log_level_map, &key, sizeof(key), &log_level_val, sizeof(log_level_val), BPF_ANY);
     if (err) {
@@ -86,7 +83,21 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    // Прикрепляем хуки
+    // Прикрепляем только гарантированно работающие хуки
+    skel->links.block_inode_getattr = bpf_program__attach_lsm(skel->progs.block_inode_getattr);
+    if (skel->links.block_inode_getattr) {
+        printf("Attached: inode_getattr\n");
+    } else {
+        fprintf(stderr, "Failed to attach inode_getattr\n");
+    }
+
+    skel->links.block_file_open = bpf_program__attach_lsm(skel->progs.block_file_open);
+    if (skel->links.block_file_open) {
+        printf("Attached: file_open\n");
+    } else {
+        fprintf(stderr, "Failed to attach file_open\n");
+    }
+
     skel->links.block_path_unlink = bpf_program__attach_lsm(skel->progs.block_path_unlink);
     if (skel->links.block_path_unlink) {
         printf("Attached: path_unlink\n");
@@ -115,21 +126,23 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to attach path_rename\n");
     }
 
-    skel->links.block_inode_getattr = bpf_program__attach_lsm(skel->progs.block_inode_getattr);
-    if (skel->links.block_inode_getattr) {
-        printf("Attached: inode_getattr\n");
+    skel->links.block_inode_create = bpf_program__attach_lsm(skel->progs.block_inode_create);
+    if (skel->links.block_inode_create) {
+        printf("Attached: inode_create\n");
     } else {
-        fprintf(stderr, "Failed to attach inode_getattr\n");
+        fprintf(stderr, "Failed to attach inode_create\n");
     }
 
-    skel->links.block_file_open = bpf_program__attach_lsm(skel->progs.block_file_open);
-    if (skel->links.block_file_open) {
-        printf("Attached: file_open\n");
+    skel->links.block_inode_mkdir = bpf_program__attach_lsm(skel->progs.block_inode_mkdir);
+    if (skel->links.block_inode_mkdir) {
+        printf("Attached: inode_mkdir\n");
     } else {
-        fprintf(stderr, "Failed to attach file_open\n");
+        fprintf(stderr, "Failed to attach inode_mkdir\n");
     }
 
     printf("✅ eBPF LSM programs attached. Protecting: %s (inode: %lu)\n", real_path, (unsigned long)inode);
+    printf("🔒 ALL operations (read/write) are BLOCKED for non-root users\n");
+    printf("👁️  Folder is VISIBLE in ls, but inaccessible\n");
     printf("Log level: %d (0=off, 1=blocked only, 2=everything)\n", log_level);
     printf("Press Ctrl-C to stop...\n");
 
