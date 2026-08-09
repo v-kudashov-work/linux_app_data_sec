@@ -21,6 +21,7 @@
 #endif
 
 // Карта для хранения целевого inode (папка, которую защищаем)
+// Карта для хранения целевого inode (папка, которую защищаем)
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1);
@@ -134,28 +135,9 @@ static __always_inline int is_protected_inode(struct dentry *dentry, __u64 *targ
     return 0;
 }
 
-// Функция для получения уровня логирования
-static __always_inline int get_log_level(void)
+// Функция для получения inode исполняемого файла процесса
+static __always_inline __u64 get_process_exe_inode(struct task_struct *task)
 {
-    __u32 key = 0;
-    __u32 *level = bpf_map_lookup_elem(&log_level_map, &key);
-    if (!level) {
-        return 0;
-    }
-    return *level;
-}
-
-// Функция для проверки, является ли текущий процесс разрешенным
-static __always_inline int is_allowed_process(void)
-{
-    __u32 key = 0;
-    __u64 *allowed_inode = bpf_map_lookup_elem(&allowed_inode_map, &key);
-    if (!allowed_inode) {
-        return 0;  // Если не задан разрешенный inode - блокируем всех
-    }
-
-    // Получаем inode исполняемого файла текущего процесса
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     if (!task) {
         return 0;
     }
@@ -180,9 +162,70 @@ static __always_inline int is_allowed_process(void)
 
     __u64 inode_num = 0;
     bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
+    return inode_num;
+}
 
-    // Сравниваем с разрешенным inode
-    return (inode_num == *allowed_inode);
+// Функция для получения родительского процесса
+static __always_inline struct task_struct *get_parent_task(struct task_struct *task)
+{
+    if (!task) {
+        return NULL;
+    }
+
+    struct task_struct *parent = NULL;
+    bpf_probe_read_kernel(&parent, sizeof(parent), &task->real_parent);
+    return parent;
+}
+
+// Функция для проверки, является ли процесс или любой из его родителей разрешенным
+static __always_inline int is_allowed_process_tree(void)
+{
+    __u32 key = 0;
+    __u64 *allowed_inode = bpf_map_lookup_elem(&allowed_inode_map, &key);
+    if (!allowed_inode) {
+        return 0;  // Если не задан разрешенный inode - блокируем всех
+    }
+
+    struct task_struct *current_task = (struct task_struct *)bpf_get_current_task();
+    if (!current_task) {
+        return 0;
+    }
+
+    struct task_struct *task = current_task;
+    int depth = 0;
+    const int MAX_DEPTH = 20;
+
+    #pragma unroll
+    for (depth = 0; depth < MAX_DEPTH; depth++) {
+        if (!task) {
+            break;
+        }
+
+        // Проверяем inode текущего процесса
+        __u64 inode_num = get_process_exe_inode(task);
+        if (inode_num == *allowed_inode) {
+            return 1;
+        }
+
+        // Поднимаемся к родителю
+        task = get_parent_task(task);
+        if (!task) {
+            break;
+        }
+    }
+
+    return 0;
+}
+
+// Функция для получения уровня логирования
+static __always_inline int get_log_level(void)
+{
+    __u32 key = 0;
+    __u32 *level = bpf_map_lookup_elem(&log_level_map, &key);
+    if (!level) {
+        return 0;
+    }
+    return *level;
 }
 
 // Функция проверки доступа
@@ -211,7 +254,8 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     get_dentry_name(dentry, name);
     get_parent_name(dentry, parent_name);
 
-    int allowed = is_allowed_process();
+    // Проверяем всю цепочку родителей
+    int allowed = is_allowed_process_tree();
     int is_self = is_protected_inode(dentry, target_inode);
 
     struct dentry *parent_dentry = NULL;
