@@ -5,7 +5,7 @@ BPFTOOL = bpftool
 CFLAGS = -Wall -O2
 LDFLAGS = -lbpf -lelf -lz
 
-all: loader
+all: blocker.bpf.o loader
 
 blocker.bpf.o: blocker.bpf.c
 	$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_x86 \
