@@ -1,17 +1,4 @@
-// blocker.bpf.c
-// 1. Единственный заголовок из системы - vmlinux.h, сгенерированный bpftool
-#include "vmlinux.h"
-
-// 2. Все остальные необходимые макросы и определения предоставляет libbpf
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
-
-// Определение EPERM (Operation not permitted)
-#ifndef EPERM
-#define EPERM 1
-#endif
-
-// Карта для хранения целевого inode
+// app_data_sec.bpf.c
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -20,7 +7,6 @@
 #define EPERM 1
 #endif
 
-// Карта для хранения целевого inode (папка, которую защищаем)
 // Карта для хранения целевого inode (папка, которую защищаем)
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -183,7 +169,7 @@ static __always_inline int is_allowed_process_tree(void)
     __u32 key = 0;
     __u64 *allowed_inode = bpf_map_lookup_elem(&allowed_inode_map, &key);
     if (!allowed_inode) {
-        return 0;  // Если не задан разрешенный inode - блокируем всех
+        return 0;
     }
 
     struct task_struct *current_task = (struct task_struct *)bpf_get_current_task();
@@ -201,13 +187,11 @@ static __always_inline int is_allowed_process_tree(void)
             break;
         }
 
-        // Проверяем inode текущего процесса
         __u64 inode_num = get_process_exe_inode(task);
         if (inode_num == *allowed_inode) {
             return 1;
         }
 
-        // Поднимаемся к родителю
         task = get_parent_task(task);
         if (!task) {
             break;
@@ -254,7 +238,6 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     get_dentry_name(dentry, name);
     get_parent_name(dentry, parent_name);
 
-    // Проверяем всю цепочку родителей
     int allowed = is_allowed_process_tree();
     int is_self = is_protected_inode(dentry, target_inode);
 
@@ -285,20 +268,20 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     }
 
     if (log_level >= 2) {
-        bpf_printk("BLOCKER: %s PID=%llu UID=%llu NAME=%s PARENT=%s ALLOWED=%d BLOCKED=%d REASON=%s COMM=%s\n",
+        bpf_printk("APP_DATA_SEC: %s PID=%llu UID=%llu NAME=%s PARENT=%s ALLOWED=%d BLOCKED=%d REASON=%s COMM=%s\n",
                    operation, pid, uid, name, parent_name, allowed, blocked, reason, comm);
     }
 
     if (uid == 0) {
         if (log_level >= 2) {
-            bpf_printk("BLOCKER: %s ALLOWED ROOT\n", operation);
+            bpf_printk("APP_DATA_SEC: %s ALLOWED ROOT\n", operation);
         }
         return 0;
     }
 
     if (blocked) {
         if (log_level >= 1) {
-            bpf_printk("BLOCKER: %s BLOCKED PID=%llu UID=%llu NAME=%s PARENT=%s REASON=%s COMM=%s\n",
+            bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu NAME=%s PARENT=%s REASON=%s COMM=%s\n",
                        operation, pid, uid, name, parent_name, reason, comm);
         }
         return -EPERM;

@@ -1,22 +1,46 @@
-# Makefile
+# makefile
 CC = gcc
 CLANG = clang
 BPFTOOL = bpftool
 CFLAGS = -Wall -O2
 LDFLAGS = -lbpf -lelf -lz
 
-all: blocker.bpf.o loader
+TARGET = app_data_sec_loader
+BPF_SRC = app_data_sec.bpf.c
+BPF_OBJ = app_data_sec.bpf.o
+SKEL_H = app_data_sec.skel.h
 
-blocker.bpf.o: blocker.bpf.c
-	$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_x86 \
-		-I/usr/include/x86_64-linux-gnu \
-		-c blocker.bpf.c -o blocker.bpf.o
-	$(BPFTOOL) gen skeleton blocker.bpf.o > blocker.skel.h
+all: $(TARGET)
 
-loader: loader.c blocker.bpf.o
-	$(CC) $(CFLAGS) -o loader loader.c $(LDFLAGS)
+vmlinux.h:
+	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+
+$(BPF_OBJ): $(BPF_SRC) vmlinux.h
+	$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_x86 -I. -c $(BPF_SRC) -o $(BPF_OBJ)
+
+$(SKEL_H): $(BPF_OBJ)
+	$(BPFTOOL) gen skeleton $(BPF_OBJ) > $(SKEL_H)
+
+$(TARGET): app_data_sec_loader.c $(SKEL_H)
+	$(CC) $(CFLAGS) -o $(TARGET) app_data_sec_loader.c $(LDFLAGS)
 
 clean:
-	rm -f loader blocker.bpf.o blocker.skel.h
+	rm -f $(TARGET) $(BPF_OBJ) $(SKEL_H) vmlinux.h
 
-.PHONY: all clean
+install:
+	@echo "Installing config file..."
+	@if [ ! -f /etc/app_data_sec.conf ]; then \
+		echo "# /etc/app_data_sec.conf" > /etc/app_data_sec.conf; \
+		echo "# enable = yes|no" >> /etc/app_data_sec.conf; \
+		echo "# protect <path> [allowed_prog1] [allowed_prog2] ..." >> /etc/app_data_sec.conf; \
+		echo "" >> /etc/app_data_sec.conf; \
+		echo "enable = yes" >> /etc/app_data_sec.conf; \
+		echo "protect /home/user/.test_app /bin/konsole" >> /etc/app_data_sec.conf; \
+		echo "protect ~/.secret_folder /bin/my_app" >> /etc/app_data_sec.conf; \
+		echo "Config file created at /etc/app_data_sec.conf"; \
+	fi
+
+run: $(TARGET)
+	./$(TARGET)
+
+.PHONY: all clean install run
