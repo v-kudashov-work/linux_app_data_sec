@@ -12,12 +12,29 @@
 #endif
 
 // Карта для хранения целевого inode
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+
+#ifndef EPERM
+#define EPERM 1
+#endif
+
+// Карта для хранения целевого inode (папка, которую защищаем)
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, __u64);
 } target_inode_map SEC(".maps");
+
+// Карта для хранения inode разрешенной программы
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} allowed_inode_map SEC(".maps");
 
 // Карта для хранения уровня логирования
 struct {
@@ -30,12 +47,8 @@ struct {
 // Функция для безопасного копирования имени из dentry
 static __always_inline void get_dentry_name(struct dentry *dentry, char *name)
 {
-    #pragma unroll
-    for (int i = 0; i < 64; i++) {
-        name[i] = 0;
-    }
-
     if (!dentry) {
+        name[0] = '\0';
         return;
     }
 
@@ -43,33 +56,38 @@ static __always_inline void get_dentry_name(struct dentry *dentry, char *name)
     bpf_probe_read_kernel(&name_ptr, sizeof(name_ptr), &dentry->d_name.name);
 
     if (!name_ptr) {
+        name[0] = '\0';
         return;
     }
 
+    unsigned long len = 0;
+    bpf_probe_read_kernel(&len, sizeof(len), &dentry->d_name.len);
+    if (len >= 32) {
+        len = 31;
+    }
+
     #pragma unroll
-    for (int i = 0; i < 63; i++) {
-        unsigned char c;
-        bpf_probe_read_kernel(&c, sizeof(c), &name_ptr[i]);
-        name[i] = c;
-        if (c == '\0') {
-            break;
+    for (int i = 0; i < 32; i++) {
+        name[i] = 0;
+        if (i < len) {
+            unsigned char c;
+            bpf_probe_read_kernel(&c, sizeof(c), &name_ptr[i]);
+            name[i] = c;
         }
     }
-    name[63] = '\0';
+    name[31] = '\0';
 }
 
 // Функция для получения имени родительской директории
 static __always_inline void get_parent_name(struct dentry *dentry, char *name)
 {
     name[0] = '\0';
-
     if (!dentry) {
         return;
     }
 
     struct dentry *parent = NULL;
     bpf_probe_read_kernel(&parent, sizeof(parent), &dentry->d_parent);
-
     if (!parent) {
         return;
     }
@@ -100,7 +118,6 @@ static __always_inline int is_protected_inode(struct dentry *dentry, __u64 *targ
         if (inode) {
             __u64 inode_num = 0;
             bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
-
             if (inode_num == *target_inode) {
                 return 1;
             }
@@ -108,11 +125,9 @@ static __always_inline int is_protected_inode(struct dentry *dentry, __u64 *targ
 
         struct dentry *parent = NULL;
         bpf_probe_read_kernel(&parent, sizeof(parent), &current->d_parent);
-
         if (!parent || parent == current) {
             break;
         }
-
         current = parent;
     }
 
@@ -130,8 +145,47 @@ static __always_inline int get_log_level(void)
     return *level;
 }
 
+// Функция для проверки, является ли текущий процесс разрешенным
+static __always_inline int is_allowed_process(void)
+{
+    __u32 key = 0;
+    __u64 *allowed_inode = bpf_map_lookup_elem(&allowed_inode_map, &key);
+    if (!allowed_inode) {
+        return 0;  // Если не задан разрешенный inode - блокируем всех
+    }
+
+    // Получаем inode исполняемого файла текущего процесса
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        return 0;
+    }
+
+    struct mm_struct *mm = NULL;
+    bpf_probe_read_kernel(&mm, sizeof(mm), &task->mm);
+    if (!mm) {
+        return 0;
+    }
+
+    struct file *exe_file = NULL;
+    bpf_probe_read_kernel(&exe_file, sizeof(exe_file), &mm->exe_file);
+    if (!exe_file) {
+        return 0;
+    }
+
+    struct inode *inode = NULL;
+    bpf_probe_read_kernel(&inode, sizeof(inode), &exe_file->f_inode);
+    if (!inode) {
+        return 0;
+    }
+
+    __u64 inode_num = 0;
+    bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
+
+    // Сравниваем с разрешенным inode
+    return (inode_num == *allowed_inode);
+}
+
 // Функция проверки доступа
-// block_self: 1 - блокировать доступ к самой папке, 0 - разрешить доступ к папке (но блокировать вложенные)
 static __always_inline int check_access(struct dentry *dentry, const char *operation, int block_self)
 {
     __u32 key = 0;
@@ -152,16 +206,14 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     char comm[16] = {};
     bpf_get_current_comm(&comm, sizeof(comm));
 
-    char name[64] = {};
+    char name[32] = {};
+    char parent_name[32] = {};
     get_dentry_name(dentry, name);
-
-    char parent_name[64] = {};
     get_parent_name(dentry, parent_name);
 
-    // Проверяем, является ли текущий объект самой защищенной папкой
+    int allowed = is_allowed_process();
     int is_self = is_protected_inode(dentry, target_inode);
 
-    // Проверяем, находится ли объект внутри защищенной папки
     struct dentry *parent_dentry = NULL;
     bpf_probe_read_kernel(&parent_dentry, sizeof(parent_dentry), &dentry->d_parent);
     int is_inside = 0;
@@ -169,35 +221,30 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         is_inside = is_protected_inode(parent_dentry, target_inode);
     }
 
-    // Решение: блокировать или нет
     int blocked = 0;
     const char *reason = "";
 
-    // Если это сама защищенная папка
-    if (is_self) {
+    if (allowed) {
+        blocked = 0;
+        reason = "allowed";
+    } else if (is_self) {
         if (block_self) {
-            // Блокируем доступ к самой папке
             blocked = 1;
-            reason = "self_blocked";
+            reason = "self";
         } else {
-            // Разрешаем доступ к самой папке
             blocked = 0;
             reason = "self_allowed";
         }
-    }
-    // Если объект внутри защищенной папки (вложенный файл или папка)
-    else if (is_inside) {
+    } else if (is_inside) {
         blocked = 1;
         reason = "inside";
     }
 
-    // Логируем всё если уровень >= 2
     if (log_level >= 2) {
-        bpf_printk("BLOCKER: %s PID=%llu UID=%llu NAME=%s PARENT=%s IS_SELF=%d INSIDE=%d BLOCKED=%d REASON=%s COMM=%s\n",
-                   operation, pid, uid, name, parent_name, is_self, is_inside, blocked, reason, comm);
+        bpf_printk("BLOCKER: %s PID=%llu UID=%llu NAME=%s PARENT=%s ALLOWED=%d BLOCKED=%d REASON=%s COMM=%s\n",
+                   operation, pid, uid, name, parent_name, allowed, blocked, reason, comm);
     }
 
-    // Root имеет полный доступ
     if (uid == 0) {
         if (log_level >= 2) {
             bpf_printk("BLOCKER: %s ALLOWED ROOT\n", operation);
@@ -205,7 +252,6 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         return 0;
     }
 
-    // Если блокируем
     if (blocked) {
         if (log_level >= 1) {
             bpf_printk("BLOCKER: %s BLOCKED PID=%llu UID=%llu NAME=%s PARENT=%s REASON=%s COMM=%s\n",
@@ -219,8 +265,6 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
 
 // ============ ХУКИ ============
 
-// 1. inode_getattr - получение атрибутов (ls, stat)
-// block_self = 0 - разрешаем видеть папку, но блокируем вложенные
 SEC("lsm/inode_getattr")
 int BPF_PROG(block_inode_getattr, const struct path *path)
 {
@@ -230,8 +274,6 @@ int BPF_PROG(block_inode_getattr, const struct path *path)
     return check_access(path->dentry, "GETATTR", 0);
 }
 
-// 2. file_open - открытие файлов
-// block_self = 1 - блокируем всё
 SEC("lsm/file_open")
 int BPF_PROG(block_file_open, struct file *file)
 {
@@ -241,32 +283,24 @@ int BPF_PROG(block_file_open, struct file *file)
     return check_access(file->f_path.dentry, "OPEN", 1);
 }
 
-// 3. path_unlink - удаление файлов
-// block_self = 1 - блокируем всё
 SEC("lsm/path_unlink")
 int BPF_PROG(block_path_unlink, const struct path *dir, struct dentry *dentry)
 {
     return check_access(dentry, "UNLINK", 1);
 }
 
-// 4. path_rmdir - удаление папок
-// block_self = 1 - блокируем всё
 SEC("lsm/path_rmdir")
 int BPF_PROG(block_path_rmdir, const struct path *dir, struct dentry *dentry)
 {
     return check_access(dentry, "RMDIR", 1);
 }
 
-// 5. path_mkdir - создание папок
-// block_self = 1 - блокируем всё (нельзя создать папку внутри защищенной)
 SEC("lsm/path_mkdir")
 int BPF_PROG(block_path_mkdir, const struct path *dir, struct dentry *dentry, umode_t mode)
 {
     return check_access(dir->dentry, "MKDIR", 1);
 }
 
-// 6. path_rename - переименование
-// block_self = 1 - блокируем всё
 SEC("lsm/path_rename")
 int BPF_PROG(block_path_rename, const struct path *old_dir, struct dentry *old_dentry,
              const struct path *new_dir, struct dentry *new_dentry)
@@ -278,16 +312,12 @@ int BPF_PROG(block_path_rename, const struct path *old_dir, struct dentry *old_d
     return check_access(new_dentry, "RENAME_NEW", 1);
 }
 
-// 7. inode_create - создание файлов
-// block_self = 1 - блокируем всё
 SEC("lsm/inode_create")
 int BPF_PROG(block_inode_create, struct inode *dir, struct dentry *dentry, umode_t mode)
 {
     return check_access(dentry->d_parent, "INODE_CREATE", 1);
 }
 
-// 8. inode_mkdir - создание папок (альтернативный хук)
-// block_self = 1 - блокируем всё
 SEC("lsm/inode_mkdir")
 int BPF_PROG(block_inode_mkdir, struct inode *dir, struct dentry *dentry, umode_t mode)
 {
