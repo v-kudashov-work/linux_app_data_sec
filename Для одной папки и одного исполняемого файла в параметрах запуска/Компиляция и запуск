@@ -1,0 +1,116 @@
+Компиляция и запуск
+bash
+# 1. Установите зависимости
+sudo apt-get install clang llvm libbpf-dev linux-headers-$(uname -r)
+Для альт линукс
+su
+apt-get install llvm-common libbpf-devel kernel-headers-6.12
+apt-get install kernel-headers-modules-6.12
+sudo update-kernel
+apt-get install linux-tools
+apt-get install libelf-devel zlib-devel
+
+только из su -
+sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+
+собрать: из su -
+make
+
+где 6.12 это версия ядра
+и
+apt-get install clang15.0
+
+
+# 2. Создайте тестовую папку
+mkdir -p /home/user/.test_app
+
+# 3. Скомпилируйте
+make
+
+не компилируется - ошибки
+на убунту такие же ошибки
+
+
+
+
+# 4. Запустите загрузчик (требуются права root для загрузки eBPF)
+su - для альт
+sudo ./loader /home/user/.test_app
+
+# Уровень 2 - логируем всё (по умолчанию)
+sudo ./loader /home/user/.test_app
+
+# Уровень 1 - логируем только блокировки
+sudo ./loader /home/user/.test_app 1
+
+# Уровень 0 - без логирования (только блокировка)
+sudo ./loader /home/user/.test_app 0
+
+# Или явно указать уровень 2
+sudo ./loader /home/user/.test_app 2
+
+
+# Без разрешенной программы
+sudo ./loader /home/user/.test_app
+
+# С разрешенной программой
+sudo ./loader /home/user/.test_app /sbin/my_program/app
+
+# С разрешенной программой и уровнем логирования
+sudo ./loader /home/user/.test_app /sbin/my_program/app 2
+
+
+🧪 Тестирование
+После запуска загрузчика откройте другой терминал и попробуйте:
+
+bash
+# 1. Как обычный пользователь (НЕ root):
+# Попытка создать файл - должна быть заблокирована
+touch /home/user/.test_app/test.txt
+# Ожидаемый результат: Permission denied
+
+# Попытка удалить файл - должна быть заблокирована
+rm /home/user/.test_app/somefile.txt
+# Ожидаемый результат: Permission denied
+
+# Попытка удалить папку - должна быть заблокирована
+rmdir /home/user/.test_app
+# Ожидаемый результат: Permission denied
+
+# 2. Как root (sudo):
+sudo touch /home/user/.test_app/root_test.txt
+# Ожидаемый результат: Файл создан успешно
+
+sudo rm /home/user/.test_app/root_test.txt
+# Ожидаемый результат: Файл удален успешно
+
+sudo rmdir /home/user/.test_app
+# Ожидаемый результат: Папка удалена успешно (если она пуста)
+📊 Логирование
+Проверить, что eBPF программа сработала, можно через системный лог:
+
+bash
+# Просмотр сообщений от eBPF
+sudo cat /sys/kernel/debug/tracing/trace_pipe
+Вы увидите сообщения типа:
+
+text
+Blocked file creation in target directory by UID=1000
+Blocked file deletion in target directory by UID=1000
+Blocked directory deletion of target folder by UID=1000
+⚠️ Важные замечания
+Загрузка требует root: Сама eBPF-программа требует root-прав для загрузки и прикрепления к LSM-хукам. Однако после загрузки она будет блокировать операции для ВСЕХ НЕ-root пользователей.
+
+Проверка UID в ядре: Функция bpf_get_current_uid_gid() возвращает реальный UID текущего процесса, поэтому подмена через sudo или su будет корректно обработана.
+
+Дополнительные хуки: При необходимости можно добавить другие хуки:
+
+path_link - для блокировки создания жестких ссылок
+
+path_rename - для блокировки переименования
+
+path_mkdir - для блокировки создания папок внутри защищенной директории
+
+Инод и перемонтирование: Инод уникален в пределах одной файловой системы. Если вы переместите папку в другую файловую систему, защита перестанет работать. Для надежности можно передавать не только инод, но и идентификатор устройства (dev).
+
+Вот как это работает и почему это решение полностью соответствует вашему запросу: блокировка для обычных пользователей, но разрешение для root.
