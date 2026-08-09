@@ -18,7 +18,7 @@
 // ============================================================================
 
 #define PROCESS_NAME "app_data_sec_loader"
-#define SERVICE_NAME "app_data_sec_loader"
+#define SERVICE_NAME "/usr/local/bin/app_data_sec_loader"
 
 #define PROCESS_PATH_DEFAULT "./app_data_sec_loader"
 
@@ -138,6 +138,7 @@ static char* find_process_path(const char *process_name) {
     const char *standard_paths[] = {
         PROCESS_PATH_DEFAULT,
         "./app_data_sec_loader",
+        "/usr/bin",
         "../app_data_sec_loader",
         "/usr/local/bin/app_data_sec_loader",
         "/usr/bin/app_data_sec_loader",
