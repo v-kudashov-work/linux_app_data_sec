@@ -25,11 +25,25 @@ int main(int argc, char **argv) {
     char real_path[PATH_MAX];
     __u64 inode;
     struct stat st;
+    int log_level = 2;  // По умолчанию логируем всё
 
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <path_to_target_folder>\n", argv[0]);
+    // Обработка аргументов
+    if (argc < 2 || argc > 3) {
+        fprintf(stderr, "Usage: %s <path_to_target_folder> [log_level]\n", argv[0]);
+        fprintf(stderr, "  log_level: 0 - no logging, 1 - log only blocked, 2 - log everything (default)\n");
+        fprintf(stderr, "Example: %s /home/user/.test_app 1\n", argv[0]);
         return 1;
     }
+
+    if (argc == 3) {
+        log_level = atoi(argv[2]);
+        if (log_level < 0 || log_level > 2) {
+            fprintf(stderr, "Invalid log_level. Must be 0, 1, or 2\n");
+            return 1;
+        }
+    }
+
+    printf("Log level: %d\n", log_level);
 
     if (realpath(argv[1], real_path) == NULL) {
         perror("realpath");
@@ -56,6 +70,7 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
+    // Передаем inode в BPF-карту
     __u32 key = 0;
     err = bpf_map__update_elem(skel->maps.target_inode_map, &key, sizeof(key), &inode, sizeof(inode), BPF_ANY);
     if (err) {
@@ -63,7 +78,15 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    // Прикрепляем только существующие хуки
+    // Передаем уровень логирования в BPF-карту
+    __u32 log_level_val = log_level;
+    err = bpf_map__update_elem(skel->maps.log_level_map, &key, sizeof(key), &log_level_val, sizeof(log_level_val), BPF_ANY);
+    if (err) {
+        fprintf(stderr, "Failed to update log level map: %d\n", err);
+        goto cleanup;
+    }
+
+    // Прикрепляем хуки
     skel->links.block_path_unlink = bpf_program__attach_lsm(skel->progs.block_path_unlink);
     if (skel->links.block_path_unlink) {
         printf("Attached: path_unlink\n");
@@ -107,6 +130,7 @@ int main(int argc, char **argv) {
     }
 
     printf("✅ eBPF LSM programs attached. Protecting: %s (inode: %lu)\n", real_path, (unsigned long)inode);
+    printf("Log level: %d (0=off, 1=blocked only, 2=everything)\n", log_level);
     printf("Press Ctrl-C to stop...\n");
 
     while (1) {

@@ -12,13 +12,37 @@
 #endif
 
 // Карта для хранения целевого inode
-// Карта для хранения целевого inode
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, __u64);
 } target_inode_map SEC(".maps");
+
+// Карта для хранения уровня логирования
+// 0 - без логирования
+// 1 - логируем только блокировку
+// 2 - логируем всё
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} log_level_map SEC(".maps");
+
+// Вспомогательная функция для логирования с проверкой уровня
+static __always_inline void log_event(const char *fmt, ...)
+{
+    __u32 key = 0;
+    __u32 *level = bpf_map_lookup_elem(&log_level_map, &key);
+    if (!level || *level == 0) {
+        return;
+    }
+
+    // Уровень 1 - только блокировки (передаем параметр blocked)
+    // Уровень 2 - всё
+    // Для простоты используем bpf_printk, но с проверкой уровня в вызывающем коде
+}
 
 // Функция для безопасного копирования имени из dentry
 static __always_inline void get_dentry_name(struct dentry *dentry, char *name)
@@ -112,7 +136,18 @@ static __always_inline int is_protected_inode(struct dentry *dentry, __u64 *targ
     return 0;
 }
 
-// Функция проверки доступа
+// Функция для получения уровня логирования
+static __always_inline int get_log_level(void)
+{
+    __u32 key = 0;
+    __u32 *level = bpf_map_lookup_elem(&log_level_map, &key);
+    if (!level) {
+        return 0;
+    }
+    return *level;
+}
+
+// Функция проверки доступа с уровнями логирования
 static __always_inline int check_access(struct dentry *dentry, const char *operation)
 {
     __u32 key = 0;
@@ -124,6 +159,8 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     if (!dentry) {
         return 0;
     }
+
+    int log_level = get_log_level();
 
     __u64 uid = bpf_get_current_uid_gid() & 0xFFFFFFFFULL;
     __u64 pid = bpf_get_current_pid_tgid() >> 32;
@@ -139,44 +176,51 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
 
     int protected = is_protected_inode(dentry, target_inode);
 
-    bpf_printk("BLOCKER: %s PID=%llu UID=%llu NAME=%s PARENT=%s PROTECTED=%d COMM=%s\n",
-               operation, pid, uid, name, parent_name, protected, comm);
+    // Логируем только если уровень >= 2 (всё)
+    if (log_level >= 2) {
+        bpf_printk("BLOCKER: %s PID=%llu UID=%llu NAME=%s PARENT=%s PROTECTED=%d COMM=%s\n",
+                   operation, pid, uid, name, parent_name, protected, comm);
+    }
 
     if (uid == 0) {
+        if (log_level >= 2) {
+            bpf_printk("BLOCKER: %s ALLOWED ROOT\n", operation);
+        }
         return 0;
     }
 
     if (protected) {
+        // Логируем блокировку всегда, если уровень >= 1
+        if (log_level >= 1) {
+            bpf_printk("BLOCKER: %s BLOCKED PID=%llu UID=%llu NAME=%s PARENT=%s COMM=%s\n",
+                       operation, pid, uid, name, parent_name, comm);
+        }
         return -EPERM;
     }
 
     return 0;
 }
 
-// ============ ХУКИ (ТОЛЬКО ТЕ, ЧТО РЕАЛЬНО СУЩЕСТВУЮТ) ============
+// ============ ХУКИ ============
 
-// 1. path_unlink - удаление файлов
 SEC("lsm/path_unlink")
 int BPF_PROG(block_path_unlink, const struct path *dir, struct dentry *dentry)
 {
     return check_access(dentry, "UNLINK");
 }
 
-// 2. path_rmdir - удаление папок
 SEC("lsm/path_rmdir")
 int BPF_PROG(block_path_rmdir, const struct path *dir, struct dentry *dentry)
 {
     return check_access(dentry, "RMDIR");
 }
 
-// 3. path_mkdir - создание папок
 SEC("lsm/path_mkdir")
 int BPF_PROG(block_path_mkdir, const struct path *dir, struct dentry *dentry, umode_t mode)
 {
     return check_access(dir->dentry, "MKDIR");
 }
 
-// 4. path_rename - переименование
 SEC("lsm/path_rename")
 int BPF_PROG(block_path_rename, const struct path *old_dir, struct dentry *old_dentry,
              const struct path *new_dir, struct dentry *new_dentry)
@@ -188,7 +232,6 @@ int BPF_PROG(block_path_rename, const struct path *old_dir, struct dentry *old_d
     return check_access(new_dentry, "RENAME_NEW");
 }
 
-// 5. inode_getattr - получение атрибутов
 SEC("lsm/inode_getattr")
 int BPF_PROG(block_inode_getattr, const struct path *path)
 {
@@ -198,7 +241,6 @@ int BPF_PROG(block_inode_getattr, const struct path *path)
     return check_access(path->dentry, "GETATTR");
 }
 
-// 6. file_open - открытие файлов
 SEC("lsm/file_open")
 int BPF_PROG(block_file_open, struct file *file)
 {
