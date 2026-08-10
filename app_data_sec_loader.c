@@ -667,6 +667,65 @@ static int config_changed(void) {
 }
 
 // ============================================================================
+// ФУНКЦИЯ ПОИСКА BPF ОБЪЕКТА
+// ============================================================================
+
+static const char* find_bpf_object(void) {
+    static char path[PATH_MAX];
+    struct stat st;
+
+    // Проверяем все возможные места
+    const char *paths[] = {
+        "/usr/local/lib/app_data_sec/app_data_sec.bpf.o",
+        "./app_data_sec.bpf.o",
+        "../app_data_sec.bpf.o",
+        "/opt/app_data_sec/app_data_sec.bpf.o",
+        "/usr/lib/app_data_sec/app_data_sec.bpf.o",
+        "/usr/local/app_data_sec.bpf.o",
+        NULL
+    };
+
+    for (int i = 0; paths[i] != NULL; i++) {
+        if (stat(paths[i], &st) == 0 && S_ISREG(st.st_mode)) {
+            strcpy(path, paths[i]);
+            SYSLOG_INFO("Found BPF object: %s", path);
+            return path;
+        }
+    }
+
+    // Пытаемся найти через find
+    FILE *fp = popen("find /usr/local /opt -name 'app_data_sec.bpf.o' 2>/dev/null | head -1", "r");
+    if (fp) {
+        char result[PATH_MAX];
+        if (fgets(result, sizeof(result), fp) != NULL) {
+            size_t len = strlen(result);
+            if (len > 0 && result[len-1] == '\n') {
+                result[len-1] = '\0';
+            }
+            if (len > 0 && stat(result, &st) == 0 && S_ISREG(st.st_mode)) {
+                strcpy(path, result);
+                pclose(fp);
+                SYSLOG_INFO("Found BPF object via find: %s", path);
+                return path;
+            }
+        }
+        pclose(fp);
+    }
+
+    SYSLOG_ERR("BPF object file not found!");
+    SYSLOG_ERR("Searched paths:");
+    for (int i = 0; paths[i] != NULL; i++) {
+        SYSLOG_ERR("  - %s", paths[i]);
+    }
+    SYSLOG_ERR("Please build the BPF program first:");
+    SYSLOG_ERR("  clang -g -O2 -target bpf -D__TARGET_ARCH_x86 -I. -c app_data_sec.bpf.c -o app_data_sec.bpf.o");
+    SYSLOG_ERR("  sudo mkdir -p /usr/local/lib/app_data_sec");
+    SYSLOG_ERR("  sudo cp app_data_sec.bpf.o /usr/local/lib/app_data_sec/");
+
+    return NULL;
+}
+
+// ============================================================================
 // ОСНОВНАЯ ФУНКЦИЯ
 // ============================================================================
 
@@ -682,7 +741,9 @@ int main(int argc, char **argv) {
     struct bpf_map *map;
     int err;
     int log_level = 1;
-    const char *bpf_file = "app_data_sec.bpf.o";
+    const char *bpf_file = NULL;
+    int config_valid = 0;
+    int waiting_for_config = 0;
 
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
     SYSLOG_INFO("APP DATA SEC LOADER STARTING (PID: %d)", getpid());
@@ -727,220 +788,161 @@ int main(int argc, char **argv) {
 
     DEBUG_PRINT("main: before parse_config");
 
-    // Открываем BPF объект один раз
-    g_bpf_obj = bpf_object__open_file(bpf_file, NULL);
-    if (libbpf_get_error(g_bpf_obj)) {
-        SYSLOG_ERR("Failed to open BPF object %s", bpf_file);
+    // Находим BPF объект
+    bpf_file = find_bpf_object();
+    if (!bpf_file) {
+        SYSLOG_ERR("BPF object file not found!");
+        closelog();
         return 1;
     }
 
-    err = bpf_object__load(g_bpf_obj);
-    if (err) {
-        SYSLOG_ERR("Failed to load BPF object: %d", err);
-        goto cleanup;
+    if (parse_config() != 0) {
+        SYSLOG_ERR("Failed to parse config");
+        closelog();
+        return 1;
     }
 
-    // Прикрепляем LSM программы заранее (будут работать когда появятся записи)
-    bpf_object__for_each_program(prog, g_bpf_obj) {
-        const char *name = bpf_program__name(prog);
-        if (strncmp(name, "block_", 6) != 0) continue;
-
-        struct bpf_link *link = bpf_program__attach_lsm(prog);
-        if (link) {
-            SYSLOG_INFO("Attached: %s", name);
-        } else {
-            SYSLOG_ERR("Failed to attach: %s", name);
-        }
-    }
-
-    // Устанавливаем уровень логирования
-    map = bpf_object__find_map_by_name(g_bpf_obj, "log_level_map");
-    if (map) {
-        int fd = bpf_map__fd(map);
-        if (fd >= 0) {
-            __u32 key = 0;
-            __u32 log_level_val = requested_log_level;
-            bpf_map_update_elem(fd, &key, &log_level_val, BPF_ANY);
-        }
-    }
+    DEBUG_PRINT("main: after parse_config, enabled=%d, count=%d, templates=%d",
+                config_enabled, entry_count, template_count);
 
     // ============================================================
-    // ОСНОВНОЙ ЦИКЛ — НИКОГДА НЕ ВЫХОДИМ
+    // ЕСЛИ КОНФИГ НЕ ВАЛИДЕН - ЖДЁМ ОБНОВЛЕНИЙ
     // ============================================================
-    int first_iteration = 1;
-
-    while (1) {
-        // Парсим конфиг на каждой итерации
-        parse_config();
-
-        // Проверяем, есть ли валидные записи
-        if (config_enabled && (entry_count > 0 || template_count > 0)) {
-            if (first_iteration) {
-                SYSLOG_INFO("Config loaded: %d entries, %d templates", entry_count, template_count);
-                first_iteration = 0;
-            }
-
-            // Загружаем записи в BPF
-            reload_all_entries(g_bpf_obj);
-
-            SYSLOG_INFO("eBPF LSM programs active. %d entries loaded, %d templates",
-                        entry_count, template_count);
-            SYSLOG_INFO("Log level: %d", requested_log_level);
-            SYSLOG_INFO("Config file: %s", CONFIG_PATH);
-
-            // Выходим из режима ожидания и переходим в основной цикл
-            break;
+    if (!config_enabled || entry_count == 0) {
+        if (!config_enabled) {
+            SYSLOG_INFO("Config: module disabled, waiting for enable...");
         } else {
-            if (first_iteration) {
-                if (!config_enabled) {
-                    SYSLOG_INFO("Config: module disabled, waiting for enable...");
-                } else {
-                    SYSLOG_WARN("No valid protect entries found, waiting for config changes...");
-                }
-                first_iteration = 0;
+            SYSLOG_WARN("No valid protect entries found, waiting for config changes...");
+        }
+
+        // Открываем BPF объект, но не загружаем записи
+        g_bpf_obj = bpf_object__open_file(bpf_file, NULL);
+        if (libbpf_get_error(g_bpf_obj)) {
+            SYSLOG_ERR("Failed to open BPF object %s: %s", bpf_file, strerror(-libbpf_get_error(g_bpf_obj)));
+            closelog();
+            return 1;
+        }
+
+        err = bpf_object__load(g_bpf_obj);
+        if (err) {
+            SYSLOG_ERR("Failed to load BPF object: %d", err);
+            goto cleanup;
+        }
+
+        // Прикрепляем LSM программы (они будут работать, но без правил)
+        bpf_object__for_each_program(prog, g_bpf_obj) {
+            const char *name = bpf_program__name(prog);
+            if (strncmp(name, "block_", 6) != 0) continue;
+
+            struct bpf_link *link = bpf_program__attach_lsm(prog);
+            if (link) {
+                SYSLOG_INFO("Attached: %s (waiting for config)", name);
             } else {
-                DEBUG_PRINT("Still waiting for valid config...");
+                SYSLOG_ERR("Failed to attach: %s", name);
             }
+        }
 
-            // Ждём 5 секунд перед следующей проверкой
+        // Устанавливаем уровень логирования
+        map = bpf_object__find_map_by_name(g_bpf_obj, "log_level_map");
+        if (map) {
+            int fd = bpf_map__fd(map);
+            if (fd >= 0) {
+                __u32 key = 0;
+                __u32 log_level_val = requested_log_level;
+                bpf_map_update_elem(fd, &key, &log_level_val, BPF_ANY);
+            }
+        }
+
+        SYSLOG_INFO("eBPF LSM programs attached (waiting for valid config)");
+
+        waiting_for_config = 1;
+
+        // Цикл ожидания валидного конфига
+        while (1) {
             sleep(CHECK_INTERVAL);
+
+            if (config_changed()) {
+                SYSLOG_INFO("Config changed! Checking...");
+
+                memset(entries, 0, sizeof(entries));
+                memset(templates, 0, sizeof(templates));
+                entry_count = 0;
+                template_count = 0;
+                config_enabled = 0;
+                config_mtime = 0;
+
+                parse_config();
+
+                if (config_enabled && entry_count > 0) {
+                    SYSLOG_INFO("Valid config found! Loading entries...");
+                    waiting_for_config = 0;
+
+                    err = reload_all_entries(g_bpf_obj);
+                    if (err) {
+                        SYSLOG_ERR("Failed to load entries: %d", err);
+                    } else {
+                        config_valid = 1;
+                        SYSLOG_INFO("Config loaded successfully!");
+                    }
+                    break;
+                } else {
+                    if (!config_enabled) {
+                        SYSLOG_INFO("Config: still disabled");
+                    } else {
+                        SYSLOG_INFO("No valid protect entries yet, waiting...");
+                    }
+                }
+            }
         }
     }
 
     // ============================================================
     // ОСНОВНОЙ ЦИКЛ (КОНФИГ ВАЛИДЕН)
     // ============================================================
-    time_t last_folder_check = time(NULL);
+    if (!waiting_for_config) {
+        // Если BPF объект ещё не открыт
+        if (!g_bpf_obj) {
+            g_bpf_obj = bpf_object__open_file(bpf_file, NULL);
+            if (libbpf_get_error(g_bpf_obj)) {
+                SYSLOG_ERR("Failed to open BPF object %s: %s", bpf_file, strerror(-libbpf_get_error(g_bpf_obj)));
+                goto cleanup;
+            }
 
-    while (1) {
-        sleep(CHECK_INTERVAL);
-        time_t now = time(NULL);
+            err = bpf_object__load(g_bpf_obj);
+            if (err) {
+                SYSLOG_ERR("Failed to load BPF object: %d", err);
+                goto cleanup;
+            }
 
-        // === Проверка изменения конфига ===
-        if (config_changed()) {
-            SYSLOG_INFO("Config changed! Reloading...");
+            err = reload_all_entries(g_bpf_obj);
+            if (err) {
+                goto cleanup;
+            }
 
-            __u64 old_inodes[MAX_PATHS];
-            int old_inodes_count = 0;
-            for (int i = 0; i < entry_count; i++) {
-                if (entries[i].inode != 0 && entries[i].is_active) {
-                    old_inodes[old_inodes_count++] = entries[i].inode;
+            // Прикрепляем LSM программы
+            bpf_object__for_each_program(prog, g_bpf_obj) {
+                const char *name = bpf_program__name(prog);
+                if (strncmp(name, "block_", 6) != 0) continue;
+
+                struct bpf_link *link = bpf_program__attach_lsm(prog);
+                if (link) {
+                    SYSLOG_INFO("Attached: %s", name);
+                } else {
+                    SYSLOG_ERR("Failed to attach: %s", name);
                 }
             }
-
-            memset(entries, 0, sizeof(entries));
-            memset(templates, 0, sizeof(templates));
-            entry_count = 0;
-            template_count = 0;
-            config_enabled = 0;
-            config_mtime = 0;
-
-            parse_config();
-
-            if (!config_enabled) {
-                SYSLOG_INFO("Config: module disabled, waiting for enable...");
-                // Ждём пока конфиг не включится
-                while (1) {
-                    sleep(CHECK_INTERVAL);
-                    if (config_changed()) {
-                        SYSLOG_INFO("Config changed, rechecking...");
-                        break;
-                    }
-                }
-                continue;
-            }
-
-            if (entry_count == 0 && template_count == 0) {
-                SYSLOG_WARN("No entries in config, waiting...");
-                continue;
-            }
-
-            for (int i = 0; i < old_inodes_count; i++) {
-                if (old_inodes[i] != 0) {
-                    int found = 0;
-                    for (int j = 0; j < entry_count; j++) {
-                        if (entries[j].inode == old_inodes[i]) {
-                            found = 1;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        SYSLOG_INFO("Removing old inode: %lu", (unsigned long)old_inodes[i]);
-                        remove_entry_from_bpf(g_bpf_obj, old_inodes[i]);
-                    }
-                }
-            }
-
-            reload_all_entries(g_bpf_obj);
-            last_folder_check = time(NULL);
         }
 
-        // === Проверка новых папок ===
-        if (now - last_folder_check >= RETRY_INTERVAL) {
-            DEBUG_PRINT("checking for new folders...");
-
-            int found_new = 0;
-            for (int i = 0; i < entry_count; i++) {
-                if (entries[i].path[0] == '\0') continue;
-                if (entries[i].is_active && entries[i].inode != 0) continue;
-
-                __u64 current_inode = get_inode_from_path(entries[i].path);
-                if (current_inode == 0) {
-                    DEBUG_PRINT("  %s - still not exists", entries[i].path);
-                    continue;
-                }
-
-                entries[i].inode = current_inode;
-                entries[i].is_active = 1;
-                entries[i].last_check = time(NULL);
-
-                SYSLOG_INFO("New folder found: %s (inode: %lu)",
-                            entries[i].path, (unsigned long)current_inode);
-
-                if (load_entry_to_bpf(g_bpf_obj, &entries[i], i) == 0) {
-                    found_new = 1;
-                }
+        // Устанавливаем уровень логирования
+        map = bpf_object__find_map_by_name(g_bpf_obj, "log_level_map");
+        if (map) {
+            int fd = bpf_map__fd(map);
+            if (fd >= 0) {
+                __u32 key = 0;
+                __u32 log_level_val = requested_log_level;
+                bpf_map_update_elem(fd, &key, &log_level_val, BPF_ANY);
             }
-
-            int found_recreated = 0;
-            for (int i = 0; i < entry_count; i++) {
-                if (entries[i].path[0] == '\0') continue;
-                if (!entries[i].is_active || entries[i].inode == 0) continue;
-
-                __u64 current_inode = get_inode_from_path(entries[i].path);
-                if (current_inode == 0) {
-                    SYSLOG_INFO("Folder removed from filesystem: %s", entries[i].path);
-                    remove_entry_from_bpf(g_bpf_obj, entries[i].inode);
-                    entries[i].inode = 0;
-                    entries[i].is_active = 0;
-                    found_recreated = 1;
-                } else if (entries[i].inode != current_inode) {
-                    SYSLOG_INFO("Folder recreated: %s (old inode: %lu, new inode: %lu)",
-                                entries[i].path, (unsigned long)entries[i].inode, (unsigned long)current_inode);
-                    remove_entry_from_bpf(g_bpf_obj, entries[i].inode);
-                    entries[i].inode = current_inode;
-                    entries[i].is_active = 1;
-                    load_entry_to_bpf(g_bpf_obj, &entries[i], i);
-                    found_recreated = 1;
-                }
-            }
-
-            int found_from_templates = scan_templates_and_load(g_bpf_obj);
-
-            if (found_new || found_recreated || found_from_templates) {
-                reload_all_entries(g_bpf_obj);
-            }
-
-            last_folder_check = now;
         }
-    }
 
-    cleanup:
-    if (g_bpf_obj) {
-        bpf_object__close(g_bpf_obj);
-    }
-    SYSLOG_INFO("APP DATA SEC LOADER EXITING");
-    closelog();
-    printf("Exit\n");
-    return err;
-}
+        SYSLOG_INFO("eBPF LSM programs attached. %d entries loaded, %d templates",
+                    entry_count, template_count
