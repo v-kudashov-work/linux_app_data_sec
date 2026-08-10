@@ -1,4 +1,4 @@
-// app_data_sec.bpf.c
+// app_data_sec.bpf.c - С ИСПОЛЬЗОВАНИЕМ bpf_probe_read_kernel_str
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -17,33 +17,33 @@
 
 // СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
 struct protected_folder_config {
-    __u64 folder_inode;          // inode защищенной папки
-    __u32 allowed_program_count; // количество разрешенных программ
-    __u32 script_count;          // количество разрешенных скриптов
+    __u64 folder_inode;
+    __u32 allowed_program_count;
+    __u32 script_count;
 };
 
 // Карта: inode папки -> конфигурация папки
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PROTECTED_PATHS);
-    __type(key, __u64);                      // inode папки
-    __type(value, struct protected_folder_config); // конфигурация
+    __type(key, __u64);
+    __type(value, struct protected_folder_config);
 } folder_config_map SEC(".maps");
 
 // Карта: inode папки + индекс -> inode разрешенной программы
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PROTECTED_PATHS * MAX_ALLOWED_PROGRAMS);
-    __type(key, __u64);   // (folder_inode << 32) | index
-    __type(value, __u64); // inode программы
+    __type(key, __u64);
+    __type(value, __u64);
 } folder_allowed_programs_map SEC(".maps");
 
 // Карта: inode папки + индекс скрипта -> путь к скрипту
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PROTECTED_PATHS * MAX_SCRIPTS_PER_FOLDER);
-    __type(key, __u64);   // (folder_inode << 32) | script_index
-    __type(value, char[MAX_PATH_LEN]); // путь к скрипту
+    __type(key, __u64);
+    __type(value, char[MAX_PATH_LEN]);
 } folder_scripts_map SEC(".maps");
 
 // Карта для контроля включения проверки скриптов (глобально)
@@ -64,11 +64,13 @@ struct {
 
 // ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
-// Получение имени dentry
+// Получение имени dentry (ИСПРАВЛЕНА - использует bpf_probe_read_kernel_str)
 static __always_inline void get_dentry_name(struct dentry *dentry, char *name, int size)
 {
-    if (!dentry) {
-        name[0] = '\0';
+    if (!dentry || !name || size <= 0) {
+        if (name && size > 0) {
+            name[0] = '\0';
+        }
         return;
     }
 
@@ -80,30 +82,29 @@ static __always_inline void get_dentry_name(struct dentry *dentry, char *name, i
         return;
     }
 
-    unsigned long len = 0;
-    bpf_probe_read_kernel(&len, sizeof(len), &dentry->d_name.len);
+    // bpf_probe_read_kernel_str безопасен для верификатора
+    // и автоматически добавляет нуль-терминатор
+    long ret = bpf_probe_read_kernel_str(name, size, name_ptr);
 
-    if (len >= size) {
-        len = size - 1;
+    if (ret <= 0) {
+        name[0] = '\0';
     }
-
-    if (len > 0) {
-        bpf_probe_read_kernel(name, len, name_ptr);
-    }
-    name[len] = '\0';
 }
 
 // Получение имени родительской директории
 static __always_inline void get_parent_name(struct dentry *dentry, char *name, int size)
 {
-    name[0] = '\0';
-    if (!dentry) {
+    if (!dentry || !name || size <= 0) {
+        if (name && size > 0) {
+            name[0] = '\0';
+        }
         return;
     }
 
     struct dentry *parent = NULL;
     bpf_probe_read_kernel(&parent, sizeof(parent), &dentry->d_parent);
     if (!parent) {
+        name[0] = '\0';
         return;
     }
 
@@ -159,15 +160,14 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
         return 0;
     }
 
-    // Получаем конфигурацию папки
     struct protected_folder_config *config = bpf_map_lookup_elem(&folder_config_map, &folder_inode);
     if (!config) {
         return 0;
     }
 
-    // Проверяем все уровни процесса (сам процесс + родители)
     struct task_struct *current_task = task;
 
+    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH; depth++) {
         if (!current_task) {
             break;
@@ -179,9 +179,12 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
             continue;
         }
 
-        // Проверяем, есть ли этот inode в списке разрешенных для папки
         int found = 0;
-        for (int i = 0; i < config->allowed_program_count && i < MAX_ALLOWED_PROGRAMS; i++) {
+        #pragma unroll
+        for (int i = 0; i < MAX_ALLOWED_PROGRAMS; i++) {
+            if (i >= config->allowed_program_count) {
+                break;
+            }
             __u64 key = (folder_inode << 32) | i;
             __u64 *allowed_inode = bpf_map_lookup_elem(&folder_allowed_programs_map, &key);
             if (allowed_inode && *allowed_inode == exe_inode) {
@@ -200,25 +203,32 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
     return 0;
 }
 
-// Проверка скрипта в командной строке для конкретной папки
-static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u64 folder_inode)
+// Проверка скрипта в командной строке (ИСПРАВЛЕНА)
+static __always_inline int is_script_path_in_cmdline(const char *cmdline, const char *script_path)
 {
-    if (!cmdline || cmdline[0] == '\0' || folder_inode == 0) {
+    if (!cmdline || !script_path) {
         return 0;
     }
 
-    // Получаем конфигурацию папки
-    struct protected_folder_config *config = bpf_map_lookup_elem(&folder_config_map, &folder_inode);
-    if (!config || config->script_count == 0) {
+    char cmdline_copy[MAX_PATH_LEN] = {};
+    char script_copy[MAX_PATH_LEN] = {};
+
+    // Безопасно копируем строки в локальные буферы
+    long ret1 = bpf_probe_read_kernel_str(cmdline_copy, sizeof(cmdline_copy), cmdline);
+    long ret2 = bpf_probe_read_kernel_str(script_copy, sizeof(script_copy), script_path);
+
+    if (ret1 <= 0 || ret2 <= 0) {
         return 0;
     }
 
-    // Находим начало пути к скрипту (после пробела)
+    // Находим начало пути к скрипту (первый пробел после /bin/bash)
     int start = 0;
     int found_space = 0;
 
-    for (int i = 0; i < MAX_PATH_LEN - 1 && cmdline[i] != '\0'; i++) {
-        if (cmdline[i] == ' ') {
+    #pragma unroll
+    for (int i = 0; i < MAX_PATH_LEN - 1; i++) {
+        if (cmdline_copy[i] == '\0') break;
+        if (cmdline_copy[i] == ' ') {
             start = i + 1;
             found_space = 1;
             break;
@@ -229,30 +239,99 @@ static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u
         return 0;
     }
 
-    // Проверяем все скрипты для этой папки
-    for (int i = 0; i < config->script_count && i < MAX_SCRIPTS_PER_FOLDER; i++) {
+    // Сравниваем строки
+    #pragma unroll
+    for (int i = 0; i < MAX_PATH_LEN - 1; i++) {
+        if (script_copy[i] == '\0') {
+            if (cmdline_copy[start + i] == '\0' || cmdline_copy[start + i] == ' ') {
+                return 1;
+            }
+            return 0;
+        }
+        if (cmdline_copy[start + i] != script_copy[i]) {
+            return 0;
+        }
+        if (cmdline_copy[start + i] == '\0') {
+            return 0;
+        }
+    }
+
+    return 0;
+}
+
+// Проверка скрипта для конкретной папки (ИСПРАВЛЕНА)
+static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u64 folder_inode)
+{
+    if (!cmdline || folder_inode == 0) {
+        return 0;
+    }
+
+    struct protected_folder_config *config = bpf_map_lookup_elem(&folder_config_map, &folder_inode);
+    if (!config || config->script_count == 0) {
+        return 0;
+    }
+
+    //TODO может быть упростить и не копировать
+    char cmdline_copy[MAX_PATH_LEN] = {};
+    long ret = bpf_probe_read_kernel_str(cmdline_copy, sizeof(cmdline_copy), cmdline);
+    if (ret <= 0) {
+        return 0;
+    }
+
+    // Находим начало пути к скрипту (после пробела)
+    int start = 0;
+    int found_space = 0;
+
+    #pragma unroll
+    for (int i = 0; i < MAX_PATH_LEN - 1; i++) {
+        if (cmdline_copy[i] == '\0') break;
+        if (cmdline_copy[i] == ' ') {
+            start = i + 1;
+            found_space = 1;
+            break;
+        }
+    }
+
+    if (!found_space) {
+        return 0;
+    }
+
+    #pragma unroll
+    for (int i = 0; i < MAX_SCRIPTS_PER_FOLDER; i++) {
+        if (i >= config->script_count) {
+            break;
+        }
+
         __u64 key = (folder_inode << 32) | i;
         char *script_path = bpf_map_lookup_elem(&folder_scripts_map, &key);
         if (!script_path) {
             continue;
         }
 
-        // Сравниваем script_path с cmdline начиная с позиции start
+        //TODO может быть упростить и не копировать
+        
+        char script_copy[MAX_PATH_LEN] = {};
+        long ret2 = bpf_probe_read_kernel_str(script_copy, sizeof(script_copy), script_path);
+        if (ret2 <= 0) {
+            continue;
+        }
+
         int match = 1;
+        #pragma unroll
         for (int j = 0; j < MAX_PATH_LEN - 1; j++) {
-            if (script_path[j] == '\0') {
-                if (cmdline[start + j] == '\0' || cmdline[start + j] == ' ') {
+            if (script_copy[j] == '\0') {
+                if (cmdline_copy[start + j] == '\0' || cmdline_copy[start + j] == ' ') {
                     match = 1;
                 } else {
                     match = 0;
                 }
                 break;
             }
-            if (cmdline[start + j] != script_path[j]) {
+            if (cmdline_copy[start + j] != script_copy[j]) {
                 match = 0;
                 break;
             }
-            if (cmdline[start + j] == '\0') {
+            if (cmdline_copy[start + j] == '\0') {
                 match = 0;
                 break;
             }
@@ -266,7 +345,7 @@ static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u
     return 0;
 }
 
-// Проверка дерева процессов для конкретной папки (учитывая скрипты)
+// Проверка дерева процессов для конкретной папки
 static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode)
 {
     if (folder_inode == 0) {
@@ -281,27 +360,35 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
     char comm[16] = {};
     bpf_get_current_comm(&comm, sizeof(comm));
 
-    // Проверяем, включена ли проверка скриптов
     __u32 key = 0;
     __u32 *scripts_enabled = bpf_map_lookup_elem(&scripts_enabled_map, &key);
     int check_scripts = (scripts_enabled && *scripts_enabled == 1);
 
-    // Определяем, является ли текущий процесс шеллом
-    int is_shell = (comm[0] == 'b' && comm[1] == 'a' && comm[2] == 's' && comm[3] == 'h');
+    int is_shell = 0;
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        if (comm[i] == '\0') break;
+        if (i == 0 && comm[i] != 'b') break;
+        if (i == 1 && comm[i] != 'a') break;
+        if (i == 2 && comm[i] != 's') break;
+        if (i == 3 && comm[i] == 'h') {
+            is_shell = 1;
+            break;
+        }
+    }
 
     struct task_struct *task = current_task;
 
+    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH; depth++) {
         if (!task) {
             break;
         }
 
-        // Проверка по inode программы
         if (is_allowed_for_folder(task, folder_inode)) {
             return 1;
         }
 
-        // Проверка скриптов (только если это shell и скрипты включены)
         if (check_scripts && is_shell) {
             struct mm_struct *mm = NULL;
             bpf_probe_read_kernel(&mm, sizeof(mm), &task->mm);
@@ -325,7 +412,7 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
     return 0;
 }
 
-// Проверка, является ли inode защищенным (возвращает inode защищенной папки)
+// Проверка, является ли inode защищенным
 static __always_inline __u64 get_protected_folder_inode(struct dentry *dentry)
 {
     if (!dentry) {
@@ -334,6 +421,7 @@ static __always_inline __u64 get_protected_folder_inode(struct dentry *dentry)
 
     struct dentry *current = dentry;
 
+    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH; depth++) {
         if (!current) {
             break;
@@ -346,7 +434,6 @@ static __always_inline __u64 get_protected_folder_inode(struct dentry *dentry)
             __u64 inode_num = 0;
             bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
 
-            // Проверяем, есть ли этот inode в карте конфигураций
             struct protected_folder_config *config = bpf_map_lookup_elem(&folder_config_map, &inode_num);
             if (config) {
                 return inode_num;
@@ -375,7 +462,7 @@ static __always_inline int get_log_level(void)
     return *level;
 }
 
-// ОСНОВНАЯ ФУНКЦИЯ ПРОВЕРКИ ДОСТУПА (ОПТИМИЗИРОВАННАЯ)
+// ОСНОВНАЯ ФУНКЦИЯ ПРОВЕРКИ ДОСТУПА
 static __always_inline int check_access(struct dentry *dentry, const char *operation, int block_self)
 {
     if (!dentry) {
@@ -384,7 +471,6 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
 
     int log_level = get_log_level();
 
-    // 1. САМАЯ ПЕРВАЯ ПРОВЕРКА: root всегда разрешен
     __u64 uid = bpf_get_current_uid_gid() & 0xFFFFFFFFULL;
     if (uid == 0) {
         if (log_level >= 2) {
@@ -400,12 +486,10 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     char comm[16] = {};
     bpf_get_current_comm(&comm, sizeof(comm));
 
-    // 2. ПРОВЕРЯЕМ: является ли путь защищенным
     __u64 folder_inode = get_protected_folder_inode(dentry);
     int is_protected = (folder_inode != 0);
 
     if (!is_protected) {
-        // Путь не защищен - разрешаем доступ
         if (log_level >= 2) {
             char name[MAX_NAME_LEN] = {};
             get_dentry_name(dentry, name, MAX_NAME_LEN);
@@ -415,10 +499,8 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         return 0;
     }
 
-    // 3. ПУТЬ ЗАЩИЩЕН - проверяем разрешенные процессы для ЭТОЙ папки
     int allowed = is_allowed_process_tree_for_folder(folder_inode);
 
-    // 4. Если процесс разрешен - доступ разрешен всегда
     if (allowed) {
         if (log_level >= 2) {
             char name[MAX_NAME_LEN] = {};
@@ -429,17 +511,13 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         return 0;
     }
 
-    // 5. Процесс НЕ разрешен - применяем политику block_self
     int blocked = 0;
     const char *reason = "";
 
     if (block_self == 1) {
-        // block_self=1: блокируем ВСЁ (и саму папку, и содержимое)
         blocked = 1;
         reason = "block_all";
     } else {
-        // block_self=0: блокируем только содержимое, разрешаем доступ к самой папке
-        // Определяем, является ли запрашиваемый путь САМОЙ защищенной папкой
         __u64 current_inode = 0;
         struct inode *inode = NULL;
         bpf_probe_read_kernel(&inode, sizeof(inode), &dentry->d_inode);
@@ -458,7 +536,6 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         }
     }
 
-    // Логирование и возврат результата
     if (blocked) {
         if (log_level >= 1) {
             char name[MAX_NAME_LEN] = {};
