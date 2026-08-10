@@ -1,4 +1,4 @@
-// app_data_sec_loader.c
+// app_data_sec_loader.c (НОВАЯ ВЕРСИЯ ДЛЯ АРХИТЕКТУРЫ С FOLDER_CONFIG_MAP)
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -18,12 +18,14 @@
 
 #define CONFIG_PATH "/etc/app_data_sec.conf"
 #define MAX_LINE_LEN 1024
-#define MAX_PATHS 5000
+#define MAX_PATHS 500
 #define MAX_ALLOWED 10
+#define MAX_SCRIPTS_PER_FOLDER 3
 #define MAX_UNIQUE_SCRIPTS 100
 #define CHECK_INTERVAL 5
 #define RETRY_INTERVAL 30
 #define MAX_PATH_LEN 64
+#define MAX_DEPTH 5
 
 // ============================================================================
 // ОТЛАДКА
@@ -66,18 +68,26 @@ static void log_to_syslog(int priority, const char *format, ...) {
 #define SYSLOG_WARN(fmt, ...) log_to_syslog(LOG_WARNING, "[WARNING] " fmt, ##__VA_ARGS__)
 #define SYSLOG_INFO(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__)
 
+// ============================================================================
+// СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
+// ============================================================================
+
+struct protected_folder_config {
+    __u64 folder_inode;
+    __u32 allowed_program_count;
+    __u32 script_count;
+};
+
 struct protect_entry {
     char path[PATH_MAX];
     __u64 inode;
     __u64 allowed_inodes[MAX_ALLOWED];
     char allowed_paths[MAX_ALLOWED][PATH_MAX];
     int allowed_count;
-    int is_expanded;
     int is_active;
     time_t last_check;
 };
 
-// Структура для хранения шаблона с ~
 struct protect_template {
     char pattern[PATH_MAX];
     char subpath[PATH_MAX];
@@ -108,7 +118,7 @@ static void safe_strcpy(char *dest, const char *src, size_t size) {
 }
 
 // ============================================================================
-// ФУНКЦИИ РАБОТЫ С КОНФИГУРАЦИЕЙ
+// ФУНКЦИИ РАБОТЫ С ФАЙЛОВОЙ СИСТЕМОЙ
 // ============================================================================
 
 static __u64 get_inode_from_path(const char *path) {
@@ -118,14 +128,22 @@ static __u64 get_inode_from_path(const char *path) {
     return st.st_ino;
 }
 
-// Проверка, существует ли путь
 static int path_exists(const char *path) {
     if (!path) return 0;
     struct stat st;
     return (stat(path, &st) == 0);
 }
 
-// Сканирование всех домашних директорий и поиск папок по шаблону
+static int is_script_file(const char *path) {
+    if (!path) return 0;
+    int len = strlen(path);
+    return (len > 3 && path[len-3] == '.' && path[len-2] == 's' && path[len-1] == 'h');
+}
+
+// ============================================================================
+// СКАНИРОВАНИЕ ДОМАШНИХ ДИРЕКТОРИЙ
+// ============================================================================
+
 static int scan_home_for_template(const char *subpath, char **found_paths, int max_paths) {
     struct passwd *pw;
     int idx = 0;
@@ -136,29 +154,17 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 
     setpwent();
     while ((pw = getpwent()) != NULL && idx < max_paths) {
-        if (!pw->pw_dir || pw->pw_dir[0] != '/') {
-            continue;
-        }
-
-        if (strncmp(pw->pw_dir, "/home/", 6) != 0) {
-            continue;
-        }
-
-        if (pw->pw_uid < 1000) {
-            continue;
-        }
+        if (!pw->pw_dir || pw->pw_dir[0] != '/') continue;
+        if (strncmp(pw->pw_dir, "/home/", 6) != 0) continue;
+        if (pw->pw_uid < 1000) continue;
 
         char expanded[PATH_MAX];
         int ret = snprintf(expanded, sizeof(expanded), "%s%s", pw->pw_dir, subpath);
-        if (ret < 0 || ret >= (int)sizeof(expanded)) {
-            continue;
-        }
+        if (ret < 0 || ret >= (int)sizeof(expanded)) continue;
 
         if (path_exists(expanded)) {
             found_paths[idx] = strdup(expanded);
-            if (found_paths[idx]) {
-                idx++;
-            }
+            if (found_paths[idx]) idx++;
         }
     }
     endpwent();
@@ -167,30 +173,11 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
     if (dir) {
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL && idx < max_paths) {
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-                continue;
-            }
-
-            if (entry->d_name[0] == '.') {
-                continue;
-            }
-
-            char user_home[PATH_MAX];
-            int ret = snprintf(user_home, sizeof(user_home), "/home/%s", entry->d_name);
-            if (ret < 0 || ret >= (int)sizeof(user_home)) {
-                continue;
-            }
-
-            struct stat st;
-            if (stat(user_home, &st) != 0 || !S_ISDIR(st.st_mode)) {
-                continue;
-            }
+            if (entry->d_name[0] == '.') continue;
 
             char expanded[PATH_MAX];
-            ret = snprintf(expanded, sizeof(expanded), "/home/%s%s", entry->d_name, subpath);
-            if (ret < 0 || ret >= (int)sizeof(expanded)) {
-                continue;
-            }
+            int ret = snprintf(expanded, sizeof(expanded), "/home/%s%s", entry->d_name, subpath);
+            if (ret < 0 || ret >= (int)sizeof(expanded)) continue;
 
             int already_added = 0;
             for (int i = 0; i < idx; i++) {
@@ -202,9 +189,7 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 
             if (!already_added && path_exists(expanded)) {
                 found_paths[idx] = strdup(expanded);
-                if (found_paths[idx]) {
-                    idx++;
-                }
+                if (found_paths[idx]) idx++;
             }
         }
         closedir(dir);
@@ -214,7 +199,7 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 }
 
 // ============================================================================
-// ПАРСИНГ КОНФИГУРАЦИИ
+// ПАРСИНГ КОНФИГУРАЦИИ (НОВАЯ ВЕРСИЯ)
 // ============================================================================
 
 static int parse_config(void) {
@@ -226,8 +211,6 @@ static int parse_config(void) {
         return -1;
     }
 
-    DEBUG_PRINT("parse_config: file opened");
-
     char line[MAX_LINE_LEN];
     int line_num = 0;
     int new_entry_count = 0;
@@ -236,10 +219,6 @@ static int parse_config(void) {
 
     memset(entries, 0, sizeof(entries));
     memset(templates, 0, sizeof(templates));
-    entry_count = 0;
-    template_count = 0;
-
-    DEBUG_PRINT("parse_config: reading lines");
 
     while (fgets(line, sizeof(line), fp)) {
         line_num++;
@@ -272,8 +251,6 @@ static int parse_config(void) {
         }
 
         if (strncmp(start, "protect", 7) == 0) {
-            DEBUG_PRINT("parse_config: found protect line %d", line_num);
-
             char *ptr = start + 7;
             while (*ptr == ' ' || *ptr == '\t') ptr++;
 
@@ -290,8 +267,6 @@ static int parse_config(void) {
             if (path_len >= sizeof(raw_path)) path_len = sizeof(raw_path) - 1;
             memcpy(raw_path, ptr, path_len);
             raw_path[path_len] = '\0';
-
-            DEBUG_PRINT("parse_config: raw_path = %s", raw_path);
 
             __u64 allowed_inodes[MAX_ALLOWED];
             char allowed_paths[MAX_ALLOWED][PATH_MAX];
@@ -367,23 +342,6 @@ static int parse_config(void) {
 
                     if (entry->inode != 0) {
                         SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
-                        if (entry->allowed_count > 0) {
-                            char prog_list[2048] = "";
-                            for (int j = 0; j < entry->allowed_count && j < MAX_ALLOWED; j++) {
-                                char temp[512];
-                                if (j == 0) {
-                                    snprintf(temp, sizeof(temp), "%s (inode: %lu)",
-                                             entry->allowed_paths[j], (unsigned long)entry->allowed_inodes[j]);
-                                } else {
-                                    snprintf(temp, sizeof(temp), ", %s (inode: %lu)",
-                                             entry->allowed_paths[j], (unsigned long)entry->allowed_inodes[j]);
-                                }
-                                strncat(prog_list, temp, sizeof(prog_list) - strlen(prog_list) - 1);
-                            }
-                            SYSLOG_INFO("  Allowed programs: %s", prog_list);
-                        } else {
-                            SYSLOG_INFO("  Allowed programs: none (only root)");
-                        }
                     } else {
                         SYSLOG_WARN("Config: protect %s (NOT FOUND YET, will retry)", entry->path);
                     }
@@ -408,23 +366,6 @@ static int parse_config(void) {
 
                 if (entry->inode != 0) {
                     SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
-                    if (entry->allowed_count > 0) {
-                        char prog_list[2048] = "";
-                        for (int j = 0; j < entry->allowed_count && j < MAX_ALLOWED; j++) {
-                            char temp[512];
-                            if (j == 0) {
-                                snprintf(temp, sizeof(temp), "%s (inode: %lu)",
-                                         entry->allowed_paths[j], (unsigned long)entry->allowed_inodes[j]);
-                            } else {
-                                snprintf(temp, sizeof(temp), ", %s (inode: %lu)",
-                                         entry->allowed_paths[j], (unsigned long)entry->allowed_inodes[j]);
-                            }
-                            strncat(prog_list, temp, sizeof(prog_list) - strlen(prog_list) - 1);
-                        }
-                        SYSLOG_INFO("  Allowed programs: %s", prog_list);
-                    } else {
-                        SYSLOG_INFO("  Allowed programs: none (only root)");
-                    }
                 } else {
                     SYSLOG_WARN("Config: protect %s (NOT FOUND YET, will retry)", entry->path);
                 }
@@ -446,18 +387,16 @@ static int parse_config(void) {
     }
 
     SYSLOG_INFO("Config: loaded %d entries, %d templates", entry_count, template_count);
-    DEBUG_PRINT("parse_config: done, entry_count = %d, template_count = %d", entry_count, template_count);
     return 0;
 }
 
 // ============================================================================
-// ЗАГРУЗКА В BPF
+// ЗАГРУЗКА В BPF (НОВАЯ АРХИТЕКТУРА)
 // ============================================================================
 
 static int load_entries_to_bpf(struct bpf_object *obj) {
     struct bpf_map *map;
     int err;
-    __u32 key;
     int fd;
 
     if (entry_count == 0) {
@@ -465,10 +404,10 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
         return 0;
     }
 
-    // ======== Загружаем защищенные папки ========
-    map = bpf_object__find_map_by_name(obj, "target_inode_map");
+    // ======== 1. ЗАГРУЖАЕМ КОНФИГУРАЦИИ ПАПОК (folder_config_map) ========
+    map = bpf_object__find_map_by_name(obj, "folder_config_map");
     if (!map) {
-        SYSLOG_ERR("Failed to find target_inode_map");
+        SYSLOG_ERR("Failed to find folder_config_map");
         return -1;
     }
 
@@ -478,259 +417,180 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
         return fd;
     }
 
-    int loaded = 0;
-    SYSLOG_INFO("Loading %d protected folders to BPF map...", entry_count);
+    SYSLOG_INFO("Loading %d protected folders to BPF...", entry_count);
 
     for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
-        __u8 value = 1;
-        err = bpf_map_update_elem(fd, &entries[i].inode, &value, BPF_ANY);
+        if (entries[i].inode == 0) continue;
+
+        struct protected_folder_config config = {
+            .folder_inode = entries[i].inode,
+            .allowed_program_count = entries[i].allowed_count,
+            .script_count = 0
+        };
+
+        // Подсчет скриптов
+        for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
+            if (is_script_file(entries[i].allowed_paths[j])) {
+                config.script_count++;
+            }
+        }
+
+        err = bpf_map_update_elem(fd, &entries[i].inode, &config, BPF_ANY);
         if (err < 0) {
-            SYSLOG_ERR("Failed to update target_inode_map[%d]: %d (inode: %lu, path: %s)",
-                       i, err, (unsigned long)entries[i].inode, entries[i].path);
+            SYSLOG_ERR("  Failed to update folder_config_map for inode %lu: %d",
+                       (unsigned long)entries[i].inode, err);
         } else {
-            SYSLOG_INFO("  [%d] Loaded protected inode: %lu (path: %s)",
-                        i, (unsigned long)entries[i].inode, entries[i].path);
-            loaded++;
+            SYSLOG_INFO("  [%d] Loaded folder: %s (inode: %lu, programs: %d, scripts: %d)",
+                        i, entries[i].path, (unsigned long)entries[i].inode,
+                        config.allowed_program_count, config.script_count);
         }
     }
 
-    // ======== Загружаем разрешенные программы (inode) ========
-    __u64 all_allowed[MAX_ALLOWED];
-    int all_allowed_count = 0;
-    memset(all_allowed, 0, sizeof(all_allowed));
+    // ======== 2. ЗАГРУЖАЕМ РАЗРЕШЕННЫЕ ПРОГРАММЫ (folder_allowed_programs_map) ========
+    map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
+    if (!map) {
+        SYSLOG_ERR("Failed to find folder_allowed_programs_map");
+        return -1;
+    }
 
+    fd = bpf_map__fd(map);
+    if (fd < 0) {
+        SYSLOG_ERR("Failed to get map fd for folder_allowed_programs_map");
+        return fd;
+    }
+
+    int total_programs = 0;
     for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+        if (entries[i].inode == 0) continue;
+
         for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
-            __u64 inode = entries[i].allowed_inodes[j];
+            // Пропускаем скрипты (они идут в другую карту)
+            if (is_script_file(entries[i].allowed_paths[j])) continue;
 
-            int already_added = 0;
-            for (int k = 0; k < all_allowed_count; k++) {
-                if (all_allowed[k] == inode) {
-                    already_added = 1;
-                    break;
-                }
-            }
+            __u64 key = (entries[i].inode << 32) | j;
+            __u64 value = entries[i].allowed_inodes[j];
 
-            if (!already_added && all_allowed_count < MAX_ALLOWED) {
-                all_allowed[all_allowed_count] = inode;
-                all_allowed_count++;
-            }
-        }
-    }
-
-    // Загружаем inode в карту allowed_inode_map
-    map = bpf_object__find_map_by_name(obj, "allowed_inode_map");
-    if (map) {
-        fd = bpf_map__fd(map);
-        if (fd >= 0) {
-            for (int i = 0; i < all_allowed_count && i < MAX_ALLOWED; i++) {
-                key = i;
-                err = bpf_map_update_elem(fd, &key, &all_allowed[i], BPF_ANY);
-                if (err < 0) {
-                    SYSLOG_ERR("Failed to update allowed_inode_map[%d]: %d", i, err);
-                }
-            }
-        }
-    }
-
-    // Загружаем количество обычных программ
-    map = bpf_object__find_map_by_name(obj, "allowed_count_map");
-    if (map) {
-        fd = bpf_map__fd(map);
-        if (fd >= 0) {
-            __u32 count_key = 0;
-            __u32 count = all_allowed_count;
-            err = bpf_map_update_elem(fd, &count_key, &count, BPF_ANY);
+            err = bpf_map_update_elem(fd, &key, &value, BPF_ANY);
             if (err < 0) {
-                SYSLOG_ERR("Failed to update allowed_count_map: %d", err);
+                SYSLOG_ERR("  Failed to update folder_allowed_programs_map for folder %lu, prog %d: %d",
+                           (unsigned long)entries[i].inode, j, err);
+            } else {
+                SYSLOG_INFO("  [%lu] Program %d: %s (inode: %lu)",
+                            (unsigned long)entries[i].inode, j,
+                            entries[i].allowed_paths[j],
+                            (unsigned long)entries[i].allowed_inodes[j]);
+                total_programs++;
             }
         }
     }
 
-    // ======== Собираем уникальные .sh скрипты ========
-    char unique_scripts[MAX_UNIQUE_SCRIPTS][MAX_PATH_LEN];
-    int unique_count = 0;
-    memset(unique_scripts, 0, sizeof(unique_scripts));
-
-    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
-        for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
-            char *path = entries[i].allowed_paths[j];
-            int path_len = strlen(path);
-
-            if (path_len > 3 &&
-                path[path_len-3] == '.' &&
-                path[path_len-2] == 's' &&
-                path[path_len-1] == 'h') {
-
-                int already_exists = 0;
-            for (int k = 0; k < unique_count; k++) {
-                if (strcmp(unique_scripts[k], path) == 0) {
-                    already_exists = 1;
-                    break;
-                }
-            }
-
-            if (!already_exists && unique_count < MAX_UNIQUE_SCRIPTS) {
-                int start = 0;
-                if (path_len >= MAX_PATH_LEN) {
-                    start = path_len - (MAX_PATH_LEN - 1);
-                }
-                strncpy(unique_scripts[unique_count], path + start, MAX_PATH_LEN - 1);
-                unique_scripts[unique_count][MAX_PATH_LEN - 1] = '\0';
-                unique_count++;
-            }
-                }
-        }
-    }
-
-    // Загружаем уникальные скрипты в карту unique_scripts_map
-    map = bpf_object__find_map_by_name(obj, "unique_scripts_map");
-    if (map) {
+    // ======== 3. ЗАГРУЖАЕМ СКРИПТЫ (folder_scripts_map) ========
+    map = bpf_object__find_map_by_name(obj, "folder_scripts_map");
+    if (!map) {
+        SYSLOG_WARN("folder_scripts_map not found, scripts support disabled");
+    } else {
         fd = bpf_map__fd(map);
         if (fd >= 0) {
-            for (int i = 0; i < unique_count && i < MAX_UNIQUE_SCRIPTS; i++) {
-                key = i;
-                err = bpf_map_update_elem(fd, &key, unique_scripts[i], BPF_ANY);
-                if (err < 0) {
-                    SYSLOG_ERR("Failed to update unique_scripts_map[%d]: %d", i, err);
-                } else {
-                    SYSLOG_INFO("  [%d] Unique script: %s", i, unique_scripts[i]);
-                }
-            }
-        }
-    }
-
-    // ======== Загружаем индексы скриптов для каждой папки ========
-    map = bpf_object__find_map_by_name(obj, "folder_script_indices_map");
-    if (map) {
-        fd = bpf_map__fd(map);
-        if (fd < 0) {
-            SYSLOG_ERR("Failed to get fd for folder_script_indices_map");
-        } else {
-            int total_indices = 0;
-            SYSLOG_INFO("Loading script indices for each folder...");
-
+            int total_scripts = 0;
             for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
-                __u64 folder_inode = entries[i].inode;
-                if (folder_inode == 0) continue;
+                if (entries[i].inode == 0) continue;
 
                 int script_idx = 0;
-                int folder_script_count = 0;
-
                 for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
+                    if (!is_script_file(entries[i].allowed_paths[j])) continue;
+
+                    __u64 key = (entries[i].inode << 32) | script_idx;
                     char *path = entries[i].allowed_paths[j];
-                    int path_len = strlen(path);
 
-                    if (path_len > 3 &&
-                        path[path_len-3] == '.' &&
-                        path[path_len-2] == 's' &&
-                        path[path_len-1] == 'h') {
+                    // Обрезаем путь до MAX_PATH_LEN
+                    char truncated[MAX_PATH_LEN] = {0};
+                    int len = strlen(path);
+                    int start = (len >= MAX_PATH_LEN) ? (len - MAX_PATH_LEN + 1) : 0;
+                    strncpy(truncated, path + start, MAX_PATH_LEN - 1);
 
-                        int unique_idx = -1;
-                    char *search_path = path;
-                    if (path_len >= MAX_PATH_LEN) {
-                        search_path = path + (path_len - (MAX_PATH_LEN - 1));
+                    err = bpf_map_update_elem(fd, &key, truncated, BPF_ANY);
+                    if (err < 0) {
+                        SYSLOG_ERR("  Failed to update folder_scripts_map for folder %lu, script %d: %d",
+                                   (unsigned long)entries[i].inode, script_idx, err);
+                    } else {
+                        SYSLOG_INFO("  [%lu] Script %d: %s",
+                                    (unsigned long)entries[i].inode, script_idx, truncated);
+                        script_idx++;
+                        total_scripts++;
                     }
-
-                    for (int k = 0; k < unique_count; k++) {
-                        if (strcmp(unique_scripts[k], search_path) == 0) {
-                            unique_idx = k;
-                            break;
-                        }
-                    }
-
-                    if (unique_idx >= 0) {
-                        __u64 key = (folder_inode << 8) | script_idx;
-                        __u32 value = unique_idx;
-
-                        err = bpf_map_update_elem(fd, &key, &value, BPF_ANY);
-                        if (err < 0) {
-                            SYSLOG_ERR("Failed to update folder_script_indices_map for folder %lu: %d",
-                                       (unsigned long)folder_inode, err);
-                        } else {
-                            SYSLOG_INFO("  [%lu] Script index %d -> %d (%s)",
-                                        (unsigned long)folder_inode, script_idx, unique_idx, unique_scripts[unique_idx]);
-                            folder_script_count++;
-                            total_indices++;
-                            script_idx++;
-                        }
-                    }
-                        }
-                }
-
-                if (folder_script_count > 0) {
-                    SYSLOG_INFO("  Folder %s: loaded %d script indices", entries[i].path, folder_script_count);
                 }
             }
-
-            SYSLOG_INFO("Total script indices loaded: %d", total_indices);
+            SYSLOG_INFO("Total scripts loaded: %d", total_scripts);
         }
-    } else {
-        SYSLOG_WARN("folder_script_indices_map not found, scripts support disabled");
     }
 
-    SYSLOG_INFO("Total loaded: %d protected folders, %d programs, %d unique scripts",
-                loaded, all_allowed_count, unique_count);
+    // ======== 4. НАСТРАИВАЕМ ВКЛЮЧЕНИЕ СКРИПТОВ (scripts_enabled_map) ========
+    map = bpf_object__find_map_by_name(obj, "scripts_enabled_map");
+    if (map) {
+        fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            __u32 key = 0;
+            __u32 enabled = 1; // Включаем проверку скриптов
+            err = bpf_map_update_elem(fd, &key, &enabled, BPF_ANY);
+            if (err < 0) {
+                SYSLOG_ERR("Failed to update scripts_enabled_map: %d", err);
+            }
+        }
+    }
+
+    SYSLOG_INFO("Total loaded: %d folders, %d programs", entry_count, total_programs);
     return 0;
 }
 
 // ============================================================================
-// УДАЛЕНИЕ ИЗ BPF
+// УДАЛЕНИЕ ПАПКИ ИЗ BPF
 // ============================================================================
 
-static int remove_entry_from_bpf(struct bpf_object *obj, __u64 inode) {
-    if (inode == 0) return -1;
+static int remove_folder_from_bpf(struct bpf_object *obj, __u64 folder_inode) {
+    if (folder_inode == 0) return -1;
 
-    struct bpf_map *map = bpf_object__find_map_by_name(obj, "target_inode_map");
-    if (!map) {
-        SYSLOG_ERR("Failed to find target_inode_map");
-        return -1;
+    int err;
+    struct bpf_map *map;
+
+    // Удаляем из folder_config_map
+    map = bpf_object__find_map_by_name(obj, "folder_config_map");
+    if (map) {
+        int fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            err = bpf_map_delete_elem(fd, &folder_inode);
+            if (err < 0 && err != -ENOENT) {
+                SYSLOG_ERR("Failed to remove folder_config for inode %lu: %d",
+                           (unsigned long)folder_inode, err);
+            }
+        }
     }
 
-    int fd = bpf_map__fd(map);
-    if (fd < 0) {
-        SYSLOG_ERR("Failed to get map fd");
-        return fd;
+    // Удаляем программы для этой папки
+    map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
+    if (map) {
+        int fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            for (int i = 0; i < MAX_ALLOWED; i++) {
+                __u64 key = (folder_inode << 32) | i;
+                err = bpf_map_delete_elem(fd, &key);
+                // Игнорируем ENOENT
+            }
+        }
     }
 
-    int err = bpf_map_delete_elem(fd, &inode);
-    if (err < 0 && err != -ENOENT) {
-        SYSLOG_ERR("Failed to remove inode %lu from BPF: %d", (unsigned long)inode, err);
-        return err;
+    // Удаляем скрипты для этой папки
+    map = bpf_object__find_map_by_name(obj, "folder_scripts_map");
+    if (map) {
+        int fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            for (int i = 0; i < MAX_SCRIPTS_PER_FOLDER; i++) {
+                __u64 key = (folder_inode << 32) | i;
+                err = bpf_map_delete_elem(fd, &key);
+                // Игнорируем ENOENT
+            }
+        }
     }
 
-    return 0;
-}
-
-// ============================================================================
-// ЗАГРУЗКА ОДНОЙ ЗАПИСИ В BPF
-// ============================================================================
-
-static int load_entry_to_bpf(struct bpf_object *obj, struct protect_entry *entry, int index) {
-    if (!entry || entry->inode == 0) return -1;
-
-    struct bpf_map *map = bpf_object__find_map_by_name(obj, "target_inode_map");
-    if (!map) {
-        SYSLOG_ERR("Failed to find target_inode_map");
-        return -1;
-    }
-
-    int fd = bpf_map__fd(map);
-    if (fd < 0) {
-        SYSLOG_ERR("Failed to get map fd");
-        return fd;
-    }
-
-    __u8 value = 1;
-    int err = bpf_map_update_elem(fd, &entry->inode, &value, BPF_ANY);
-    if (err < 0) {
-        SYSLOG_ERR("Failed to load entry %d (inode: %lu): %d",
-                   index, (unsigned long)entry->inode, err);
-        return err;
-    }
-
-    entry->is_active = 1;
-    SYSLOG_INFO("  [%d] Loaded: %s (inode: %lu)", index, entry->path, (unsigned long)entry->inode);
     return 0;
 }
 
@@ -739,113 +599,57 @@ static int load_entry_to_bpf(struct bpf_object *obj, struct protect_entry *entry
 // ============================================================================
 
 static int reload_all_entries(struct bpf_object *obj) {
-    struct bpf_map *map;
-    int fd;
-    int err;
-    int loaded = 0;
-    int skipped = 0;
-    int updated = 0;
-    int removed = 0;
-
     SYSLOG_INFO("Reloading all entries to BPF...");
 
-    map = bpf_object__find_map_by_name(obj, "target_inode_map");
-    if (!map) {
-        SYSLOG_ERR("Failed to find target_inode_map");
-        return -1;
-    }
+    // Очищаем старые данные
+    struct bpf_map *map;
 
-    fd = bpf_map__fd(map);
-    if (fd < 0) {
-        SYSLOG_ERR("Failed to get map fd");
-        return fd;
-    }
-
-    for (int i = 0; i < entry_count; i++) {
-        if (entries[i].path[0] == '\0') continue;
-
-        __u64 current_inode = get_inode_from_path(entries[i].path);
-
-        if (current_inode == 0) {
-            if (entries[i].inode != 0 && entries[i].is_active) {
-                SYSLOG_INFO("  [%d] Folder removed: %s (old inode: %lu)",
-                            i, entries[i].path, (unsigned long)entries[i].inode);
-                remove_entry_from_bpf(obj, entries[i].inode);
-                entries[i].inode = 0;
-                entries[i].is_active = 0;
-                removed++;
-            }
-            skipped++;
-            continue;
-        }
-
-        if (entries[i].inode == 0) {
-            entries[i].inode = current_inode;
-            SYSLOG_INFO("  [%d] New folder found: %s (inode: %lu)",
-                        i, entries[i].path, (unsigned long)current_inode);
-            updated++;
-        } else if (entries[i].inode != current_inode) {
-            SYSLOG_INFO("  [%d] Folder recreated: %s (old inode: %lu, new inode: %lu)",
-                        i, entries[i].path, (unsigned long)entries[i].inode, (unsigned long)current_inode);
-            entries[i].inode = current_inode;
-            updated++;
-        }
-
-        __u8 value = 1;
-        err = bpf_map_update_elem(fd, &entries[i].inode, &value, BPF_ANY);
-        if (err < 0) {
-            SYSLOG_ERR("Failed to update entry %d: %d", i, err);
-        } else {
-            entries[i].is_active = 1;
-            loaded++;
-        }
-    }
-
-    __u64 all_allowed[MAX_ALLOWED];
-    int all_allowed_count = 0;
-    memset(all_allowed, 0, sizeof(all_allowed));
-
-    for (int i = 0; i < entry_count; i++) {
-        for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
-            __u64 inode = entries[i].allowed_inodes[j];
-
-            int already_added = 0;
-            for (int k = 0; k < all_allowed_count; k++) {
-                if (all_allowed[k] == inode) {
-                    already_added = 1;
-                    break;
-                }
-            }
-
-            if (!already_added && all_allowed_count < MAX_ALLOWED) {
-                all_allowed[all_allowed_count++] = inode;
-            }
-        }
-    }
-
-    map = bpf_object__find_map_by_name(obj, "allowed_inode_map");
+    // Очищаем folder_config_map
+    map = bpf_object__find_map_by_name(obj, "folder_config_map");
     if (map) {
-        fd = bpf_map__fd(map);
+        int fd = bpf_map__fd(map);
         if (fd >= 0) {
-            for (int i = 0; i < all_allowed_count && i < MAX_ALLOWED; i++) {
-                __u32 key = i;
-                bpf_map_update_elem(fd, &key, &all_allowed[i], BPF_ANY);
-            }
+            // Просто перезаписываем все заново
         }
     }
 
-    map = bpf_object__find_map_by_name(obj, "allowed_count_map");
-    if (map) {
-        fd = bpf_map__fd(map);
-        if (fd >= 0) {
-            __u32 key = 0;
-            __u32 count = all_allowed_count;
-            bpf_map_update_elem(fd, &key, &count, BPF_ANY);
+    // Загружаем заново
+    return load_entries_to_bpf(obj);
+}
+
+// ============================================================================
+// ЗАГРУЗКА ОДНОЙ ЗАПИСИ
+// ============================================================================
+
+static int load_single_entry(struct bpf_object *obj, struct protect_entry *entry) {
+    if (!entry || entry->inode == 0) return -1;
+
+    struct protected_folder_config config = {
+        .folder_inode = entry->inode,
+        .allowed_program_count = entry->allowed_count,
+        .script_count = 0
+    };
+
+    for (int j = 0; j < entry->allowed_count && j < MAX_ALLOWED; j++) {
+        if (is_script_file(entry->allowed_paths[j])) {
+            config.script_count++;
         }
     }
 
-    SYSLOG_INFO("Reloaded: %d entries loaded, %d skipped, %d updated, %d removed",
-                loaded, skipped, updated, removed);
+    struct bpf_map *map = bpf_object__find_map_by_name(obj, "folder_config_map");
+    if (!map) return -1;
+
+    int fd = bpf_map__fd(map);
+    if (fd < 0) return fd;
+
+    int err = bpf_map_update_elem(fd, &entry->inode, &config, BPF_ANY);
+    if (err < 0) {
+        SYSLOG_ERR("Failed to load entry %s: %d", entry->path, err);
+        return err;
+    }
+
+    entry->is_active = 1;
+    SYSLOG_INFO("  Loaded: %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
     return 0;
 }
 
@@ -855,22 +659,12 @@ static int reload_all_entries(struct bpf_object *obj) {
 
 static int scan_templates_and_load(struct bpf_object *obj) {
     int found_new = 0;
-    int total_found = 0;
 
     for (int t = 0; t < template_count; t++) {
         if (!templates[t].enabled) continue;
 
-        DEBUG_PRINT("scanning template: ~%s", templates[t].subpath);
-
         char *found_paths[MAX_PATHS];
         int found_count = scan_home_for_template(templates[t].subpath, found_paths, MAX_PATHS);
-
-        if (found_count == 0) {
-            DEBUG_PRINT("  no folders found for template ~%s", templates[t].subpath);
-            continue;
-        }
-
-        DEBUG_PRINT("  found %d folders for template ~%s", found_count, templates[t].subpath);
 
         for (int i = 0; i < found_count; i++) {
             if (!found_paths[i]) continue;
@@ -904,18 +698,15 @@ static int scan_templates_and_load(struct bpf_object *obj) {
                 }
 
                 if (entry->inode != 0) {
-                    SYSLOG_INFO("  New folder found from template: %s (inode: %lu)",
+                    SYSLOG_INFO("  New folder from template: %s (inode: %lu)",
                                 entry->path, (unsigned long)entry->inode);
-                    if (load_entry_to_bpf(obj, entry, entry_count) == 0) {
+                    if (load_single_entry(obj, entry) == 0) {
                         found_new = 1;
                     }
-                } else {
-                    SYSLOG_WARN("  New folder found but not exists: %s", entry->path);
                 }
 
                 entry_count++;
                 free(found_paths[i]);
-                total_found++;
             } else {
                 SYSLOG_WARN("Max entries reached, cannot add %s", found_paths[i]);
                 free(found_paths[i]);
@@ -923,11 +714,7 @@ static int scan_templates_and_load(struct bpf_object *obj) {
         }
     }
 
-    if (found_new) {
-        reload_all_entries(obj);
-    }
-
-    return total_found;
+    return found_new;
 }
 
 // ============================================================================
@@ -971,34 +758,7 @@ static const char* find_bpf_object(void) {
         }
     }
 
-    FILE *fp = popen("find /usr/local /opt -name 'app_data_sec.bpf.o' 2>/dev/null | head -1", "r");
-    if (fp) {
-        char result[PATH_MAX];
-        if (fgets(result, sizeof(result), fp) != NULL) {
-            size_t len = strlen(result);
-            if (len > 0 && result[len-1] == '\n') {
-                result[len-1] = '\0';
-            }
-            if (len > 0 && stat(result, &st) == 0 && S_ISREG(st.st_mode)) {
-                strcpy(path, result);
-                pclose(fp);
-                SYSLOG_INFO("Found BPF object via find: %s", path);
-                return path;
-            }
-        }
-        pclose(fp);
-    }
-
     SYSLOG_ERR("BPF object file not found!");
-    SYSLOG_ERR("Searched paths:");
-    for (int i = 0; paths[i] != NULL; i++) {
-        SYSLOG_ERR("  - %s", paths[i]);
-    }
-    SYSLOG_ERR("Please build the BPF program first:");
-    SYSLOG_ERR("  clang -g -O2 -target bpf -D__TARGET_ARCH_x86 -I. -c app_data_sec.bpf.c -o app_data_sec.bpf.o");
-    SYSLOG_ERR("  sudo mkdir -p /usr/local/lib/app_data_sec");
-    SYSLOG_ERR("  sudo cp app_data_sec.bpf.o /usr/local/lib/app_data_sec/");
-
     return NULL;
 }
 
@@ -1019,12 +779,9 @@ int main(int argc, char **argv) {
     int err = 0;
     int log_level = 1;
     const char *bpf_file = NULL;
-    int waiting_for_config = 0;
 
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
     SYSLOG_INFO("APP DATA SEC LOADER STARTING (PID: %d)", getpid());
-
-    DEBUG_PRINT("main: start");
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--log-level") == 0) {
@@ -1053,16 +810,12 @@ int main(int argc, char **argv) {
 
     int requested_log_level = log_level;
 
-    DEBUG_PRINT("main: before memset");
-
     memset(entries, 0, sizeof(entries));
     memset(templates, 0, sizeof(templates));
     entry_count = 0;
     template_count = 0;
     config_enabled = 0;
     config_mtime = 0;
-
-    DEBUG_PRINT("main: before parse_config");
 
     bpf_file = find_bpf_object();
     if (!bpf_file) {
@@ -1077,264 +830,172 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    DEBUG_PRINT("main: after parse_config, enabled=%d, count=%d, templates=%d",
-                config_enabled, entry_count, template_count);
+    g_bpf_obj = bpf_object__open_file(bpf_file, NULL);
+    if (libbpf_get_error(g_bpf_obj)) {
+        SYSLOG_ERR("Failed to open BPF object %s: %s", bpf_file, strerror(-libbpf_get_error(g_bpf_obj)));
+        closelog();
+        return 1;
+    }
 
-    if (!config_enabled || entry_count == 0) {
-        if (!config_enabled) {
-            SYSLOG_INFO("Config: module disabled, waiting for enable...");
-        } else {
-            SYSLOG_WARN("No valid protect entries found, waiting for config changes...");
-        }
+    err = bpf_object__load(g_bpf_obj);
+    if (err) {
+        SYSLOG_ERR("Failed to load BPF object: %d", err);
+        goto cleanup;
+    }
 
-        g_bpf_obj = bpf_object__open_file(bpf_file, NULL);
-        if (libbpf_get_error(g_bpf_obj)) {
-            SYSLOG_ERR("Failed to open BPF object %s: %s", bpf_file, strerror(-libbpf_get_error(g_bpf_obj)));
-            closelog();
-            return 1;
-        }
-
-        err = bpf_object__load(g_bpf_obj);
+    // Загружаем записи в BPF
+    if (config_enabled && entry_count > 0) {
+        err = load_entries_to_bpf(g_bpf_obj);
         if (err) {
-            SYSLOG_ERR("Failed to load BPF object: %d", err);
+            SYSLOG_ERR("Failed to load entries: %d", err);
             goto cleanup;
         }
+    } else {
+        SYSLOG_INFO("No entries to load (config_enabled=%d, entry_count=%d)",
+                    config_enabled, entry_count);
+    }
 
-        bpf_object__for_each_program(prog, g_bpf_obj) {
-            const char *name = bpf_program__name(prog);
-            if (strncmp(name, "block_", 6) != 0) continue;
+    // Прикрепляем LSM-программы
+    bpf_object__for_each_program(prog, g_bpf_obj) {
+        const char *name = bpf_program__name(prog);
+        if (strncmp(name, "block_", 6) != 0) continue;
 
-            struct bpf_link *link = bpf_program__attach_lsm(prog);
-            if (link) {
-                SYSLOG_INFO("Attached: %s (waiting for config)", name);
-            } else {
-                SYSLOG_ERR("Failed to attach: %s", name);
-            }
-        }
-
-        map = bpf_object__find_map_by_name(g_bpf_obj, "log_level_map");
-        if (map) {
-            int fd = bpf_map__fd(map);
-            if (fd >= 0) {
-                __u32 key = 0;
-                __u32 log_level_val = requested_log_level;
-                bpf_map_update_elem(fd, &key, &log_level_val, BPF_ANY);
-            }
-        }
-
-        SYSLOG_INFO("eBPF LSM programs attached (waiting for valid config)");
-
-        waiting_for_config = 1;
-
-        while (1) {
-            sleep(CHECK_INTERVAL);
-
-            if (config_changed()) {
-                SYSLOG_INFO("Config changed! Checking...");
-
-                memset(entries, 0, sizeof(entries));
-                memset(templates, 0, sizeof(templates));
-                entry_count = 0;
-                template_count = 0;
-                config_enabled = 0;
-                config_mtime = 0;
-
-                parse_config();
-
-                if (config_enabled && entry_count > 0) {
-                    SYSLOG_INFO("Valid config found! Loading entries...");
-                    waiting_for_config = 0;
-
-                    err = reload_all_entries(g_bpf_obj);
-                    if (err) {
-                        SYSLOG_ERR("Failed to load entries: %d", err);
-                    } else {
-                        SYSLOG_INFO("Config loaded successfully!");
-                    }
-                    break;
-                } else {
-                    if (!config_enabled) {
-                        SYSLOG_INFO("Config: still disabled");
-                    } else {
-                        SYSLOG_INFO("No valid protect entries yet, waiting...");
-                    }
-                }
-            }
+        struct bpf_link *link = bpf_program__attach_lsm(prog);
+        if (link) {
+            SYSLOG_INFO("Attached: %s", name);
+        } else {
+            SYSLOG_ERR("Failed to attach: %s", name);
         }
     }
 
-    if (!waiting_for_config) {
-        if (!g_bpf_obj) {
-            g_bpf_obj = bpf_object__open_file(bpf_file, NULL);
-            if (libbpf_get_error(g_bpf_obj)) {
-                SYSLOG_ERR("Failed to open BPF object %s: %s", bpf_file, strerror(-libbpf_get_error(g_bpf_obj)));
-                goto cleanup;
-            }
+    // Устанавливаем уровень логирования
+    map = bpf_object__find_map_by_name(g_bpf_obj, "log_level_map");
+    if (map) {
+        int fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            __u32 key = 0;
+            __u32 log_level_val = requested_log_level;
+            bpf_map_update_elem(fd, &key, &log_level_val, BPF_ANY);
+        }
+    }
 
-            err = bpf_object__load(g_bpf_obj);
-            if (err) {
-                SYSLOG_ERR("Failed to load BPF object: %d", err);
-                goto cleanup;
-            }
+    SYSLOG_INFO("eBPF LSM programs attached. %d entries loaded, %d templates",
+                entry_count, template_count);
+    SYSLOG_INFO("Log level: %d (0=off, 1=blocked only, 2=everything)", requested_log_level);
+    SYSLOG_INFO("Auto-reload enabled: config check every %d seconds, new folders every %d seconds",
+                CHECK_INTERVAL, RETRY_INTERVAL);
+    SYSLOG_INFO("Config file: %s", CONFIG_PATH);
 
-            err = reload_all_entries(g_bpf_obj);
-            if (err) {
-                goto cleanup;
-            }
+    time_t last_folder_check = time(NULL);
 
-            bpf_object__for_each_program(prog, g_bpf_obj) {
-                const char *name = bpf_program__name(prog);
-                if (strncmp(name, "block_", 6) != 0) continue;
+    while (1) {
+        sleep(CHECK_INTERVAL);
+        time_t now = time(NULL);
 
-                struct bpf_link *link = bpf_program__attach_lsm(prog);
-                if (link) {
-                    SYSLOG_INFO("Attached: %s", name);
-                } else {
-                    SYSLOG_ERR("Failed to attach: %s", name);
+        if (config_changed()) {
+            SYSLOG_INFO("Config changed! Reloading...");
+
+            // Запоминаем старые inode для удаления
+            __u64 old_inodes[MAX_PATHS];
+            int old_count = 0;
+            for (int i = 0; i < entry_count; i++) {
+                if (entries[i].inode != 0) {
+                    old_inodes[old_count++] = entries[i].inode;
                 }
             }
-        }
 
-        map = bpf_object__find_map_by_name(g_bpf_obj, "log_level_map");
-        if (map) {
-            int fd = bpf_map__fd(map);
-            if (fd >= 0) {
-                __u32 key = 0;
-                __u32 log_level_val = requested_log_level;
-                bpf_map_update_elem(fd, &key, &log_level_val, BPF_ANY);
+            memset(entries, 0, sizeof(entries));
+            memset(templates, 0, sizeof(templates));
+            entry_count = 0;
+            template_count = 0;
+            config_enabled = 0;
+            config_mtime = 0;
+
+            if (parse_config() != 0) {
+                SYSLOG_ERR("Failed to parse config after change");
+                continue;
             }
+
+            if (!config_enabled) {
+                SYSLOG_INFO("Config: module disabled");
+                // Удаляем все старые записи
+                for (int i = 0; i < old_count; i++) {
+                    remove_folder_from_bpf(g_bpf_obj, old_inodes[i]);
+                }
+                continue;
+            }
+
+            if (entry_count == 0) {
+                SYSLOG_WARN("No entries in config, waiting...");
+                continue;
+            }
+
+            // Удаляем старые папки, которых нет в новом конфиге
+            for (int i = 0; i < old_count; i++) {
+                int found = 0;
+                for (int j = 0; j < entry_count; j++) {
+                    if (entries[j].inode == old_inodes[i]) {
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) {
+                    SYSLOG_INFO("Removing old folder: %lu", (unsigned long)old_inodes[i]);
+                    remove_folder_from_bpf(g_bpf_obj, old_inodes[i]);
+                }
+            }
+
+            reload_all_entries(g_bpf_obj);
+            last_folder_check = now;
         }
 
-        SYSLOG_INFO("eBPF LSM programs attached. %d entries loaded, %d templates",
-                    entry_count, template_count);
-        SYSLOG_INFO("Log level: %d (0=off, 1=blocked only, 2=everything)", requested_log_level);
-        SYSLOG_INFO("Auto-reload enabled: config check every %d seconds, new folders every %d seconds",
-                    CHECK_INTERVAL, RETRY_INTERVAL);
-        SYSLOG_INFO("Config file: %s", CONFIG_PATH);
+        // Проверка новых/пересозданных папок
+        if (now - last_folder_check >= RETRY_INTERVAL) {
+            int changed = 0;
 
-        time_t last_folder_check = time(NULL);
+            for (int i = 0; i < entry_count; i++) {
+                if (entries[i].path[0] == '\0') continue;
 
-        while (1) {
-            sleep(CHECK_INTERVAL);
-            time_t now = time(NULL);
+                __u64 current_inode = get_inode_from_path(entries[i].path);
 
-            if (config_changed()) {
-                SYSLOG_INFO("Config changed! Reloading...");
-
-                __u64 old_inodes[MAX_PATHS];
-                int old_inodes_count = 0;
-                for (int i = 0; i < entry_count; i++) {
+                if (current_inode == 0) {
                     if (entries[i].inode != 0 && entries[i].is_active) {
-                        old_inodes[old_inodes_count++] = entries[i].inode;
-                    }
-                }
-
-                memset(entries, 0, sizeof(entries));
-                memset(templates, 0, sizeof(templates));
-                entry_count = 0;
-                template_count = 0;
-                config_enabled = 0;
-                config_mtime = 0;
-
-                if (parse_config() != 0) {
-                    SYSLOG_ERR("Failed to parse config after change");
-                    continue;
-                }
-
-                if (!config_enabled) {
-                    SYSLOG_INFO("Config: module disabled");
-                    while (1) {
-                        sleep(CHECK_INTERVAL);
-                        if (config_changed()) {
-                            SYSLOG_INFO("Config changed, rechecking...");
-                            break;
-                        }
-                    }
-                    continue;
-                }
-
-                if (entry_count == 0) {
-                    SYSLOG_WARN("No entries in config, waiting...");
-                    continue;
-                }
-
-                for (int i = 0; i < old_inodes_count; i++) {
-                    if (old_inodes[i] != 0) {
-                        int found = 0;
-                        for (int j = 0; j < entry_count; j++) {
-                            if (entries[j].inode == old_inodes[i]) {
-                                found = 1;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            SYSLOG_INFO("Removing old inode: %lu", (unsigned long)old_inodes[i]);
-                            remove_entry_from_bpf(g_bpf_obj, old_inodes[i]);
-                        }
-                    }
-                }
-
-                reload_all_entries(g_bpf_obj);
-                last_folder_check = time(NULL);
-            }
-
-            if (now - last_folder_check >= RETRY_INTERVAL) {
-                DEBUG_PRINT("checking for new folders...");
-
-                int found_new = 0;
-                for (int i = 0; i < entry_count; i++) {
-                    if (entries[i].path[0] == '\0') continue;
-                    if (entries[i].is_active && entries[i].inode != 0) continue;
-
-                    __u64 current_inode = get_inode_from_path(entries[i].path);
-                    if (current_inode == 0) {
-                        DEBUG_PRINT("  %s - still not exists", entries[i].path);
-                        continue;
-                    }
-
-                    entries[i].inode = current_inode;
-                    entries[i].is_active = 1;
-                    entries[i].last_check = time(NULL);
-
-                    SYSLOG_INFO("New folder found: %s (inode: %lu)",
-                                entries[i].path, (unsigned long)current_inode);
-
-                    if (load_entry_to_bpf(g_bpf_obj, &entries[i], i) == 0) {
-                        found_new = 1;
-                    }
-                }
-
-                int found_recreated = 0;
-                for (int i = 0; i < entry_count; i++) {
-                    if (entries[i].path[0] == '\0') continue;
-                    if (!entries[i].is_active || entries[i].inode == 0) continue;
-
-                    __u64 current_inode = get_inode_from_path(entries[i].path);
-                    if (current_inode == 0) {
-                        SYSLOG_INFO("Folder removed from filesystem: %s", entries[i].path);
-                        remove_entry_from_bpf(g_bpf_obj, entries[i].inode);
+                        SYSLOG_INFO("Folder removed: %s", entries[i].path);
+                        remove_folder_from_bpf(g_bpf_obj, entries[i].inode);
                         entries[i].inode = 0;
                         entries[i].is_active = 0;
-                        found_recreated = 1;
-                    } else if (entries[i].inode != current_inode) {
-                        SYSLOG_INFO("Folder recreated: %s (old inode: %lu, new inode: %lu)",
-                                    entries[i].path, (unsigned long)entries[i].inode, (unsigned long)current_inode);
-                        remove_entry_from_bpf(g_bpf_obj, entries[i].inode);
-                        entries[i].inode = current_inode;
-                        entries[i].is_active = 1;
-                        load_entry_to_bpf(g_bpf_obj, &entries[i], i);
-                        found_recreated = 1;
+                        changed = 1;
                     }
+                } else if (entries[i].inode == 0) {
+                    entries[i].inode = current_inode;
+                    entries[i].is_active = 1;
+                    SYSLOG_INFO("New folder found: %s (inode: %lu)",
+                                entries[i].path, (unsigned long)current_inode);
+                    load_single_entry(g_bpf_obj, &entries[i]);
+                    changed = 1;
+                } else if (entries[i].inode != current_inode) {
+                    SYSLOG_INFO("Folder recreated: %s (old: %lu, new: %lu)",
+                                entries[i].path,
+                                (unsigned long)entries[i].inode,
+                                (unsigned long)current_inode);
+                    remove_folder_from_bpf(g_bpf_obj, entries[i].inode);
+                    entries[i].inode = current_inode;
+                    entries[i].is_active = 1;
+                    load_single_entry(g_bpf_obj, &entries[i]);
+                    changed = 1;
                 }
-
-                int found_from_templates = scan_templates_and_load(g_bpf_obj);
-
-                if (found_new || found_recreated || found_from_templates) {
-                    reload_all_entries(g_bpf_obj);
-                }
-
-                last_folder_check = now;
             }
+
+            if (scan_templates_and_load(g_bpf_obj)) {
+                changed = 1;
+            }
+
+            if (changed) {
+                SYSLOG_INFO("Changes detected, reloading all entries...");
+                reload_all_entries(g_bpf_obj);
+            }
+
+            last_folder_check = now;
         }
     }
 
@@ -1344,6 +1005,5 @@ int main(int argc, char **argv) {
     }
     SYSLOG_INFO("APP DATA SEC LOADER EXITING");
     closelog();
-    printf("Exit\n");
     return err;
 }
