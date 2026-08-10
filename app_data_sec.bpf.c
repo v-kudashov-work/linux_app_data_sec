@@ -260,87 +260,87 @@ static __always_inline int is_script_path_in_cmdline(const char *cmdline, const 
 }
 
 // Проверка скрипта для конкретной папки (ИСПРАВЛЕНА)
-static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u64 folder_inode)
-{
-    if (!cmdline || folder_inode == 0) {
-        return 0;
-    }
-
-    struct protected_folder_config *config = bpf_map_lookup_elem(&folder_config_map, &folder_inode);
-    if (!config || config->script_count == 0) {
-        return 0;
-    }
-
-    char cmdline_copy[MAX_PATH_LEN] = {};
-    long ret = bpf_probe_read_kernel_str(cmdline_copy, sizeof(cmdline_copy), cmdline);
-    if (ret <= 0) {
-        return 0;
-    }
-
-    // Находим начало пути к скрипту (после пробела)
-    int start = 0;
-    int found_space = 0;
-
-    #pragma unroll
-    for (int i = 0; i < MAX_PATH_LEN - 1; i++) {
-        if (cmdline_copy[i] == '\0') break;
-        if (cmdline_copy[i] == ' ') {
-            start = i + 1;
-            found_space = 1;
-            break;
-        }
-    }
-
-    if (!found_space) {
-        return 0;
-    }
-
-    #pragma unroll
-    for (int i = 0; i < MAX_SCRIPTS_PER_FOLDER; i++) {
-        if (i >= config->script_count) {
-            break;
-        }
-
-        __u64 key = (folder_inode << 32) | i;
-        char *script_path = bpf_map_lookup_elem(&folder_scripts_map, &key);
-        if (!script_path) {
-            continue;
-        }
-
-        char script_copy[MAX_PATH_LEN] = {};
-        long ret2 = bpf_probe_read_kernel_str(script_copy, sizeof(script_copy), script_path);
-        if (ret2 <= 0) {
-            continue;
-        }
-
-        int match = 1;
-        #pragma unroll
-        for (int j = 0; j < MAX_PATH_LEN - 1; j++) {
-            if (script_copy[j] == '\0') {
-                if (cmdline_copy[start + j] == '\0' || cmdline_copy[start + j] == ' ') {
-                    match = 1;
-                } else {
-                    match = 0;
-                }
-                break;
-            }
-            if (cmdline_copy[start + j] != script_copy[j]) {
-                match = 0;
-                break;
-            }
-            if (cmdline_copy[start + j] == '\0') {
-                match = 0;
-                break;
-            }
-        }
-
-        if (match) {
-            return 1;
-        }
-    }
-
-    return 0;
-}
+// static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u64 folder_inode)
+// {
+//     if (!cmdline || folder_inode == 0) {
+//         return 0;
+//     }
+//
+//     struct protected_folder_config *config = bpf_map_lookup_elem(&folder_config_map, &folder_inode);
+//     if (!config || config->script_count == 0) {
+//         return 0;
+//     }
+//
+//     char cmdline_copy[MAX_PATH_LEN] = {};
+//     long ret = bpf_probe_read_kernel_str(cmdline_copy, sizeof(cmdline_copy), cmdline);
+//     if (ret <= 0) {
+//         return 0;
+//     }
+//
+//     // Находим начало пути к скрипту (после пробела)
+//     int start = 0;
+//     int found_space = 0;
+//
+//     #pragma unroll
+//     for (int i = 0; i < MAX_PATH_LEN - 1; i++) {
+//         if (cmdline_copy[i] == '\0') break;
+//         if (cmdline_copy[i] == ' ') {
+//             start = i + 1;
+//             found_space = 1;
+//             break;
+//         }
+//     }
+//
+//     if (!found_space) {
+//         return 0;
+//     }
+//
+//     #pragma unroll
+//     for (int i = 0; i < MAX_SCRIPTS_PER_FOLDER; i++) {
+//         if (i >= config->script_count) {
+//             break;
+//         }
+//
+//         __u64 key = (folder_inode << 32) | i;
+//         char *script_path = bpf_map_lookup_elem(&folder_scripts_map, &key);
+//         if (!script_path) {
+//             continue;
+//         }
+//
+//         char script_copy[MAX_PATH_LEN] = {};
+//         long ret2 = bpf_probe_read_kernel_str(script_copy, sizeof(script_copy), script_path);
+//         if (ret2 <= 0) {
+//             continue;
+//         }
+//
+//         int match = 1;
+//         #pragma unroll
+//         for (int j = 0; j < MAX_PATH_LEN - 1; j++) {
+//             if (script_copy[j] == '\0') {
+//                 if (cmdline_copy[start + j] == '\0' || cmdline_copy[start + j] == ' ') {
+//                     match = 1;
+//                 } else {
+//                     match = 0;
+//                 }
+//                 break;
+//             }
+//             if (cmdline_copy[start + j] != script_copy[j]) {
+//                 match = 0;
+//                 break;
+//             }
+//             if (cmdline_copy[start + j] == '\0') {
+//                 match = 0;
+//                 break;
+//             }
+//         }
+//
+//         if (match) {
+//             return 1;
+//         }
+//     }
+//
+//     return 0;
+// }
 
 // Проверка дерева процессов для конкретной папки
 static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode, int log_level)
@@ -363,22 +363,24 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
         bpf_printk("APP_DATA_SEC: comm=%s", comm);
     }
 
-    __u32 key = 0;
-    __u32 *scripts_enabled = bpf_map_lookup_elem(&scripts_enabled_map, &key);
-    int check_scripts = (scripts_enabled && *scripts_enabled == 1);
+    // __u32 key = 0;
+    // __u32 *scripts_enabled = bpf_map_lookup_elem(&scripts_enabled_map, &key);
+    // int check_scripts = (scripts_enabled && *scripts_enabled == 1);
 
-    int is_shell = 0;
-    #pragma unroll
-    for (int i = 0; i < 4; i++) {
-        if (comm[i] == '\0') break;
-        if (i == 0 && comm[i] != 'b') break;
-        if (i == 1 && comm[i] != 'a') break;
-        if (i == 2 && comm[i] != 's') break;
-        if (i == 3 && comm[i] == 'h') {
-            is_shell = 1;
-            break;
-        }
-    }
+    // int is_shell = 0;
+    // #pragma unroll
+    // for (int i = 0; i < 4; i++) {
+    //     if (comm[i] == '\0') break;
+    //     if (i == 0 && comm[i] != 'b') break;
+    //     if (i == 1 && comm[i] != 'a') break;
+    //     if (i == 2 && comm[i] != 's') break;
+    //     if (i == 3 && comm[i] == 'h') {
+    //         is_shell = 1;
+    //         break;
+    //     }
+    // }
+
+    // is_shell = 1;
 
     struct task_struct *task = current_task;
 
@@ -392,26 +394,26 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
             return 1;
         }
 
-        if (check_scripts && is_shell) {
-            struct mm_struct *mm = NULL;
-            bpf_probe_read_kernel(&mm, sizeof(mm), &task->mm);
-            if (mm) {
-                unsigned long *arg_start = NULL;
-                bpf_probe_read_kernel(&arg_start, sizeof(arg_start), &mm->arg_start);
-                if (arg_start) {
-                    char cmdline[MAX_PATH_LEN] = {};
-                    bpf_probe_read_str(cmdline, sizeof(cmdline), (void *)arg_start);
-
-                    if (log_level >= 2) {
-                        bpf_printk("APP_DATA_SEC: sh cmdline=%s", cmdline);
-                    }
-
-                    if (cmdline[0] != '\0' && is_script_allowed_for_folder(cmdline, folder_inode)) {
-                        return 1;
-                    }
-                }
-            }
-        }
+        // if (check_scripts && is_shell) {
+        //     struct mm_struct *mm = NULL;
+        //     bpf_probe_read_kernel(&mm, sizeof(mm), &task->mm);
+        //     if (mm) {
+        //         unsigned long *arg_start = NULL;
+        //         bpf_probe_read_kernel(&arg_start, sizeof(arg_start), &mm->arg_start);
+        //         if (arg_start) {
+        //             char cmdline[MAX_PATH_LEN] = {};
+        //             bpf_probe_read_str(cmdline, sizeof(cmdline), (void *)arg_start);
+        //
+        //             if (log_level >= 2) {
+        //                 bpf_printk("APP_DATA_SEC: sh cmdline=%s", cmdline);
+        //             }
+        //
+        //             if (cmdline[0] != '\0' && is_script_allowed_for_folder(cmdline, folder_inode)) {
+        //                 return 1;
+        //             }
+        //         }
+        //     }
+        // }
 
         task = get_parent_task(task);
     }
