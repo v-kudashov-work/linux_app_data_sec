@@ -23,8 +23,9 @@ fi
 # Подтверждение
 echo -e "${YELLOW}[WARNING]${NC} This will remove:"
 echo "  - app_data_sec_loader"
+echo "  - app_data_sec_merge_config"
 echo "  - app_data_sec_watchdog"
-echo "  - BPF objects (app_data_sec.bpf.o, app_data_sec.skel.h)"
+echo "  - BPF objects (app_data_sec.bpf.o)"
 echo "  - Systemd services"
 echo "  - Log files"
 echo "  - Configuration (optional)"
@@ -61,11 +62,14 @@ echo -e "\n${BLUE}[INFO]${NC} Removing files..."
 
 # Бинарники
 rm -f /usr/local/bin/app_data_sec_loader
+rm -f /usr/local/bin/app_data_sec_merge_config
 rm -f /usr/local/bin/app_data_sec_watchdog
 rm -f /usr/bin/app_data_sec_loader 2>/dev/null || true
+rm -f /usr/bin/app_data_sec_merge_config 2>/dev/null || true
+rm -f /usr/bin/app_data_sec_watchdog 2>/dev/null || true
 echo -e "${GREEN}[OK]${NC} Removed binaries"
 
-# BPF объекты и скелеты
+# BPF объекты
 rm -f /usr/local/lib/app_data_sec/app_data_sec.bpf.o
 rm -f /usr/local/lib/app_data_sec/app_data_sec.skel.h
 rmdir /usr/local/lib/app_data_sec 2>/dev/null || true
@@ -157,6 +161,7 @@ ${GREEN}✅ Uninstall completed successfully!${NC}
 
 ${BLUE}Removed:${NC}
   - app_data_sec_loader binary
+  - app_data_sec_merge_config binary
   - app_data_sec_watchdog binary
   - BPF objects (app_data_sec.bpf.o)
   - Systemd services

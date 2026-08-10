@@ -356,6 +356,40 @@ fi
 echo -e "${GREEN}[OK]${NC} Loader compiled"
 
 # ============================================================================
+# КОМПИЛЯЦИЯ MERGE_CONFIG (ИСПРАВЛЕНО)
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Building app_data_sec_merge_config..."
+
+# Ищем файл в текущей директории и в поддиректории merge_config/
+MERGE_SRC=""
+if [ -f "app_data_sec_merge_config.c" ]; then
+    MERGE_SRC="app_data_sec_merge_config.c"
+elif [ -f "merge_config/app_data_sec_merge_config.c" ]; then
+    MERGE_SRC="merge_config/app_data_sec_merge_config.c"
+elif [ -f "./merge_config/app_data_sec_merge_config.c" ]; then
+    MERGE_SRC="./merge_config/app_data_sec_merge_config.c"
+else
+    # Пробуем найти через find
+    MERGE_SRC=$(find . -name "app_data_sec_merge_config.c" -type f 2>/dev/null | head -1)
+fi
+
+if [ -n "$MERGE_SRC" ] && [ -f "$MERGE_SRC" ]; then
+    echo -e "${BLUE}[INFO]${NC} Found: $MERGE_SRC"
+    echo -e "${BLUE}[INFO]${NC} Compiling merge_config..."
+    gcc -Wall -O2 -o app_data_sec_merge_config "$MERGE_SRC" 2>&1
+
+    if [ -f "app_data_sec_merge_config" ]; then
+        echo -e "${GREEN}[OK]${NC} Merge_config compiled"
+    else
+        echo -e "${RED}[ERROR]${NC} Merge_config compilation failed!"
+        # Не прерываем установку, т.к. это вспомогательная утилита
+    fi
+else
+    echo -e "${YELLOW}[WARNING]${NC} app_data_sec_merge_config.c not found, skipping"
+fi
+
+# ============================================================================
 # КОМПИЛЯЦИЯ WATCHDOG
 # ============================================================================
 
@@ -400,6 +434,13 @@ cp app_data_sec_loader "$INSTALL_PATH/"
 chmod 755 "$INSTALL_PATH/app_data_sec_loader"
 echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_loader"
 
+# Устанавливаем merge_config
+if [ -f "app_data_sec_merge_config" ]; then
+    cp app_data_sec_merge_config "$INSTALL_PATH/"
+    chmod 755 "$INSTALL_PATH/app_data_sec_merge_config"
+    echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_merge_config"
+fi
+
 # Устанавливаем watchdog
 if [ -f "app_data_sec_watchdog" ]; then
     cp app_data_sec_watchdog "$INSTALL_PATH/"
@@ -415,6 +456,11 @@ echo -e "${GREEN}[OK]${NC} Installed: $BPF_OBJ_PATH/app_data_sec.bpf.o"
 # Создаём символические ссылки
 ln -sf "$INSTALL_PATH/app_data_sec_loader" /usr/bin/app_data_sec_loader 2>/dev/null || true
 echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_loader"
+
+if [ -f "$INSTALL_PATH/app_data_sec_merge_config" ]; then
+    ln -sf "$INSTALL_PATH/app_data_sec_merge_config" /usr/bin/app_data_sec_merge_config 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_merge_config"
+fi
 
 if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
     ln -sf "$INSTALL_PATH/app_data_sec_watchdog" /usr/bin/app_data_sec_watchdog 2>/dev/null || true
@@ -656,12 +702,16 @@ ${GREEN}✅ Installation completed successfully!${NC}
 
 ${BLUE}Installed files:${NC}
   $INSTALL_PATH/app_data_sec_loader
+  $INSTALL_PATH/app_data_sec_merge_config
   $BPF_OBJ_PATH/app_data_sec.bpf.o
   $CONFIG_PATH
 
 ${BLUE}Services:${NC}
   app_data_sec_loader   - Main protection service
   app_data_sec_watchdog - Watchdog service (if compiled)
+
+${BLUE}Utils:${NC}
+  app_data_sec_merge_config - Merge config tool
 
 ${BLUE}Commands:${NC}
   sudo systemctl status app_data_sec_loader
@@ -671,6 +721,10 @@ ${BLUE}Commands:${NC}
 ${BLUE}Configuration:${NC}
   Edit: sudo nano $CONFIG_PATH
   Reload: sudo systemctl restart app_data_sec_loader
+
+${BLUE}Merge config:${NC}
+  app_data_sec_merge_config /tmp/new.conf
+  app_data_sec_merge_config -m /etc/app_data_sec.conf /tmp/new.conf
 
 ${BLUE}Troubleshooting ALT Linux:${NC}
   1. Check kernel support: bpftool feature
