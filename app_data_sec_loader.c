@@ -739,10 +739,9 @@ static void print_usage(const char *prog) {
 int main(int argc, char **argv) {
     struct bpf_program *prog;
     struct bpf_map *map;
-    int err;
+    int err = 0;  // Инициализирована
     int log_level = 1;
     const char *bpf_file = NULL;
-    int config_valid = 0;
     int waiting_for_config = 0;
 
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
@@ -881,7 +880,6 @@ int main(int argc, char **argv) {
                     if (err) {
                         SYSLOG_ERR("Failed to load entries: %d", err);
                     } else {
-                        config_valid = 1;
                         SYSLOG_INFO("Config loaded successfully!");
                     }
                     break;
@@ -945,4 +943,144 @@ int main(int argc, char **argv) {
         }
 
         SYSLOG_INFO("eBPF LSM programs attached. %d entries loaded, %d templates",
-                    entry_count, template_count
+                    entry_count, template_count);
+        SYSLOG_INFO("Log level: %d (0=off, 1=blocked only, 2=everything)", requested_log_level);
+        SYSLOG_INFO("Auto-reload enabled: config check every %d seconds, new folders every %d seconds",
+                    CHECK_INTERVAL, RETRY_INTERVAL);
+        SYSLOG_INFO("Config file: %s", CONFIG_PATH);
+
+        time_t last_folder_check = time(NULL);
+
+        while (1) {
+            sleep(CHECK_INTERVAL);
+            time_t now = time(NULL);
+
+            if (config_changed()) {
+                SYSLOG_INFO("Config changed! Reloading...");
+
+                __u64 old_inodes[MAX_PATHS];
+                int old_inodes_count = 0;
+                for (int i = 0; i < entry_count; i++) {
+                    if (entries[i].inode != 0 && entries[i].is_active) {
+                        old_inodes[old_inodes_count++] = entries[i].inode;
+                    }
+                }
+
+                memset(entries, 0, sizeof(entries));
+                memset(templates, 0, sizeof(templates));
+                entry_count = 0;
+                template_count = 0;
+                config_enabled = 0;
+                config_mtime = 0;
+
+                if (parse_config() != 0) {
+                    SYSLOG_ERR("Failed to parse config after change");
+                    continue;
+                }
+
+                if (!config_enabled) {
+                    SYSLOG_INFO("Config: module disabled");
+                    while (1) {
+                        sleep(CHECK_INTERVAL);
+                        if (config_changed()) {
+                            SYSLOG_INFO("Config changed, rechecking...");
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
+                if (entry_count == 0) {
+                    SYSLOG_WARN("No entries in config, waiting...");
+                    continue;
+                }
+
+                for (int i = 0; i < old_inodes_count; i++) {
+                    if (old_inodes[i] != 0) {
+                        int found = 0;
+                        for (int j = 0; j < entry_count; j++) {
+                            if (entries[j].inode == old_inodes[i]) {
+                                found = 1;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            SYSLOG_INFO("Removing old inode: %lu", (unsigned long)old_inodes[i]);
+                            remove_entry_from_bpf(g_bpf_obj, old_inodes[i]);
+                        }
+                    }
+                }
+
+                reload_all_entries(g_bpf_obj);
+                last_folder_check = time(NULL);
+            }
+
+            if (now - last_folder_check >= RETRY_INTERVAL) {
+                DEBUG_PRINT("checking for new folders...");
+
+                int found_new = 0;
+                for (int i = 0; i < entry_count; i++) {
+                    if (entries[i].path[0] == '\0') continue;
+                    if (entries[i].is_active && entries[i].inode != 0) continue;
+
+                    __u64 current_inode = get_inode_from_path(entries[i].path);
+                    if (current_inode == 0) {
+                        DEBUG_PRINT("  %s - still not exists", entries[i].path);
+                        continue;
+                    }
+
+                    entries[i].inode = current_inode;
+                    entries[i].is_active = 1;
+                    entries[i].last_check = time(NULL);
+
+                    SYSLOG_INFO("New folder found: %s (inode: %lu)",
+                                entries[i].path, (unsigned long)current_inode);
+
+                    if (load_entry_to_bpf(g_bpf_obj, &entries[i], i) == 0) {
+                        found_new = 1;
+                    }
+                }
+
+                int found_recreated = 0;
+                for (int i = 0; i < entry_count; i++) {
+                    if (entries[i].path[0] == '\0') continue;
+                    if (!entries[i].is_active || entries[i].inode == 0) continue;
+
+                    __u64 current_inode = get_inode_from_path(entries[i].path);
+                    if (current_inode == 0) {
+                        SYSLOG_INFO("Folder removed from filesystem: %s", entries[i].path);
+                        remove_entry_from_bpf(g_bpf_obj, entries[i].inode);
+                        entries[i].inode = 0;
+                        entries[i].is_active = 0;
+                        found_recreated = 1;
+                    } else if (entries[i].inode != current_inode) {
+                        SYSLOG_INFO("Folder recreated: %s (old inode: %lu, new inode: %lu)",
+                                    entries[i].path, (unsigned long)entries[i].inode, (unsigned long)current_inode);
+                        remove_entry_from_bpf(g_bpf_obj, entries[i].inode);
+                        entries[i].inode = current_inode;
+                        entries[i].is_active = 1;
+                        load_entry_to_bpf(g_bpf_obj, &entries[i], i);
+                        found_recreated = 1;
+                    }
+                }
+
+                int found_from_templates = scan_templates_and_load(g_bpf_obj);
+
+                if (found_new || found_recreated || found_from_templates) {
+                    reload_all_entries(g_bpf_obj);
+                }
+
+                last_folder_check = now;
+            }
+        }
+    }
+
+    cleanup:
+    if (g_bpf_obj) {
+        bpf_object__close(g_bpf_obj);
+    }
+    SYSLOG_INFO("APP DATA SEC LOADER EXITING");
+    closelog();
+    printf("Exit\n");
+    return err;
+}
