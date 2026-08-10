@@ -1,5 +1,5 @@
 #!/bin/bash
-# install_app_data_sec.sh - Полная установка app_data_sec и watchdog для ALT Linux
+# install_app_data_sec.sh - Полная установка/обновление app_data_sec и watchdog для ALT Linux
 
 set -e
 
@@ -16,9 +16,13 @@ CONFIG_PATH="/etc/app_data_sec.conf"
 BPF_OBJ_PATH="/usr/local/lib/app_data_sec"
 LOG_PATH="/var/log"
 SERVICE_DIR="/etc/systemd/system"
+BACKUP_DIR="/root/app_data_sec_backup"
+
+# Флаг обновления
+IS_UPDATE=0
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}   APP DATA SEC - FULL INSTALL${NC}"
+echo -e "${BLUE}   APP DATA SEC - INSTALL/UPDATE${NC}"
 echo -e "${BLUE}          for ALT Linux${NC}"
 echo -e "${BLUE}========================================${NC}\n"
 
@@ -32,10 +36,62 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ============================================================================
+# ПРОВЕРКА, УСТАНОВЛЕН ЛИ МОДУЛЬ
+# ============================================================================
+
+if [ -f "$INSTALL_PATH/app_data_sec_loader" ] || [ -f "$BPF_OBJ_PATH/app_data_sec.bpf.o" ]; then
+    IS_UPDATE=1
+    echo -e "${YELLOW}[INFO]${NC} Existing installation detected!"
+    echo -e "${BLUE}[INFO]${NC} This will update the module (services will be stopped and restarted)"
+    echo ""
+    read -p "Continue with update? (y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${BLUE}[INFO]${NC} Update cancelled"
+        exit 0
+    fi
+    echo ""
+fi
+
+# ============================================================================
+# ОСТАНОВКА СЕРВИСОВ (при обновлении)
+# ============================================================================
+
+if [ "$IS_UPDATE" -eq 1 ]; then
+    echo -e "\n${BLUE}[INFO]${NC} Stopping services for update..."
+
+    # Создаем бэкап
+    mkdir -p "$BACKUP_DIR"
+    if [ -f "$CONFIG_PATH" ]; then
+        cp "$CONFIG_PATH" "$BACKUP_DIR/app_data_sec.conf.backup"
+        echo -e "${GREEN}[OK]${NC} Config backed up to: $BACKUP_DIR/app_data_sec.conf.backup"
+    fi
+    if [ -f "$BPF_OBJ_PATH/app_data_sec.bpf.o" ]; then
+        cp "$BPF_OBJ_PATH/app_data_sec.bpf.o" "$BACKUP_DIR/app_data_sec.bpf.o.backup"
+    fi
+    if [ -f "$INSTALL_PATH/app_data_sec_loader" ]; then
+        cp "$INSTALL_PATH/app_data_sec_loader" "$BACKUP_DIR/app_data_sec_loader.backup"
+    fi
+
+    # Останавливаем сервисы
+    systemctl stop app_data_sec_loader 2>/dev/null || true
+    systemctl stop app_data_sec_watchdog 2>/dev/null || true
+
+    # Ждем завершения
+    sleep 2
+
+    # Убиваем процессы если остались
+    pkill -f app_data_sec_loader 2>/dev/null || true
+    pkill -f app_data_sec_watchdog 2>/dev/null || true
+
+    echo -e "${GREEN}[OK]${NC} Services stopped"
+fi
+
+# ============================================================================
 # ОПРЕДЕЛЕНИЕ ДИСТРИБУТИВА
 # ============================================================================
 
-echo -e "${BLUE}[INFO]${NC} Detecting distribution..."
+echo -e "\n${BLUE}[INFO]${NC} Detecting distribution..."
 
 if [ -f "/etc/altlinux-release" ] || grep -q "ALT" /etc/os-release 2>/dev/null; then
     echo -e "${GREEN}[OK]${NC} ALT Linux detected"
@@ -356,7 +412,7 @@ fi
 echo -e "${GREEN}[OK]${NC} Loader compiled"
 
 # ============================================================================
-# КОМПИЛЯЦИЯ MERGE_CONFIG (ИСПРАВЛЕНО)
+# КОМПИЛЯЦИЯ MERGE_CONFIG
 # ============================================================================
 
 echo -e "\n${BLUE}[INFO]${NC} Building app_data_sec_merge_config..."
@@ -430,26 +486,26 @@ mkdir -p "$BPF_OBJ_PATH"
 mkdir -p "$LOG_PATH"
 
 # Устанавливаем app_data_sec_loader
-cp app_data_sec_loader "$INSTALL_PATH/"
+cp -f app_data_sec_loader "$INSTALL_PATH/"
 chmod 755 "$INSTALL_PATH/app_data_sec_loader"
 echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_loader"
 
 # Устанавливаем merge_config
 if [ -f "app_data_sec_merge_config" ]; then
-    cp app_data_sec_merge_config "$INSTALL_PATH/"
+    cp -f app_data_sec_merge_config "$INSTALL_PATH/"
     chmod 755 "$INSTALL_PATH/app_data_sec_merge_config"
     echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_merge_config"
 fi
 
 # Устанавливаем watchdog
 if [ -f "app_data_sec_watchdog" ]; then
-    cp app_data_sec_watchdog "$INSTALL_PATH/"
+    cp -f app_data_sec_watchdog "$INSTALL_PATH/"
     chmod 755 "$INSTALL_PATH/app_data_sec_watchdog"
     echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_watchdog"
 fi
 
 # Устанавливаем BPF объект
-cp app_data_sec.bpf.o "$BPF_OBJ_PATH/"
+cp -f app_data_sec.bpf.o "$BPF_OBJ_PATH/"
 chmod 644 "$BPF_OBJ_PATH/app_data_sec.bpf.o"
 echo -e "${GREEN}[OK]${NC} Installed: $BPF_OBJ_PATH/app_data_sec.bpf.o"
 
@@ -468,12 +524,11 @@ if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
 fi
 
 # ============================================================================
-# КОНФИГУРАЦИЯ
+# КОНФИГУРАЦИЯ (только при новой установке или если нет конфига)
 # ============================================================================
 
-echo -e "\n${BLUE}[INFO]${NC} Creating configuration..."
-
 if [ ! -f "$CONFIG_PATH" ]; then
+    echo -e "\n${BLUE}[INFO]${NC} Creating configuration..."
     cat > "$CONFIG_PATH" << 'EOF'
 # /etc/app_data_sec.conf
 # Конфигурация для eBPF блокировщика доступа к папкам
@@ -491,7 +546,10 @@ enable = yes
 EOF
     echo -e "${GREEN}[OK]${NC} Created: $CONFIG_PATH"
 else
-    echo -e "${YELLOW}[WARNING]${NC} Config already exists, keeping existing"
+    echo -e "\n${YELLOW}[INFO]${NC} Config already exists, keeping existing"
+    if [ "$IS_UPDATE" -eq 1 ]; then
+        echo -e "${YELLOW}[INFO]${NC} To merge new entries, use: app_data_sec_merge_config <new.conf>"
+    fi
 fi
 
 # ============================================================================
@@ -509,10 +567,10 @@ done
 echo -e "${GREEN}[OK]${NC} Log files created"
 
 # ============================================================================
-# СОЗДАНИЕ СЕРВИСОВ
+# СОЗДАНИЕ/ОБНОВЛЕНИЕ СЕРВИСОВ
 # ============================================================================
 
-echo -e "\n${BLUE}[INFO]${NC} Creating systemd services..."
+echo -e "\n${BLUE}[INFO]${NC} Creating/updating systemd services..."
 
 # Определяем DISPLAY для ALT Linux
 DISPLAY_VAR=":0"
@@ -696,9 +754,15 @@ fi
 # ВЫВОД ИНФОРМАЦИИ
 # ============================================================================
 
+if [ "$IS_UPDATE" -eq 1 ]; then
+    UPDATE_MSG="Update"
+else
+    UPDATE_MSG="Installation"
+fi
+
 cat << EOF
 
-${GREEN}✅ Installation completed successfully!${NC}
+${GREEN}✅ $UPDATE_MSG completed successfully!${NC}
 
 ${BLUE}Installed files:${NC}
   $INSTALL_PATH/app_data_sec_loader
@@ -726,16 +790,27 @@ ${BLUE}Merge config:${NC}
   app_data_sec_merge_config /tmp/new.conf
   app_data_sec_merge_config -m /etc/app_data_sec.conf /tmp/new.conf
 
-${BLUE}Troubleshooting ALT Linux:${NC}
-  1. Check kernel support: bpftool feature
-  2. Check LSM: cat /sys/kernel/security/lsm
-  3. For BPF LSM: add 'bpf' to lsm= in /etc/default/grub
-  4. Check BPF headers: find /usr -name "bpf_helpers.h"
-  5. Install packages: apt-get install libbpf-devel kernel-headers-modules-std-def
-
-${BLUE}Uninstall:${NC}
-  sudo ./uninstall_app_data_sec.sh
-
 EOF
 
-echo -e "${GREEN}Done!${NC}"
+if [ "$IS_UPDATE" -eq 1 ]; then
+    echo -e "${YELLOW}[INFO]${NC} Backup saved to: $BACKUP_DIR"
+    echo -e "${YELLOW}[INFO]${NC} To restore: sudo cp $BACKUP_DIR/app_data_sec.conf.backup $CONFIG_PATH"
+    echo ""
+fi
+
+echo -e "${BLUE}Troubleshooting ALT Linux:${NC}"
+echo "  1. Check kernel support: bpftool feature"
+echo "  2. Check LSM: cat /sys/kernel/security/lsm"
+echo "  3. For BPF LSM: add 'bpf' to lsm= in /etc/default/grub"
+echo "  4. Check BPF headers: find /usr -name \"bpf_helpers.h\""
+echo "  5. Install packages: apt-get install libbpf-devel kernel-headers-modules-std-def"
+
+if [ "$IS_UPDATE" -eq 1 ]; then
+    echo ""
+    echo -e "${YELLOW}[INFO]${NC} If you experience issues after update:"
+    echo "  1. Check logs: sudo journalctl -u app_data_sec_loader -f"
+    echo "  2. Restart: sudo systemctl restart app_data_sec_loader"
+    echo "  3. Restore backup: sudo cp $BACKUP_DIR/app_data_sec_loader.backup $INSTALL_PATH/"
+fi
+
+echo -e "\n${GREEN}Done!${NC}"
