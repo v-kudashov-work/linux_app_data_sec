@@ -290,6 +290,7 @@ static int parse_config(void) {
             int allowed_count = 0;
             memset(allowed_inodes, 0, sizeof(allowed_inodes));
 
+            // Парсим разрешенные программы (точные пути)
             ptr = path_end;
             while (*ptr) {
                 while (*ptr == ' ' || *ptr == '\t') ptr++;
@@ -304,17 +305,18 @@ static int parse_config(void) {
                     strncpy(prog_path, ptr, arg_len);
                     prog_path[arg_len] = '\0';
 
+                    // Проверяем существование файла (любого, включая .sh)
                     char real_allowed_path[PATH_MAX];
                     if (realpath(prog_path, real_allowed_path) != NULL) {
                         __u64 allowed_inode = get_inode_from_path(real_allowed_path);
                         if (allowed_inode != 0) {
                             allowed_inodes[allowed_count] = allowed_inode;
                             allowed_count++;
-                            SYSLOG_INFO("Config: allowed program: %s (inode: %lu)",
+                            SYSLOG_INFO("  Allowed program: %s (inode: %lu)",
                                         real_allowed_path, (unsigned long)allowed_inode);
                         }
                     } else {
-                        SYSLOG_WARN("Allowed program '%s' does not exist", prog_path);
+                        SYSLOG_WARN("  Allowed program '%s' not found", prog_path);
                     }
                 }
 
@@ -356,6 +358,22 @@ static int parse_config(void) {
 
                     if (entry->inode != 0) {
                         SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
+                        // Выводим список разрешенных программ (inode)
+                        if (entry->allowed_count > 0) {
+                            char prog_list[1024] = "";
+                            for (int j = 0; j < entry->allowed_count && j < MAX_ALLOWED; j++) {
+                                char temp[64];
+                                if (j == 0) {
+                                    snprintf(temp, sizeof(temp), "inode: %lu", (unsigned long)entry->allowed_inodes[j]);
+                                } else {
+                                    snprintf(temp, sizeof(temp), ", inode: %lu", (unsigned long)entry->allowed_inodes[j]);
+                                }
+                                strncat(prog_list, temp, sizeof(prog_list) - strlen(prog_list) - 1);
+                            }
+                            SYSLOG_INFO("  Allowed programs: %s", prog_list);
+                        } else {
+                            SYSLOG_INFO("  Allowed programs: none (only root)");
+                        }
                     } else {
                         SYSLOG_WARN("Config: protect %s (NOT FOUND YET, will retry)", entry->path);
                     }
@@ -379,6 +397,22 @@ static int parse_config(void) {
 
                 if (entry->inode != 0) {
                     SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
+                    // Выводим список разрешенных программ (inode)
+                    if (entry->allowed_count > 0) {
+                        char prog_list[1024] = "";
+                        for (int j = 0; j < entry->allowed_count && j < MAX_ALLOWED; j++) {
+                            char temp[64];
+                            if (j == 0) {
+                                snprintf(temp, sizeof(temp), "inode: %lu", (unsigned long)entry->allowed_inodes[j]);
+                            } else {
+                                snprintf(temp, sizeof(temp), ", inode: %lu", (unsigned long)entry->allowed_inodes[j]);
+                            }
+                            strncat(prog_list, temp, sizeof(prog_list) - strlen(prog_list) - 1);
+                        }
+                        SYSLOG_INFO("  Allowed programs: %s", prog_list);
+                    } else {
+                        SYSLOG_INFO("  Allowed programs: none (only root)");
+                    }
                 } else {
                     SYSLOG_WARN("Config: protect %s (NOT FOUND YET, will retry)", entry->path);
                 }
