@@ -9,15 +9,17 @@
 
 #define MAX_PROTECTED_PATHS 5000
 #define MAX_ALLOWED_PROGRAMS 10
+#define MAX_ALLOWED_SCRIPTS 1000      // Максимум .sh скриптов
 #define MAX_DEPTH 100
 #define MAX_NAME_LEN 32
+#define MAX_PATH_LEN 256            // Размер пути для сравнения
 
-// Карта для хранения целевых inode (HASH - быстрый поиск)
+// Карта для хранения целевых inode (HASH)
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PROTECTED_PATHS);
-    __type(key, __u64);      // inode папки
-    __type(value, __u8);     // флаг: 1 - защищена
+    __type(key, __u64);
+    __type(value, __u8);
 } target_inode_map SEC(".maps");
 
 // Карта для хранения разрешенных inode программ (массив)
@@ -28,7 +30,23 @@ struct {
     __type(value, __u64);
 } allowed_inode_map SEC(".maps");
 
-// Карта для хранения количества разрешенных программ
+// Карта для хранения разрешенных путей .sh скриптов (массив)
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_ALLOWED_SCRIPTS);
+    __type(key, __u32);
+    __type(value, char[MAX_PATH_LEN]);
+} allowed_script_path_map SEC(".maps");
+
+// Карта для хранения количества разрешенных .sh скриптов
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} allowed_script_count_map SEC(".maps");
+
+// Карта для хранения количества разрешенных программ (обычных)
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
@@ -95,46 +113,6 @@ static __always_inline void get_parent_name(struct dentry *dentry, char *name)
     get_dentry_name(parent, name);
 }
 
-// Функция для проверки, является ли inode защищенным (HASH - O(1))
-static __always_inline int is_protected_inode(struct dentry *dentry)
-{
-    if (!dentry) {
-        return 0;
-    }
-
-    struct dentry *current = dentry;
-
-    // Поднимаемся по дереву директорий
-    for (int depth = 0; depth < MAX_DEPTH; depth++) {
-        if (!current) {
-            break;
-        }
-
-        struct inode *inode = NULL;
-        bpf_probe_read_kernel(&inode, sizeof(inode), &current->d_inode);
-
-        if (inode) {
-            __u64 inode_num = 0;
-            bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
-
-            // Быстрый поиск в HASH карте - O(1)
-            __u8 *protected = bpf_map_lookup_elem(&target_inode_map, &inode_num);
-            if (protected && *protected == 1) {
-                return 1;
-            }
-        }
-
-        struct dentry *parent = NULL;
-        bpf_probe_read_kernel(&parent, sizeof(parent), &current->d_parent);
-        if (!parent || parent == current) {
-            break;
-        }
-        current = parent;
-    }
-
-    return 0;
-}
-
 // Функция для получения inode исполняемого файла процесса
 static __always_inline __u64 get_process_exe_inode(struct task_struct *task)
 {
@@ -177,7 +155,37 @@ static __always_inline struct task_struct *get_parent_task(struct task_struct *t
     return parent;
 }
 
-// Функция для проверки, является ли процесс или любой из его родителей разрешенным
+// Функция для проверки, содержит ли командная строка разрешенный путь .sh скрипта
+static __always_inline int is_script_path_in_cmdline(const char *cmdline, const char *allowed_path)
+{
+    if (!cmdline || !allowed_path) {
+        return 0;
+    }
+
+    // Проверяем, содержится ли allowed_path в cmdline
+    for (int pos = 0; pos < MAX_PATH_LEN - 1 && cmdline[pos] != '\0'; pos++) {
+        if (cmdline[pos] == allowed_path[0]) {
+            int match = 1;
+
+            for (int i = 0; i < MAX_PATH_LEN - 1 && allowed_path[i] != '\0'; i++) {
+                if (cmdline[pos + i] != allowed_path[i]) {
+                    match = 0;
+                    break;
+                }
+                if (allowed_path[i] == '\0') {
+                    break;
+                }
+            }
+            if (match) {
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+// Функция для проверки, является ли процесс разрешенным
 static __always_inline int is_allowed_process_tree(void)
 {
     __u32 count_key = 0;
@@ -198,15 +206,55 @@ static __always_inline int is_allowed_process_tree(void)
             break;
         }
 
+        // Проверяем inode исполняемого файла
         __u64 inode_num = get_process_exe_inode(task);
         if (inode_num != 0) {
-            // Проверяем все разрешенные inode
-            #pragma unroll
             for (int i = 0; i < MAX_ALLOWED_PROGRAMS; i++) {
                 __u32 key = i;
                 __u64 *allowed_inode = bpf_map_lookup_elem(&allowed_inode_map, &key);
                 if (allowed_inode && *allowed_inode == inode_num) {
                     return 1;
+                }
+            }
+        }
+
+        // Проверяем командную строку (для bash/sh скриптов)
+        struct mm_struct *mm = NULL;
+        bpf_probe_read_kernel(&mm, sizeof(mm), &task->mm);
+        if (mm) {
+            unsigned long *arg_start = NULL;
+            unsigned long *arg_end = NULL;
+            bpf_probe_read_kernel(&arg_start, sizeof(arg_start), &mm->arg_start);
+            bpf_probe_read_kernel(&arg_end, sizeof(arg_end), &mm->arg_end);
+
+            if (arg_start && arg_end && arg_start < arg_end) {
+                long len = (long)arg_end - (long)arg_start;
+                if (len > 0 && len < MAX_PATH_LEN) {
+                    char cmdline[MAX_PATH_LEN] = {};
+                    bpf_probe_read_str(cmdline, sizeof(cmdline), (void *)arg_start);
+
+                    // Проверяем, является ли процесс bash/sh
+                    char comm[16] = {};
+                    bpf_get_current_comm(&comm, sizeof(comm));
+
+                    // Если это bash или sh, проверяем командную строку на .sh скрипт
+                    if (comm[0] == 'b' && comm[1] == 'a' && comm[2] == 's' && comm[3] == 'h') {
+                        // Получаем количество разрешенных .sh скриптов
+                        __u32 script_count_key = 0;
+                        __u32 *script_count = bpf_map_lookup_elem(&allowed_script_count_map, &script_count_key);
+
+                        if (script_count && *script_count > 0) {
+                            // Проверяем все разрешенные .sh пути
+
+                            for (int i = 0; i < MAX_ALLOWED_SCRIPTS; i++) {
+                                __u32 key = i;
+                                char *allowed_path = bpf_map_lookup_elem(&allowed_script_path_map, &key);
+                                if (allowed_path && is_script_path_in_cmdline(cmdline, allowed_path)) {
+                                    return 1;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -229,6 +277,44 @@ static __always_inline int get_log_level(void)
         return 0;
     }
     return *level;
+}
+
+// Функция для проверки, является ли inode защищенным (HASH - O(1))
+static __always_inline int is_protected_inode(struct dentry *dentry)
+{
+    if (!dentry) {
+        return 0;
+    }
+
+    struct dentry *current = dentry;
+
+    for (int depth = 0; depth < MAX_DEPTH; depth++) {
+        if (!current) {
+            break;
+        }
+
+        struct inode *inode = NULL;
+        bpf_probe_read_kernel(&inode, sizeof(inode), &current->d_inode);
+
+        if (inode) {
+            __u64 inode_num = 0;
+            bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
+
+            __u8 *protected = bpf_map_lookup_elem(&target_inode_map, &inode_num);
+            if (protected && *protected == 1) {
+                return 1;
+            }
+        }
+
+        struct dentry *parent = NULL;
+        bpf_probe_read_kernel(&parent, sizeof(parent), &current->d_parent);
+        if (!parent || parent == current) {
+            break;
+        }
+        current = parent;
+    }
+
+    return 0;
 }
 
 // Функция проверки доступа
