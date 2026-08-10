@@ -271,7 +271,6 @@ static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u
         return 0;
     }
 
-    //TODO может быть упростить и не копировать
     char cmdline_copy[MAX_PATH_LEN] = {};
     long ret = bpf_probe_read_kernel_str(cmdline_copy, sizeof(cmdline_copy), cmdline);
     if (ret <= 0) {
@@ -308,8 +307,6 @@ static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u
             continue;
         }
 
-        //TODO может быть упростить и не копировать
-        
         char script_copy[MAX_PATH_LEN] = {};
         long ret2 = bpf_probe_read_kernel_str(script_copy, sizeof(script_copy), script_path);
         if (ret2 <= 0) {
@@ -346,7 +343,7 @@ static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u
 }
 
 // Проверка дерева процессов для конкретной папки
-static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode)
+static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode, int log_level)
 {
     if (folder_inode == 0) {
         return 0;
@@ -359,6 +356,12 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
 
     char comm[16] = {};
     bpf_get_current_comm(&comm, sizeof(comm));
+
+    comm[15] = 0;
+
+    if (log_level >= 2) {
+        bpf_printk("APP_DATA_SEC: comm=%s", comm);
+    }
 
     __u32 key = 0;
     __u32 *scripts_enabled = bpf_map_lookup_elem(&scripts_enabled_map, &key);
@@ -398,6 +401,10 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
                 if (arg_start) {
                     char cmdline[MAX_PATH_LEN] = {};
                     bpf_probe_read_str(cmdline, sizeof(cmdline), (void *)arg_start);
+
+                    if (log_level >= 2) {
+                        bpf_printk("APP_DATA_SEC: sh cmdline=%s", cmdline);
+                    }
 
                     if (cmdline[0] != '\0' && is_script_allowed_for_folder(cmdline, folder_inode)) {
                         return 1;
@@ -473,12 +480,12 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
 
     __u64 uid = bpf_get_current_uid_gid() & 0xFFFFFFFFULL;
     if (uid == 0) {
-        if (log_level >= 2) {
-            __u64 pid = bpf_get_current_pid_tgid() >> 32;
-            char name[MAX_NAME_LEN] = {};
-            get_dentry_name(dentry, name, MAX_NAME_LEN);
-            bpf_printk("APP_DATA_SEC: %s ROOT_ALLOWED PID=%llu PATH=%s\n", operation, pid, name);
-        }
+        // if (log_level >= 2) {
+        //     __u64 pid = bpf_get_current_pid_tgid() >> 32;
+        //     char name[MAX_NAME_LEN] = {};
+        //     get_dentry_name(dentry, name, MAX_NAME_LEN);
+        //     bpf_printk("APP_DATA_SEC: %s ROOT_ALLOWED PID=%llu PATH=%s\n", operation, pid, name);
+        // }
         return 0;
     }
 
@@ -490,16 +497,16 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     int is_protected = (folder_inode != 0);
 
     if (!is_protected) {
-        if (log_level >= 2) {
-            char name[MAX_NAME_LEN] = {};
-            get_dentry_name(dentry, name, MAX_NAME_LEN);
-            bpf_printk("APP_DATA_SEC: %s PID=%llu UID=%llu PATH=%s NOT_PROTECTED - ALLOWED\n",
-                       operation, pid, uid, name);
-        }
+        // if (log_level >= 2) {
+        //     char name[MAX_NAME_LEN] = {};
+        //     get_dentry_name(dentry, name, MAX_NAME_LEN);
+        //     bpf_printk("APP_DATA_SEC: %s PID=%llu UID=%llu PATH=%s NOT_PROTECTED - ALLOWED\n",
+        //                operation, pid, uid, name);
+        // }
         return 0;
     }
 
-    int allowed = is_allowed_process_tree_for_folder(folder_inode);
+    int allowed = is_allowed_process_tree_for_folder(folder_inode, log_level);
 
     if (allowed) {
         if (log_level >= 2) {
