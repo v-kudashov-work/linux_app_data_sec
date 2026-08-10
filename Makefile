@@ -16,7 +16,7 @@ vmlinux.h:
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 
 $(BPF_OBJ): $(BPF_SRC) vmlinux.h
-	$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_x86 -I. -c $(BPF_SRC) -o $(BPF_OBJ)
+	$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_x86 -I. -mllvm -bpf-stack-size=1024 -c $(BPF_SRC) -o $(BPF_OBJ)
 
 $(SKEL_H): $(BPF_OBJ)
 	$(BPFTOOL) gen skeleton $(BPF_OBJ) > $(SKEL_H)

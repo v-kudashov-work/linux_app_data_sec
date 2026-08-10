@@ -20,8 +20,10 @@
 #define MAX_LINE_LEN 1024
 #define MAX_PATHS 5000
 #define MAX_ALLOWED 10
+#define MAX_UNIQUE_SCRIPTS 100
 #define CHECK_INTERVAL 5
 #define RETRY_INTERVAL 30
+#define MAX_PATH_LEN 64
 
 // ============================================================================
 // ОТЛАДКА
@@ -445,6 +447,230 @@ static int parse_config(void) {
 
     SYSLOG_INFO("Config: loaded %d entries, %d templates", entry_count, template_count);
     DEBUG_PRINT("parse_config: done, entry_count = %d, template_count = %d", entry_count, template_count);
+    return 0;
+}
+
+// ============================================================================
+// ЗАГРУЗКА В BPF
+// ============================================================================
+
+static int load_entries_to_bpf(struct bpf_object *obj) {
+    struct bpf_map *map;
+    int err;
+    __u32 key;
+    int fd;
+
+    if (entry_count == 0) {
+        SYSLOG_INFO("No entries to load");
+        return 0;
+    }
+
+    // ======== Загружаем защищенные папки ========
+    map = bpf_object__find_map_by_name(obj, "target_inode_map");
+    if (!map) {
+        SYSLOG_ERR("Failed to find target_inode_map");
+        return -1;
+    }
+
+    fd = bpf_map__fd(map);
+    if (fd < 0) {
+        SYSLOG_ERR("Failed to get map fd");
+        return fd;
+    }
+
+    int loaded = 0;
+    SYSLOG_INFO("Loading %d protected folders to BPF map...", entry_count);
+
+    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+        __u8 value = 1;
+        err = bpf_map_update_elem(fd, &entries[i].inode, &value, BPF_ANY);
+        if (err < 0) {
+            SYSLOG_ERR("Failed to update target_inode_map[%d]: %d (inode: %lu, path: %s)",
+                       i, err, (unsigned long)entries[i].inode, entries[i].path);
+        } else {
+            SYSLOG_INFO("  [%d] Loaded protected inode: %lu (path: %s)",
+                        i, (unsigned long)entries[i].inode, entries[i].path);
+            loaded++;
+        }
+    }
+
+    // ======== Загружаем разрешенные программы (inode) ========
+    __u64 all_allowed[MAX_ALLOWED];
+    int all_allowed_count = 0;
+    memset(all_allowed, 0, sizeof(all_allowed));
+
+    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+        for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
+            __u64 inode = entries[i].allowed_inodes[j];
+
+            int already_added = 0;
+            for (int k = 0; k < all_allowed_count; k++) {
+                if (all_allowed[k] == inode) {
+                    already_added = 1;
+                    break;
+                }
+            }
+
+            if (!already_added && all_allowed_count < MAX_ALLOWED) {
+                all_allowed[all_allowed_count] = inode;
+                all_allowed_count++;
+            }
+        }
+    }
+
+    // Загружаем inode в карту allowed_inode_map
+    map = bpf_object__find_map_by_name(obj, "allowed_inode_map");
+    if (map) {
+        fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            for (int i = 0; i < all_allowed_count && i < MAX_ALLOWED; i++) {
+                key = i;
+                err = bpf_map_update_elem(fd, &key, &all_allowed[i], BPF_ANY);
+                if (err < 0) {
+                    SYSLOG_ERR("Failed to update allowed_inode_map[%d]: %d", i, err);
+                }
+            }
+        }
+    }
+
+    // Загружаем количество обычных программ
+    map = bpf_object__find_map_by_name(obj, "allowed_count_map");
+    if (map) {
+        fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            __u32 count_key = 0;
+            __u32 count = all_allowed_count;
+            err = bpf_map_update_elem(fd, &count_key, &count, BPF_ANY);
+            if (err < 0) {
+                SYSLOG_ERR("Failed to update allowed_count_map: %d", err);
+            }
+        }
+    }
+
+    // ======== Собираем уникальные .sh скрипты ========
+    char unique_scripts[MAX_UNIQUE_SCRIPTS][MAX_PATH_LEN];
+    int unique_count = 0;
+    memset(unique_scripts, 0, sizeof(unique_scripts));
+
+    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+        for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
+            char *path = entries[i].allowed_paths[j];
+            int path_len = strlen(path);
+
+            if (path_len > 3 &&
+                path[path_len-3] == '.' &&
+                path[path_len-2] == 's' &&
+                path[path_len-1] == 'h') {
+
+                int already_exists = 0;
+            for (int k = 0; k < unique_count; k++) {
+                if (strcmp(unique_scripts[k], path) == 0) {
+                    already_exists = 1;
+                    break;
+                }
+            }
+
+            if (!already_exists && unique_count < MAX_UNIQUE_SCRIPTS) {
+                int start = 0;
+                if (path_len >= MAX_PATH_LEN) {
+                    start = path_len - (MAX_PATH_LEN - 1);
+                }
+                strncpy(unique_scripts[unique_count], path + start, MAX_PATH_LEN - 1);
+                unique_scripts[unique_count][MAX_PATH_LEN - 1] = '\0';
+                unique_count++;
+            }
+                }
+        }
+    }
+
+    // Загружаем уникальные скрипты в карту unique_scripts_map
+    map = bpf_object__find_map_by_name(obj, "unique_scripts_map");
+    if (map) {
+        fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            for (int i = 0; i < unique_count && i < MAX_UNIQUE_SCRIPTS; i++) {
+                key = i;
+                err = bpf_map_update_elem(fd, &key, unique_scripts[i], BPF_ANY);
+                if (err < 0) {
+                    SYSLOG_ERR("Failed to update unique_scripts_map[%d]: %d", i, err);
+                } else {
+                    SYSLOG_INFO("  [%d] Unique script: %s", i, unique_scripts[i]);
+                }
+            }
+        }
+    }
+
+    // ======== Загружаем индексы скриптов для каждой папки ========
+    map = bpf_object__find_map_by_name(obj, "folder_script_indices_map");
+    if (map) {
+        fd = bpf_map__fd(map);
+        if (fd < 0) {
+            SYSLOG_ERR("Failed to get fd for folder_script_indices_map");
+        } else {
+            int total_indices = 0;
+            SYSLOG_INFO("Loading script indices for each folder...");
+
+            for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+                __u64 folder_inode = entries[i].inode;
+                if (folder_inode == 0) continue;
+
+                int script_idx = 0;
+                int folder_script_count = 0;
+
+                for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
+                    char *path = entries[i].allowed_paths[j];
+                    int path_len = strlen(path);
+
+                    if (path_len > 3 &&
+                        path[path_len-3] == '.' &&
+                        path[path_len-2] == 's' &&
+                        path[path_len-1] == 'h') {
+
+                        int unique_idx = -1;
+                    char *search_path = path;
+                    if (path_len >= MAX_PATH_LEN) {
+                        search_path = path + (path_len - (MAX_PATH_LEN - 1));
+                    }
+
+                    for (int k = 0; k < unique_count; k++) {
+                        if (strcmp(unique_scripts[k], search_path) == 0) {
+                            unique_idx = k;
+                            break;
+                        }
+                    }
+
+                    if (unique_idx >= 0) {
+                        __u64 key = (folder_inode << 8) | script_idx;
+                        __u32 value = unique_idx;
+
+                        err = bpf_map_update_elem(fd, &key, &value, BPF_ANY);
+                        if (err < 0) {
+                            SYSLOG_ERR("Failed to update folder_script_indices_map for folder %lu: %d",
+                                       (unsigned long)folder_inode, err);
+                        } else {
+                            SYSLOG_INFO("  [%lu] Script index %d -> %d (%s)",
+                                        (unsigned long)folder_inode, script_idx, unique_idx, unique_scripts[unique_idx]);
+                            folder_script_count++;
+                            total_indices++;
+                            script_idx++;
+                        }
+                    }
+                        }
+                }
+
+                if (folder_script_count > 0) {
+                    SYSLOG_INFO("  Folder %s: loaded %d script indices", entries[i].path, folder_script_count);
+                }
+            }
+
+            SYSLOG_INFO("Total script indices loaded: %d", total_indices);
+        }
+    } else {
+        SYSLOG_WARN("folder_script_indices_map not found, scripts support disabled");
+    }
+
+    SYSLOG_INFO("Total loaded: %d protected folders, %d programs, %d unique scripts",
+                loaded, all_allowed_count, unique_count);
     return 0;
 }
 
