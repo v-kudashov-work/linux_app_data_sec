@@ -9,10 +9,10 @@
 
 #define MAX_PROTECTED_PATHS 5000
 #define MAX_ALLOWED_PROGRAMS 10
-#define MAX_ALLOWED_SCRIPTS 1000      // Максимум .sh скриптов
-#define MAX_DEPTH 100
+#define MAX_ALLOWED_SCRIPTS 50
+#define MAX_DEPTH 20
 #define MAX_NAME_LEN 32
-#define MAX_PATH_LEN 256            // Размер пути для сравнения
+#define MAX_PATH_LEN 256
 
 // Карта для хранения целевых inode (HASH)
 struct {
@@ -162,12 +162,13 @@ static __always_inline int is_script_path_in_cmdline(const char *cmdline, const 
         return 0;
     }
 
-    // Проверяем, содержится ли allowed_path в cmdline
+    // Убираем #pragma unroll для этого цикла (он большой)
     for (int pos = 0; pos < MAX_PATH_LEN - 1 && cmdline[pos] != '\0'; pos++) {
         if (cmdline[pos] == allowed_path[0]) {
             int match = 1;
-
-            for (int i = 0; i < MAX_PATH_LEN - 1 && allowed_path[i] != '\0'; i++) {
+            // Маленький цикл - можно развернуть
+            #pragma unroll
+            for (int i = 0; i < 32 && allowed_path[i] != '\0'; i++) {
                 if (cmdline[pos + i] != allowed_path[i]) {
                     match = 0;
                     break;
@@ -201,6 +202,7 @@ static __always_inline int is_allowed_process_tree(void)
 
     struct task_struct *task = current_task;
 
+    // Убираем #pragma unroll для большого цикла
     for (int depth = 0; depth < MAX_DEPTH; depth++) {
         if (!task) {
             break;
@@ -209,6 +211,7 @@ static __always_inline int is_allowed_process_tree(void)
         // Проверяем inode исполняемого файла
         __u64 inode_num = get_process_exe_inode(task);
         if (inode_num != 0) {
+            #pragma unroll
             for (int i = 0; i < MAX_ALLOWED_PROGRAMS; i++) {
                 __u32 key = i;
                 __u64 *allowed_inode = bpf_map_lookup_elem(&allowed_inode_map, &key);
@@ -237,15 +240,12 @@ static __always_inline int is_allowed_process_tree(void)
                     char comm[16] = {};
                     bpf_get_current_comm(&comm, sizeof(comm));
 
-                    // Если это bash или sh, проверяем командную строку на .sh скрипт
                     if (comm[0] == 'b' && comm[1] == 'a' && comm[2] == 's' && comm[3] == 'h') {
-                        // Получаем количество разрешенных .sh скриптов
                         __u32 script_count_key = 0;
                         __u32 *script_count = bpf_map_lookup_elem(&allowed_script_count_map, &script_count_key);
 
                         if (script_count && *script_count > 0) {
-                            // Проверяем все разрешенные .sh пути
-
+                            // Убираем #pragma unroll для большого цикла
                             for (int i = 0; i < MAX_ALLOWED_SCRIPTS; i++) {
                                 __u32 key = i;
                                 char *allowed_path = bpf_map_lookup_elem(&allowed_script_path_map, &key);
