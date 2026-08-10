@@ -1,5 +1,5 @@
 #!/bin/bash
-# install_app_data_sec.sh - Полная установка app_data_sec и watchdog
+# install_app_data_sec.sh - Полная установка app_data_sec и watchdog для ALT Linux
 
 set -e
 
@@ -19,6 +19,7 @@ SERVICE_DIR="/etc/systemd/system"
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}   APP DATA SEC - FULL INSTALL${NC}"
+echo -e "${BLUE}          for ALT Linux${NC}"
 echo -e "${BLUE}========================================${NC}\n"
 
 # ============================================================================
@@ -31,43 +32,89 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ============================================================================
+# ОПРЕДЕЛЕНИЕ ДИСТРИБУТИВА
+# ============================================================================
+
+echo -e "${BLUE}[INFO]${NC} Detecting distribution..."
+
+if [ -f "/etc/altlinux-release" ] || grep -q "ALT" /etc/os-release 2>/dev/null; then
+    echo -e "${GREEN}[OK]${NC} ALT Linux detected"
+    PKG_MANAGER="apt-get"
+    PKG_INSTALL="apt-get install -y"
+    PKG_UPDATE="apt-get update -qq"
+    IS_ALT=1
+elif [ -f "/etc/debian_version" ] || grep -q "Debian" /etc/os-release 2>/dev/null; then
+    echo -e "${GREEN}[OK]${NC} Debian/Ubuntu detected"
+    PKG_MANAGER="apt-get"
+    PKG_INSTALL="apt-get install -y"
+    PKG_UPDATE="apt-get update -qq"
+    IS_ALT=0
+elif [ -f "/etc/redhat-release" ] || grep -q "Red Hat" /etc/os-release 2>/dev/null; then
+    echo -e "${GREEN}[OK]${NC} RHEL/CentOS/Fedora detected"
+    PKG_MANAGER="dnf"
+    PKG_INSTALL="dnf install -y"
+    PKG_UPDATE="dnf check-update -q"
+    IS_ALT=0
+else
+    echo -e "${YELLOW}[WARNING]${NC} Unknown distribution, assuming Debian/ALT compatible"
+    PKG_MANAGER="apt-get"
+    PKG_INSTALL="apt-get install -y"
+    PKG_UPDATE="apt-get update -qq"
+    IS_ALT=0
+fi
+
+# ============================================================================
 # ПРОВЕРКА ЗАВИСИМОСТЕЙ
 # ============================================================================
 
-echo -e "${BLUE}[INFO]${NC} Checking dependencies..."
+echo -e "\n${BLUE}[INFO]${NC} Checking dependencies..."
 
 # Функция проверки и установки пакета
 check_package() {
     local pkg=$1
     if ! command -v $pkg &> /dev/null; then
         echo -e "${YELLOW}[WARNING]${NC} $pkg not found. Installing..."
-        apt-get update -qq 2>/dev/null || true
-        apt-get install -y $pkg 2>/dev/null || true
+        $PKG_UPDATE 2>/dev/null || true
+        $PKG_INSTALL $pkg 2>/dev/null || true
     fi
 }
 
-# Проверка компиляторов
-check_package build-essential
-check_package clang
-check_package pkg-config
+if [ "$IS_ALT" -eq 1 ]; then
+    # ALT Linux специфичные имена пакетов
+    echo -e "${BLUE}[INFO]${NC} Installing ALT Linux packages..."
+    $PKG_UPDATE 2>/dev/null || true
 
-# Проверка BPF инструментов
-if ! command -v bpftool &> /dev/null; then
-    echo -e "${YELLOW}[WARNING]${NC} bpftool not found. Installing..."
-    apt-get update -qq 2>/dev/null || true
-    apt-get install -y linux-tools-common linux-tools-$(uname -r) 2>/dev/null || true
+    # Базовые пакеты
+    $PKG_INSTALL gcc clang make pkg-config 2>/dev/null || true
 
-    # Если bpftool всё ещё не установлен, пробуем из репозитория
+    # BPF пакеты
+    $PKG_INSTALL libbpf-devel libelf-devel zlib-devel 2>/dev/null || true
+
+    # Ядерные заголовки
+    $PKG_INSTALL kernel-headers-modules-std-def 2>/dev/null || true
+    $PKG_INSTALL kernel-headers-modules-un-def 2>/dev/null || true
+
+    # GUI
+    $PKG_INSTALL zenity 2>/dev/null || true
+
+    # BPF инструменты
+    $PKG_INSTALL bpftool 2>/dev/null || true
+else
+    # Стандартные имена для Debian/Ubuntu
+    check_package build-essential
+    check_package clang
+    check_package pkg-config
+    check_package libbpf-dev
+    check_package libelf-dev
+    check_package zlib1g-dev
+    check_package zenity
+
+    # BPF инструменты
     if ! command -v bpftool &> /dev/null; then
-        apt-get install -y bpftool 2>/dev/null || true
+        $PKG_INSTALL linux-tools-common linux-tools-$(uname -r) 2>/dev/null || true
+        $PKG_INSTALL bpftool 2>/dev/null || true
     fi
 fi
-
-# Проверка библиотек
-check_package libbpf-dev
-check_package libelf-dev
-check_package zlib1g-dev
-check_package zenity
 
 echo -e "${GREEN}[OK]${NC} Dependencies OK"
 
@@ -82,6 +129,10 @@ if [ -f "/sys/kernel/btf/vmlinux" ]; then
     echo -e "${GREEN}[OK]${NC} BTF found"
 else
     echo -e "${YELLOW}[WARNING]${NC} BTF not found. Kernel may not support CO-RE"
+    if [ "$IS_ALT" -eq 1 ]; then
+        echo -e "${YELLOW}[INFO]${NC} For ALT Linux, try: modprobe -v btf"
+        echo -e "${YELLOW}[INFO]${NC} Or install kernel with CONFIG_DEBUG_INFO_BTF=y"
+    fi
 fi
 
 # Проверка LSM
@@ -92,7 +143,160 @@ if [ -f "/sys/kernel/security/lsm" ]; then
     else
         echo -e "${YELLOW}[WARNING]${NC} BPF LSM not found in: $LSM"
         echo -e "${YELLOW}[INFO]${NC} To enable, add 'bpf' to lsm= in /etc/default/grub"
+        echo -e "${YELLOW}[INFO]${NC} Example: GRUB_CMDLINE_LINUX_DEFAULT=\"lsm=lockdown,capability,integrity,bpf\""
     fi
+fi
+
+# Проверка CONFIG_BPF_LSM
+if [ -f "/proc/config.gz" ]; then
+    if zcat /proc/config.gz 2>/dev/null | grep -q "CONFIG_BPF_LSM=y"; then
+        echo -e "${GREEN}[OK]${NC} CONFIG_BPF_LSM=y"
+    else
+        echo -e "${YELLOW}[WARNING]${NC} CONFIG_BPF_LSM may not be enabled"
+    fi
+fi
+
+# ============================================================================
+# ПОИСК BPF ЗАГОЛОВКОВ ДЛЯ ALT LINUX
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Setting up BPF include paths..."
+
+BPF_INCLUDE_DIRS=""
+BPF_EXTRA_FLAGS=""
+
+if [ "$IS_ALT" -eq 1 ]; then
+    echo -e "${BLUE}[INFO]${NC} Searching for BPF headers in ALT Linux..."
+
+    # Список путей для поиска bpf_helpers.h
+    ALT_BPF_PATHS=(
+        "/usr/include/bpf"
+        "/usr/src/kernel-headers/include/bpf"
+        "/usr/src/kernel-headers-modules-std-def/include/bpf"
+        "/usr/src/kernel-headers-modules-un-def/include/bpf"
+        "/usr/lib/modules/$(uname -r)/build/include/bpf"
+        "/usr/src/linux-headers-$(uname -r)/include/bpf"
+    )
+
+    for path in "${ALT_BPF_PATHS[@]}"; do
+        if [ -f "$path/bpf_helpers.h" ]; then
+            BPF_INCLUDE_DIRS="$BPF_INCLUDE_DIRS -I$path"
+            echo -e "${GREEN}[OK]${NC} Found BPF headers in: $path"
+        fi
+    done
+
+    # Если не нашли, пробуем через find
+    if [ -z "$BPF_INCLUDE_DIRS" ]; then
+        echo -e "${YELLOW}[WARNING]${NC} bpf_helpers.h not found in standard locations"
+        echo -e "${YELLOW}[INFO]${NC} Trying to find via find..."
+
+        FOUND_PATH=$(find /usr -name "bpf_helpers.h" 2>/dev/null | head -1)
+        if [ -n "$FOUND_PATH" ]; then
+            FOUND_DIR=$(dirname "$FOUND_PATH")
+            BPF_INCLUDE_DIRS="-I$FOUND_DIR"
+            echo -e "${GREEN}[OK]${NC} Found BPF headers in: $FOUND_DIR"
+        else
+            echo -e "${YELLOW}[WARNING]${NC} bpf_helpers.h not found!"
+            echo -e "${YELLOW}[INFO]${NC} Try installing: apt-get install libbpf-devel kernel-headers-modules-std-def"
+            echo -e "${YELLOW}[INFO]${NC} Continuing with fallback paths..."
+
+            # Fallback пути
+            if [ -d "/usr/include/bpf" ]; then
+                BPF_INCLUDE_DIRS="-I/usr/include/bpf"
+            elif [ -d "/usr/src/kernel-headers/include/bpf" ]; then
+                BPF_INCLUDE_DIRS="-I/usr/src/kernel-headers/include/bpf"
+            else
+                BPF_INCLUDE_DIRS="-I/usr/include"
+            fi
+        fi
+    fi
+
+    # Добавляем дополнительные пути для ALT
+    BPF_INCLUDE_DIRS="$BPF_INCLUDE_DIRS -I/usr/include"
+    BPF_EXTRA_FLAGS="-D__TARGET_ARCH_x86"
+else
+    # Стандартные пути для Debian/Ubuntu
+    BPF_INCLUDE_DIRS="-I/usr/include/bpf -I/usr/include"
+    BPF_EXTRA_FLAGS="-D__TARGET_ARCH_x86"
+fi
+
+echo -e "${BLUE}[INFO]${NC} BPF include paths: $BPF_INCLUDE_DIRS"
+
+# ============================================================================
+# ГЕНЕРАЦИЯ VMLINUX.H
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Generating vmlinux.h..."
+
+if [ ! -f "vmlinux.h" ]; then
+    if command -v bpftool &> /dev/null; then
+        if [ -f "/sys/kernel/btf/vmlinux" ]; then
+            bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h 2>/dev/null
+            if [ -f "vmlinux.h" ]; then
+                echo -e "${GREEN}[OK]${NC} vmlinux.h generated from BTF"
+            fi
+        fi
+    fi
+
+    # Если не удалось сгенерировать, создаем минимальную версию
+    if [ ! -f "vmlinux.h" ]; then
+        echo -e "${YELLOW}[WARNING]${NC} Failed to generate vmlinux.h from BTF, creating minimal version..."
+        cat > vmlinux.h << 'EOF'
+#ifndef __VMLINUX_H
+#define __VMLINUX_H
+
+typedef unsigned char __u8;
+typedef unsigned short __u16;
+typedef unsigned int __u32;
+typedef unsigned long long __u64;
+typedef signed char __s8;
+typedef signed short __s16;
+typedef signed int __s32;
+typedef signed long long __s64;
+
+typedef __u8 u8;
+typedef __u16 u16;
+typedef __u32 u32;
+typedef __u64 u64;
+
+typedef __s8 s8;
+typedef __s16 s16;
+typedef __s32 s32;
+typedef __s64 s64;
+
+#define __always_inline inline __attribute__((always_inline))
+#define __attribute_const__ __attribute__((__const__))
+
+typedef unsigned long long __ino_t;
+typedef unsigned int __mode_t;
+typedef unsigned int __uid_t;
+typedef unsigned int __gid_t;
+typedef unsigned int __dev_t;
+typedef unsigned long long __nlink_t;
+typedef long long __off_t;
+
+struct stat {
+    __dev_t st_dev;
+    __ino_t st_ino;
+    __mode_t st_mode;
+    __nlink_t st_nlink;
+    __uid_t st_uid;
+    __gid_t st_gid;
+    __dev_t st_rdev;
+    __off_t st_size;
+    long st_blksize;
+    long st_blocks;
+    long st_atime;
+    long st_mtime;
+    long st_ctime;
+};
+
+#endif
+EOF
+        echo -e "${GREEN}[OK]${NC} Minimal vmlinux.h created"
+    fi
+else
+    echo -e "${GREEN}[OK]${NC} vmlinux.h already exists"
 fi
 
 # ============================================================================
@@ -106,34 +310,23 @@ if [ ! -f "app_data_sec.bpf.c" ]; then
     exit 1
 fi
 
-# Генерация vmlinux.h если нет
-if [ ! -f "vmlinux.h" ]; then
-    echo -e "${BLUE}[INFO]${NC} Generating vmlinux.h..."
-    if command -v bpftool &> /dev/null; then
-        bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h 2>/dev/null || {
-            echo -e "${YELLOW}[WARNING]${NC} Failed to generate vmlinux.h"
-        }
-    fi
-fi
-
 # Компиляция BPF
 echo -e "${BLUE}[INFO]${NC} Compiling BPF program..."
-clang -g -O2 -target bpf -D__TARGET_ARCH_x86 -I. -c app_data_sec.bpf.c -o app_data_sec.bpf.o 2>&1
+echo -e "${BLUE}[INFO]${NC} Include paths: $BPF_INCLUDE_DIRS"
+
+clang -g -O2 -target bpf \
+    $BPF_INCLUDE_DIRS \
+    $BPF_EXTRA_FLAGS \
+    -I. \
+    -c app_data_sec.bpf.c -o app_data_sec.bpf.o 2>&1
 
 if [ ! -f "app_data_sec.bpf.o" ]; then
     echo -e "${RED}[ERROR]${NC} BPF compilation failed!"
+    echo -e "${YELLOW}[INFO]${NC} Try installing: apt-get install libbpf-devel kernel-headers-modules-std-def"
+    echo -e "${YELLOW}[INFO]${NC} Or check that bpf_helpers.h is available"
     exit 1
 fi
 echo -e "${GREEN}[OK]${NC} BPF compiled"
-
-# Генерация скелета
-if command -v bpftool &> /dev/null; then
-    echo -e "${BLUE}[INFO]${NC} Generating BPF skeleton..."
-    bpftool gen skeleton app_data_sec.bpf.o > app_data_sec.skel.h 2>/dev/null
-    if [ -f "app_data_sec.skel.h" ]; then
-        echo -e "${GREEN}[OK]${NC} Skeleton generated"
-    fi
-fi
 
 # ============================================================================
 # КОМПИЛЯЦИЯ APP_DATA_SEC_LOADER
@@ -147,7 +340,14 @@ if [ ! -f "app_data_sec_loader.c" ]; then
 fi
 
 # Компиляция загрузчика
-gcc -Wall -O2 -o app_data_sec_loader app_data_sec_loader.c -lbpf -lelf -lz 2>&1
+echo -e "${BLUE}[INFO]${NC} Compiling loader..."
+
+if [ "$IS_ALT" -eq 1 ]; then
+    # Для ALT Linux может потребоваться дополнительные флаги
+    gcc -Wall -O2 -o app_data_sec_loader app_data_sec_loader.c -lbpf -lelf -lz 2>&1
+else
+    gcc -Wall -O2 -o app_data_sec_loader app_data_sec_loader.c -lbpf -lelf -lz 2>&1
+fi
 
 if [ ! -f "app_data_sec_loader" ]; then
     echo -e "${RED}[ERROR]${NC} Loader compilation failed!"
@@ -168,18 +368,21 @@ if [ -f "app_data_sec_watchdog_zenity.c" ]; then
 elif [ -f "app_data_sec_watchdog.c" ]; then
     WATCHDOG_SRC="app_data_sec_watchdog.c"
 else
-    echo -e "${RED}[ERROR]${NC} Watchdog source not found!"
-    exit 1
+    echo -e "${YELLOW}[WARNING]${NC} Watchdog source not found, skipping"
+    WATCHDOG_SRC=""
 fi
 
-# Компиляция
-gcc -Wall -O2 -o app_data_sec_watchdog "$WATCHDOG_SRC" -lm 2>&1
+if [ -n "$WATCHDOG_SRC" ]; then
+    gcc -Wall -O2 -o app_data_sec_watchdog "$WATCHDOG_SRC" -lm 2>&1
 
-if [ ! -f "app_data_sec_watchdog" ]; then
-    echo -e "${RED}[ERROR]${NC} Watchdog compilation failed!"
-    exit 1
+    if [ ! -f "app_data_sec_watchdog" ]; then
+        echo -e "${RED}[ERROR]${NC} Watchdog compilation failed!"
+        exit 1
+    fi
+    echo -e "${GREEN}[OK]${NC} Watchdog compiled"
+else
+    echo -e "${YELLOW}[WARNING]${NC} Watchdog not compiled"
 fi
-echo -e "${GREEN}[OK]${NC} Watchdog compiled"
 
 # ============================================================================
 # УСТАНОВКА ФАЙЛОВ
@@ -198,24 +401,25 @@ chmod 755 "$INSTALL_PATH/app_data_sec_loader"
 echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_loader"
 
 # Устанавливаем watchdog
-cp app_data_sec_watchdog "$INSTALL_PATH/"
-chmod 755 "$INSTALL_PATH/app_data_sec_watchdog"
-echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_watchdog"
+if [ -f "app_data_sec_watchdog" ]; then
+    cp app_data_sec_watchdog "$INSTALL_PATH/"
+    chmod 755 "$INSTALL_PATH/app_data_sec_watchdog"
+    echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_watchdog"
+fi
 
 # Устанавливаем BPF объект
 cp app_data_sec.bpf.o "$BPF_OBJ_PATH/"
 chmod 644 "$BPF_OBJ_PATH/app_data_sec.bpf.o"
 echo -e "${GREEN}[OK]${NC} Installed: $BPF_OBJ_PATH/app_data_sec.bpf.o"
 
-# Копируем скелет (опционально)
-if [ -f "app_data_sec.skel.h" ]; then
-    cp app_data_sec.skel.h "$BPF_OBJ_PATH/"
-    echo -e "${GREEN}[OK]${NC} Installed: $BPF_OBJ_PATH/app_data_sec.skel.h"
-fi
-
-# Создаём символическую ссылку
+# Создаём символические ссылки
 ln -sf "$INSTALL_PATH/app_data_sec_loader" /usr/bin/app_data_sec_loader 2>/dev/null || true
 echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_loader"
+
+if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
+    ln -sf "$INSTALL_PATH/app_data_sec_watchdog" /usr/bin/app_data_sec_watchdog 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_watchdog"
+fi
 
 # ============================================================================
 # КОНФИГУРАЦИЯ
@@ -250,14 +454,11 @@ fi
 
 echo -e "\n${BLUE}[INFO]${NC} Creating log files..."
 
-touch "$LOG_PATH/app_data_sec_loader.log"
-touch "$LOG_PATH/app_data_sec_loader_error.log"
-touch "$LOG_PATH/app_data_sec_watchdog.log"
-touch "$LOG_PATH/app_data_sec_watchdog_error.log"
-chmod 644 "$LOG_PATH/app_data_sec_loader.log"
-chmod 644 "$LOG_PATH/app_data_sec_loader_error.log"
-chmod 644 "$LOG_PATH/app_data_sec_watchdog.log"
-chmod 644 "$LOG_PATH/app_data_sec_watchdog_error.log"
+for logfile in app_data_sec_loader.log app_data_sec_loader_error.log \
+               app_data_sec_watchdog.log app_data_sec_watchdog_error.log; do
+    touch "$LOG_PATH/$logfile"
+    chmod 644 "$LOG_PATH/$logfile"
+done
 
 echo -e "${GREEN}[OK]${NC} Log files created"
 
@@ -267,7 +468,7 @@ echo -e "${GREEN}[OK]${NC} Log files created"
 
 echo -e "\n${BLUE}[INFO]${NC} Creating systemd services..."
 
-# Определяем DISPLAY
+# Определяем DISPLAY для ALT Linux
 DISPLAY_VAR=":0"
 if [ -n "$DISPLAY" ]; then
     DISPLAY_VAR="$DISPLAY"
@@ -303,15 +504,16 @@ ProtectSystem=strict
 ProtectHome=true
 NoNewPrivileges=true
 ReadWritePaths=/var/log
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
 
 [Install]
 WantedBy=multi-user.target
 EOF
 echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_loader.service"
 
-# Сервис для watchdog
-cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << EOF
+# Сервис для watchdog (если собран)
+if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
+    cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << EOF
 [Unit]
 Description=APP DATA SEC Watchdog Service
 Documentation=https://github.com/your-repo/app_data_sec
@@ -346,7 +548,8 @@ CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP
 [Install]
 WantedBy=multi-user.target graphical.target
 EOF
-echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_watchdog.service"
+    echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_watchdog.service"
+fi
 
 # ============================================================================
 # НАСТРОЙКА XAUTHORITY (для GUI)
@@ -371,6 +574,7 @@ if [ -n "$XAUTH_FILE" ]; then
     echo -e "${GREEN}[OK]${NC} Xauthority set up"
 else
     echo -e "${YELLOW}[WARNING]${NC} No Xauthority file found. GUI dialogs may not work."
+    echo -e "${YELLOW}[INFO]${NC} Run 'xauth list' to find the correct Xauthority file"
 fi
 
 # ============================================================================
@@ -386,8 +590,10 @@ systemctl enable app_data_sec_loader 2>/dev/null || true
 systemctl restart app_data_sec_loader
 
 # Запускаем watchdog
-systemctl enable app_data_sec_watchdog 2>/dev/null || true
-systemctl restart app_data_sec_watchdog
+if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
+    systemctl enable app_data_sec_watchdog 2>/dev/null || true
+    systemctl restart app_data_sec_watchdog
+fi
 
 sleep 3
 
@@ -401,9 +607,11 @@ echo ""
 echo -e "${BLUE}app_data_sec_loader:${NC}"
 systemctl status app_data_sec_loader --no-pager || true
 
-echo ""
-echo -e "${BLUE}app_data_sec_watchdog:${NC}"
-systemctl status app_data_sec_watchdog --no-pager || true
+if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
+    echo ""
+    echo -e "${BLUE}app_data_sec_watchdog:${NC}"
+    systemctl status app_data_sec_watchdog --no-pager || true
+fi
 
 # ============================================================================
 # ПРОВЕРКА ЛОГОВ
@@ -415,9 +623,28 @@ echo ""
 echo -e "${BLUE}app_data_sec_loader logs:${NC}"
 journalctl -u app_data_sec_loader -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
 
-echo ""
-echo -e "${BLUE}app_data_sec_watchdog logs:${NC}"
-journalctl -u app_data_sec_watchdog -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
+if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
+    echo ""
+    echo -e "${BLUE}app_data_sec_watchdog logs:${NC}"
+    journalctl -u app_data_sec_watchdog -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
+fi
+
+# ============================================================================
+# ПРОВЕРКА BPF
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Checking BPF programs..."
+
+if command -v bpftool &> /dev/null; then
+    BPF_PROGS=$(bpftool prog list 2>/dev/null | grep -c "block_" || echo "0")
+    echo -e "  BPF programs loaded: $BPF_PROGS"
+
+    # Проверяем карты
+    echo -e "\n${BLUE}[INFO]${NC} BPF maps:"
+    bpftool map list 2>/dev/null | grep -E "(folder_config|folder_allowed|folder_scripts)" || echo "  No maps found"
+else
+    echo -e "  ${YELLOW}bpftool not available${NC}"
+fi
 
 # ============================================================================
 # ВЫВОД ИНФОРМАЦИИ
@@ -429,24 +656,28 @@ ${GREEN}✅ Installation completed successfully!${NC}
 
 ${BLUE}Installed files:${NC}
   $INSTALL_PATH/app_data_sec_loader
-  $INSTALL_PATH/app_data_sec_watchdog
   $BPF_OBJ_PATH/app_data_sec.bpf.o
   $CONFIG_PATH
 
 ${BLUE}Services:${NC}
   app_data_sec_loader   - Main protection service
-  app_data_sec_watchdog - Watchdog service
+  app_data_sec_watchdog - Watchdog service (if compiled)
 
 ${BLUE}Commands:${NC}
   sudo systemctl status app_data_sec_loader
-  sudo systemctl status app_data_sec_watchdog
   sudo journalctl -u app_data_sec_loader -f
-  sudo journalctl -u app_data_sec_watchdog -f
   sudo tail -f /var/log/app_data_sec_loader.log
 
 ${BLUE}Configuration:${NC}
   Edit: sudo nano $CONFIG_PATH
   Reload: sudo systemctl restart app_data_sec_loader
+
+${BLUE}Troubleshooting ALT Linux:${NC}
+  1. Check kernel support: bpftool feature
+  2. Check LSM: cat /sys/kernel/security/lsm
+  3. For BPF LSM: add 'bpf' to lsm= in /etc/default/grub
+  4. Check BPF headers: find /usr -name "bpf_helpers.h"
+  5. Install packages: apt-get install libbpf-devel kernel-headers-modules-std-def
 
 ${BLUE}Uninstall:${NC}
   sudo ./uninstall_app_data_sec.sh
