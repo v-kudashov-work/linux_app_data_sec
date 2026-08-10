@@ -18,9 +18,12 @@ BPF_CFLAGS = -g -O2 -target bpf -D__TARGET_ARCH_x86
 BPF_SRC = app_data_sec.bpf.c
 BPF_OBJ = app_data_sec.bpf.o
 
+UNPROTECT = app_data_sec_unprotect
+UNPROTECT_SRC = app_data_sec_unprotect.c
+
 # ==== Основные цели ====
 
-all: $(TARGETS) $(BPF_OBJ)
+all: $(TARGETS) $(BPF_OBJ) $(UNPROTECT)
 
 app_data_sec_loader: $(LOADER_SRC)
 	$(CC) $(CFLAGS) -o $@ $< -lbpf -lelf -lz
@@ -30,6 +33,9 @@ app_data_sec_merge_config: $(MERGE_SRC)
 
 app_data_sec_watchdog: $(WATCHDOG_SRC)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+$(UNPROTECT): $(UNPROTECT_SRC)
+	$(CC) $(CFLAGS) -o $@ $<
 
 $(BPF_OBJ): $(BPF_SRC) vmlinux.h
 	$(CLANG) $(BPF_CFLAGS) -I. -c $< -o $@
@@ -51,7 +57,7 @@ vmlinux.h:
 # ==== Остальное ====
 
 clean:
-	rm -f $(TARGETS) $(BPF_OBJ) *.o
+	rm -f $(TARGETS) $(BPF_OBJ) $(UNPROTECT) *.o
 
 rebuild: clean all
 
