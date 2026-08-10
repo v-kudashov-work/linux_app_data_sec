@@ -68,6 +68,7 @@ struct protect_entry {
     char path[PATH_MAX];
     __u64 inode;
     __u64 allowed_inodes[MAX_ALLOWED];
+    char allowed_paths[MAX_ALLOWED][PATH_MAX];
     int allowed_count;
     int is_expanded;
     int is_active;
@@ -76,9 +77,10 @@ struct protect_entry {
 
 // Структура для хранения шаблона с ~
 struct protect_template {
-    char pattern[PATH_MAX];          // Исходный шаблон с ~
-    char subpath[PATH_MAX];          // Часть после ~
+    char pattern[PATH_MAX];
+    char subpath[PATH_MAX];
     __u64 allowed_inodes[MAX_ALLOWED];
+    char allowed_paths[MAX_ALLOWED][PATH_MAX];
     int allowed_count;
     int enabled;
 };
@@ -209,7 +211,10 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
     return idx;
 }
 
-// Парсинг конфигурации
+// ============================================================================
+// ПАРСИНГ КОНФИГУРАЦИИ
+// ============================================================================
+
 static int parse_config(void) {
     DEBUG_PRINT("parse_config: start");
 
@@ -287,10 +292,11 @@ static int parse_config(void) {
             DEBUG_PRINT("parse_config: raw_path = %s", raw_path);
 
             __u64 allowed_inodes[MAX_ALLOWED];
+            char allowed_paths[MAX_ALLOWED][PATH_MAX];
             int allowed_count = 0;
             memset(allowed_inodes, 0, sizeof(allowed_inodes));
+            memset(allowed_paths, 0, sizeof(allowed_paths));
 
-            // Парсим разрешенные программы (точные пути)
             ptr = path_end;
             while (*ptr) {
                 while (*ptr == ' ' || *ptr == '\t') ptr++;
@@ -305,12 +311,12 @@ static int parse_config(void) {
                     strncpy(prog_path, ptr, arg_len);
                     prog_path[arg_len] = '\0';
 
-                    // Проверяем существование файла (любого, включая .sh)
                     char real_allowed_path[PATH_MAX];
                     if (realpath(prog_path, real_allowed_path) != NULL) {
                         __u64 allowed_inode = get_inode_from_path(real_allowed_path);
                         if (allowed_inode != 0) {
                             allowed_inodes[allowed_count] = allowed_inode;
+                            strcpy(allowed_paths[allowed_count], real_allowed_path);
                             allowed_count++;
                             SYSLOG_INFO("  Allowed program: %s (inode: %lu)",
                                         real_allowed_path, (unsigned long)allowed_inode);
@@ -326,12 +332,12 @@ static int parse_config(void) {
             if (raw_path[0] == '~') {
                 struct protect_template *tmpl = &templates[new_template_count];
                 safe_strcpy(tmpl->pattern, raw_path, sizeof(tmpl->pattern));
-
                 const char *subpath = raw_path + 1;
                 safe_strcpy(tmpl->subpath, subpath, sizeof(tmpl->subpath));
 
                 for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
                     tmpl->allowed_inodes[i] = allowed_inodes[i];
+                    strcpy(tmpl->allowed_paths[i], allowed_paths[i]);
                 }
                 tmpl->allowed_count = allowed_count;
                 tmpl->enabled = 1;
@@ -353,20 +359,22 @@ static int parse_config(void) {
 
                     for (int j = 0; j < tmpl->allowed_count && j < MAX_ALLOWED; j++) {
                         entry->allowed_inodes[j] = tmpl->allowed_inodes[j];
+                        strcpy(entry->allowed_paths[j], tmpl->allowed_paths[j]);
                         entry->allowed_count++;
                     }
 
                     if (entry->inode != 0) {
                         SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
-                        // Выводим список разрешенных программ (inode)
                         if (entry->allowed_count > 0) {
-                            char prog_list[1024] = "";
+                            char prog_list[2048] = "";
                             for (int j = 0; j < entry->allowed_count && j < MAX_ALLOWED; j++) {
-                                char temp[64];
+                                char temp[512];
                                 if (j == 0) {
-                                    snprintf(temp, sizeof(temp), "inode: %lu", (unsigned long)entry->allowed_inodes[j]);
+                                    snprintf(temp, sizeof(temp), "%s (inode: %lu)",
+                                             entry->allowed_paths[j], (unsigned long)entry->allowed_inodes[j]);
                                 } else {
-                                    snprintf(temp, sizeof(temp), ", inode: %lu", (unsigned long)entry->allowed_inodes[j]);
+                                    snprintf(temp, sizeof(temp), ", %s (inode: %lu)",
+                                             entry->allowed_paths[j], (unsigned long)entry->allowed_inodes[j]);
                                 }
                                 strncat(prog_list, temp, sizeof(prog_list) - strlen(prog_list) - 1);
                             }
@@ -392,20 +400,22 @@ static int parse_config(void) {
 
                 for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
                     entry->allowed_inodes[i] = allowed_inodes[i];
+                    strcpy(entry->allowed_paths[i], allowed_paths[i]);
                     entry->allowed_count++;
                 }
 
                 if (entry->inode != 0) {
                     SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
-                    // Выводим список разрешенных программ (inode)
                     if (entry->allowed_count > 0) {
-                        char prog_list[1024] = "";
+                        char prog_list[2048] = "";
                         for (int j = 0; j < entry->allowed_count && j < MAX_ALLOWED; j++) {
-                            char temp[64];
+                            char temp[512];
                             if (j == 0) {
-                                snprintf(temp, sizeof(temp), "inode: %lu", (unsigned long)entry->allowed_inodes[j]);
+                                snprintf(temp, sizeof(temp), "%s (inode: %lu)",
+                                         entry->allowed_paths[j], (unsigned long)entry->allowed_inodes[j]);
                             } else {
-                                snprintf(temp, sizeof(temp), ", inode: %lu", (unsigned long)entry->allowed_inodes[j]);
+                                snprintf(temp, sizeof(temp), ", %s (inode: %lu)",
+                                         entry->allowed_paths[j], (unsigned long)entry->allowed_inodes[j]);
                             }
                             strncat(prog_list, temp, sizeof(prog_list) - strlen(prog_list) - 1);
                         }
@@ -439,7 +449,7 @@ static int parse_config(void) {
 }
 
 // ============================================================================
-// ЗАГРУЗКА В BPF
+// УДАЛЕНИЕ ИЗ BPF
 // ============================================================================
 
 static int remove_entry_from_bpf(struct bpf_object *obj, __u64 inode) {
@@ -465,6 +475,10 @@ static int remove_entry_from_bpf(struct bpf_object *obj, __u64 inode) {
 
     return 0;
 }
+
+// ============================================================================
+// ЗАГРУЗКА ОДНОЙ ЗАПИСИ В BPF
+// ============================================================================
 
 static int load_entry_to_bpf(struct bpf_object *obj, struct protect_entry *entry, int index) {
     if (!entry || entry->inode == 0) return -1;
@@ -493,6 +507,10 @@ static int load_entry_to_bpf(struct bpf_object *obj, struct protect_entry *entry
     SYSLOG_INFO("  [%d] Loaded: %s (inode: %lu)", index, entry->path, (unsigned long)entry->inode);
     return 0;
 }
+
+// ============================================================================
+// ПЕРЕЗАГРУЗКА ВСЕХ ЗАПИСЕЙ
+// ============================================================================
 
 static int reload_all_entries(struct bpf_object *obj) {
     struct bpf_map *map;
@@ -655,6 +673,7 @@ static int scan_templates_and_load(struct bpf_object *obj) {
 
                 for (int j = 0; j < templates[t].allowed_count && j < MAX_ALLOWED; j++) {
                     entry->allowed_inodes[j] = templates[t].allowed_inodes[j];
+                    strcpy(entry->allowed_paths[j], templates[t].allowed_paths[j]);
                     entry->allowed_count++;
                 }
 
@@ -708,7 +727,6 @@ static const char* find_bpf_object(void) {
     static char path[PATH_MAX];
     struct stat st;
 
-    // Проверяем все возможные места
     const char *paths[] = {
         "/usr/local/lib/app_data_sec/app_data_sec.bpf.o",
         "./app_data_sec.bpf.o",
@@ -727,7 +745,6 @@ static const char* find_bpf_object(void) {
         }
     }
 
-    // Пытаемся найти через find
     FILE *fp = popen("find /usr/local /opt -name 'app_data_sec.bpf.o' 2>/dev/null | head -1", "r");
     if (fp) {
         char result[PATH_MAX];
@@ -773,7 +790,7 @@ static void print_usage(const char *prog) {
 int main(int argc, char **argv) {
     struct bpf_program *prog;
     struct bpf_map *map;
-    int err = 0;  // Инициализирована
+    int err = 0;
     int log_level = 1;
     const char *bpf_file = NULL;
     int waiting_for_config = 0;
@@ -821,7 +838,6 @@ int main(int argc, char **argv) {
 
     DEBUG_PRINT("main: before parse_config");
 
-    // Находим BPF объект
     bpf_file = find_bpf_object();
     if (!bpf_file) {
         SYSLOG_ERR("BPF object file not found!");
@@ -838,9 +854,6 @@ int main(int argc, char **argv) {
     DEBUG_PRINT("main: after parse_config, enabled=%d, count=%d, templates=%d",
                 config_enabled, entry_count, template_count);
 
-    // ============================================================
-    // ЕСЛИ КОНФИГ НЕ ВАЛИДЕН - ЖДЁМ ОБНОВЛЕНИЙ
-    // ============================================================
     if (!config_enabled || entry_count == 0) {
         if (!config_enabled) {
             SYSLOG_INFO("Config: module disabled, waiting for enable...");
@@ -848,7 +861,6 @@ int main(int argc, char **argv) {
             SYSLOG_WARN("No valid protect entries found, waiting for config changes...");
         }
 
-        // Открываем BPF объект, но не загружаем записи
         g_bpf_obj = bpf_object__open_file(bpf_file, NULL);
         if (libbpf_get_error(g_bpf_obj)) {
             SYSLOG_ERR("Failed to open BPF object %s: %s", bpf_file, strerror(-libbpf_get_error(g_bpf_obj)));
@@ -862,7 +874,6 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
 
-        // Прикрепляем LSM программы (они будут работать, но без правил)
         bpf_object__for_each_program(prog, g_bpf_obj) {
             const char *name = bpf_program__name(prog);
             if (strncmp(name, "block_", 6) != 0) continue;
@@ -875,7 +886,6 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Устанавливаем уровень логирования
         map = bpf_object__find_map_by_name(g_bpf_obj, "log_level_map");
         if (map) {
             int fd = bpf_map__fd(map);
@@ -890,7 +900,6 @@ int main(int argc, char **argv) {
 
         waiting_for_config = 1;
 
-        // Цикл ожидания валидного конфига
         while (1) {
             sleep(CHECK_INTERVAL);
 
@@ -928,11 +937,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    // ============================================================
-    // ОСНОВНОЙ ЦИКЛ (КОНФИГ ВАЛИДЕН)
-    // ============================================================
     if (!waiting_for_config) {
-        // Если BPF объект ещё не открыт
         if (!g_bpf_obj) {
             g_bpf_obj = bpf_object__open_file(bpf_file, NULL);
             if (libbpf_get_error(g_bpf_obj)) {
@@ -951,7 +956,6 @@ int main(int argc, char **argv) {
                 goto cleanup;
             }
 
-            // Прикрепляем LSM программы
             bpf_object__for_each_program(prog, g_bpf_obj) {
                 const char *name = bpf_program__name(prog);
                 if (strncmp(name, "block_", 6) != 0) continue;
@@ -965,7 +969,6 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Устанавливаем уровень логирования
         map = bpf_object__find_map_by_name(g_bpf_obj, "log_level_map");
         if (map) {
             int fd = bpf_map__fd(map);
