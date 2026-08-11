@@ -1,16 +1,19 @@
-// app_data_sec_merge_config.c - Исправленная версия с динамической памятью
+// app_data_sec_merge_config.c - С поддержкой загрузки всех конфигов из папки
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <dirent.h>
 #include <errno.h>
 
 #define MAX_LINE_LEN 1024
 #define MAX_PATH_LEN 4096
 #define MAX_PATHS 1000
 #define MAX_ALLOWED 10
+#define MAX_CONFIG_FILES 1000
 
 typedef struct {
     char path[MAX_PATH_LEN];
@@ -60,6 +63,67 @@ static int path_exists(const char *path) {
     if (!path) return 0;
     struct stat st;
     return (stat(path, &st) == 0);
+}
+
+static int is_file(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISREG(st.st_mode);
+}
+
+static int is_dir(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode);
+}
+
+// ============================================================================
+// ПОЛУЧЕНИЕ СПИСКА КОНФИГОВ ИЗ ПАПКИ
+// ============================================================================
+
+static int get_config_files(const char *dir_path, char files[MAX_CONFIG_FILES][PATH_MAX]) {
+    DIR *dir;
+    struct dirent *entry;
+    int count = 0;
+
+    dir = opendir(dir_path);
+    if (!dir) {
+        fprintf(stderr, "Warning: Cannot open directory %s: %s\n", dir_path, strerror(errno));
+        return 0;
+    }
+
+    while ((entry = readdir(dir)) != NULL && count < MAX_CONFIG_FILES) {
+        if (entry->d_name[0] == '.') continue;
+
+        char full_path[PATH_MAX];
+        snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name);
+
+        if (!is_file(full_path)) continue;
+
+        // Проверяем расширение .conf
+        char *ext = strrchr(entry->d_name, '.');
+        if (!ext || strcmp(ext, ".conf") != 0) continue;
+
+        strncpy(files[count], full_path, PATH_MAX - 1);
+        files[count][PATH_MAX - 1] = '\0';
+        count++;
+    }
+
+    closedir(dir);
+
+    // Сортируем файлы для предсказуемого порядка
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (strcmp(files[i], files[j]) > 0) {
+                char tmp[PATH_MAX];
+                strcpy(tmp, files[i]);
+                strcpy(files[i], files[j]);
+                strcpy(files[j], tmp);
+            }
+        }
+    }
+
+    return count;
 }
 
 // ============================================================================
@@ -243,9 +307,9 @@ static int write_config(const char *filename, protect_entry_t *entries, int coun
 
 static void print_usage(const char *prog) {
     if (!prog) prog = "app_data_sec_merge_config";
-    fprintf(stderr, "Usage: %s [OPTIONS] <config_file>\n", prog);
+    fprintf(stderr, "Usage: %s [OPTIONS] <config_file_or_dir>\n", prog);
     fprintf(stderr, "\n");
-    fprintf(stderr, "Merge protect entries from config_file into main config.\n");
+    fprintf(stderr, "Merge protect entries from config_file or all .conf files in directory.\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -m, --main <path>    Main config file (default: /etc/app_data_sec.conf)\n");
@@ -254,12 +318,14 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "\n");
     fprintf(stderr, "Examples:\n");
     fprintf(stderr, "  %s /tmp/new.conf\n", prog);
+    fprintf(stderr, "  %s /etc/app_data_sec.d/\n", prog);
     fprintf(stderr, "  %s -m /etc/app_data_sec.conf /tmp/new.conf\n", prog);
+    fprintf(stderr, "  %s -m /etc/app_data_sec.conf /etc/app_data_sec.d/\n", prog);
 }
 
 int main(int argc, char **argv) {
     const char *main_config = "/etc/app_data_sec.conf";
-    const char *merge_file = NULL;
+    const char *source = NULL;
     int enable = 1;
 
     if (argc < 2) {
@@ -289,26 +355,34 @@ int main(int argc, char **argv) {
             print_usage(argv[0]);
             return 1;
         } else {
-            merge_file = argv[i];
+            source = argv[i];
         }
     }
 
-    if (!merge_file) {
-        fprintf(stderr, "Error: config file to merge is required\n");
+    if (!source) {
+        fprintf(stderr, "Error: config file or directory is required\n");
         print_usage(argv[0]);
         return 1;
     }
 
-    if (!path_exists(merge_file)) {
-        fprintf(stderr, "Error: File not found: %s\n", merge_file);
+    if (!path_exists(source)) {
+        fprintf(stderr, "Error: File or directory not found: %s\n", source);
         return 1;
     }
 
+    // Определяем, файл это или директория
+    int is_dir_mode = is_dir(source);
+
     printf("Main config: %s\n", main_config);
-    printf("Merge config: %s\n", merge_file);
+    if (is_dir_mode) {
+        printf("Source directory: %s (all .conf files)\n", source);
+    } else {
+        printf("Source config: %s\n", source);
+    }
     printf("Enable: %s\n", enable ? "yes" : "no");
     printf("\n");
 
+    // Загружаем основной конфиг
     protect_entry_t *main_entries = NULL;
     int main_count = 0;
 
@@ -329,75 +403,112 @@ int main(int argc, char **argv) {
         }
     }
 
-    protect_entry_t *merge_entries = NULL;
-    int merge_count = 0;
+    // Получаем список файлов для слияния
+    char config_files[MAX_CONFIG_FILES][PATH_MAX];
+    int file_count = 0;
 
-    printf("Parsing merge config...\n");
-    if (parse_config(merge_file, &merge_entries, &merge_count) != 0) {
-        fprintf(stderr, "Error: Failed to parse merge config\n");
-        free(main_entries);
-        free(merge_entries);
-        return 1;
+    if (is_dir_mode) {
+        file_count = get_config_files(source, config_files);
+        if (file_count == 0) {
+            printf("No .conf files found in directory: %s\n", source);
+            free(main_entries);
+            return 0;
+        }
+        printf("Found %d .conf files in directory\n", file_count);
+        for (int i = 0; i < file_count; i++) {
+            printf("  - %s\n", config_files[i]);
+        }
+        printf("\n");
+    } else {
+        strncpy(config_files[0], source, PATH_MAX - 1);
+        config_files[0][PATH_MAX - 1] = '\0';
+        file_count = 1;
     }
-    printf("  Found %d entries\n", merge_count);
 
-    if (merge_count == 0) {
-        printf("No protect entries found in merge config, nothing to do\n");
-        free(main_entries);
-        free(merge_entries);
-        return 0;
-    }
+    // Парсим и сливаем все файлы
+    int total_added = 0;
+    int total_updated = 0;
+    int total_skipped = 0;
 
-    printf("\nMerging...\n");
-    int added = 0;
-    int updated = 0;
-    int skipped = 0;
+    for (int f = 0; f < file_count; f++) {
+        printf("--- Processing: %s ---\n", config_files[f]);
 
-    for (int i = 0; i < merge_count; i++) {
-        protect_entry_t *merge_entry = &merge_entries[i];
-        int idx = find_entry(main_entries, main_count, merge_entry->path);
+        protect_entry_t *merge_entries = NULL;
+        int merge_count = 0;
 
-        if (idx >= 0) {
-            protect_entry_t *existing = &main_entries[idx];
-            int new_allowed = 0;
+        if (parse_config(config_files[f], &merge_entries, &merge_count) != 0) {
+            fprintf(stderr, "Error: Failed to parse %s\n", config_files[f]);
+            free(merge_entries);
+            continue;
+        }
 
-            for (int j = 0; j < merge_entry->allowed_count; j++) {
-                if (!is_allowed_exists(existing, merge_entry->allowed[j])) {
-                    if (existing->allowed_count < MAX_ALLOWED) {
-                        strcpy(existing->allowed[existing->allowed_count], merge_entry->allowed[j]);
-                        existing->allowed_count++;
-                        new_allowed++;
-                    } else {
-                        fprintf(stderr, "Warning: Max allowed programs reached for %s\n", existing->path);
+        if (merge_count == 0) {
+            printf("  No protect entries found, skipping\n");
+            free(merge_entries);
+            continue;
+        }
+
+        printf("  Found %d entries\n", merge_count);
+
+        int file_added = 0;
+        int file_updated = 0;
+        int file_skipped = 0;
+
+        for (int i = 0; i < merge_count; i++) {
+            protect_entry_t *merge_entry = &merge_entries[i];
+            int idx = find_entry(main_entries, main_count, merge_entry->path);
+
+            if (idx >= 0) {
+                protect_entry_t *existing = &main_entries[idx];
+                int new_allowed = 0;
+
+                for (int j = 0; j < merge_entry->allowed_count; j++) {
+                    if (!is_allowed_exists(existing, merge_entry->allowed[j])) {
+                        if (existing->allowed_count < MAX_ALLOWED) {
+                            strcpy(existing->allowed[existing->allowed_count], merge_entry->allowed[j]);
+                            existing->allowed_count++;
+                            new_allowed++;
+                        } else {
+                            fprintf(stderr, "Warning: Max allowed programs reached for %s\n", existing->path);
+                        }
                     }
                 }
-            }
 
-            if (new_allowed > 0) {
-                printf("  Updated: %s (+%d new allowed programs)\n", existing->path, new_allowed);
-                updated++;
+                if (new_allowed > 0) {
+                    printf("  Updated: %s (+%d new allowed programs)\n", existing->path, new_allowed);
+                    file_updated++;
+                } else {
+                    printf("  Skipped: %s (no new allowed programs)\n", existing->path);
+                    file_skipped++;
+                }
             } else {
-                printf("  Skipped: %s (no new allowed programs)\n", existing->path);
-                skipped++;
-            }
-        } else {
-            if (main_count < MAX_PATHS) {
-                memcpy(&main_entries[main_count], merge_entry, sizeof(protect_entry_t));
-                main_count++;
-                printf("  Added: %s (%d allowed programs)\n", merge_entry->path, merge_entry->allowed_count);
-                added++;
-            } else {
-                fprintf(stderr, "Error: Max entries reached, cannot add %s\n", merge_entry->path);
+                if (main_count < MAX_PATHS) {
+                    memcpy(&main_entries[main_count], merge_entry, sizeof(protect_entry_t));
+                    main_count++;
+                    printf("  Added: %s (%d allowed programs)\n", merge_entry->path, merge_entry->allowed_count);
+                    file_added++;
+                } else {
+                    fprintf(stderr, "Error: Max entries reached, cannot add %s\n", merge_entry->path);
+                }
             }
         }
+
+        free(merge_entries);
+
+        total_added += file_added;
+        total_updated += file_updated;
+        total_skipped += file_skipped;
+
+        printf("  Summary: +%d added, +%d updated, %d skipped\n", file_added, file_updated, file_skipped);
+        printf("\n");
     }
 
-    printf("\nSummary: %d added, %d updated, %d skipped\n", added, updated, skipped);
+    printf("=== Final Summary ===\n");
+    printf("Total: %d added, %d updated, %d skipped\n", total_added, total_updated, total_skipped);
 
-    if (added == 0 && updated == 0) {
+    if (total_added == 0 && total_updated == 0) {
         printf("No changes to write\n");
         free(main_entries);
-        free(merge_entries);
         return 0;
     }
 
@@ -405,12 +516,10 @@ int main(int argc, char **argv) {
     if (write_config(main_config, main_entries, main_count, enable) != 0) {
         fprintf(stderr, "Error: Failed to write config\n");
         free(main_entries);
-        free(merge_entries);
         return 1;
     }
 
     free(main_entries);
-    free(merge_entries);
 
     printf("\nDone!\n");
     printf("To apply changes: sudo systemctl restart app_data_sec_loader\n");
