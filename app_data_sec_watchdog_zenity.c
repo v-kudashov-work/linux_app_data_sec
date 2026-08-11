@@ -1,4 +1,4 @@
-// app_data_sec_watchdog_zenity.c - С блокировкой от повторного запуска
+// app_data_sec_watchdog_zenity.c - Только мониторинг и уведомления (без перезапуска)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,21 +14,14 @@
 #include <stdarg.h>
 #include <sys/file.h>
 #include <fcntl.h>
+#include <limits.h>
 
 // ============================================================================
 // НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ
 // ============================================================================
 
 #define PROCESS_NAME "app_data_sec_loader"
-#define SERVICE_NAME "/usr/local/bin/app_data_sec_loader"
-
-#define PROCESS_PATH_DEFAULT "app_data_sec_loader"
-
 #define CHECK_INTERVAL 10           // Проверка каждые 10 секунд
-#define RESTART_DELAY 2
-#define MAX_RESTARTS 3
-#define DIALOG_TIMEOUT 0
-#define WAIT_FOR_FILE 1             // Ждать появления файла
 #define PID_FILE "/var/run/app_data_sec_watchdog.pid"
 #define LOCK_FILE "/var/lock/app_data_sec_watchdog.lock"
 
@@ -77,312 +70,26 @@ static int check_single_instance(void) {
         return 0;
     }
 
-    // Записываем PID в файл
     char pid_str[32];
     snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
-    write(fd, pid_str, strlen(pid_str));
-    ftruncate(fd, strlen(pid_str));
+    if (write(fd, pid_str, strlen(pid_str)) < 0) {
+        log_message(LOG_WARNING, "Failed to write PID to lock file");
+    }
+    if (ftruncate(fd, strlen(pid_str)) < 0) {
+        log_message(LOG_WARNING, "Failed to truncate lock file");
+    }
 
-    // Сохраняем fd для закрытия при выходе
-    // (будет закрыт автоматически при завершении)
     return 1;
 }
 
 // ============================================================================
-// ПРОВЕРКА, ЗАПУЩЕН ЛИ УЖЕ app_data_sec_loader
+// ПРОВЕРКА, ЗАПУЩЕН ЛИ ПРОЦЕСС
 // ============================================================================
-
-static int count_process_instances(const char *process_name) {
-    DIR *dir;
-    struct dirent *entry;
-    char path[256];
-    char cmdline[256];
-    FILE *fp;
-    int count = 0;
-
-    dir = opendir("/proc");
-    if (!dir) return 0;
-
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type != DT_DIR) continue;
-        if (!isdigit(entry->d_name[0])) continue;
-
-        snprintf(path, sizeof(path), "/proc/%s/cmdline", entry->d_name);
-        fp = fopen(path, "r");
-        if (!fp) continue;
-
-        if (fgets(cmdline, sizeof(cmdline), fp)) {
-            if (strstr(cmdline, process_name) != NULL &&
-                strstr(cmdline, "watchdog") == NULL) {
-                count++;
-                }
-        }
-        fclose(fp);
-    }
-    closedir(dir);
-    return count;
-}
-
-// ============================================================================
-// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ЭКРАНИРОВАНИЯ
-// ============================================================================
-
-static void escape_zenity_text(const char *src, char *dst, size_t dst_size) {
-    while (*src && (size_t)(dst - dst) < dst_size - 3) {
-        if (*src == '"' || *src == '\\' || *src == '$' || *src == '`') {
-            *dst++ = '\\';
-        }
-        *dst++ = *src++;
-    }
-    *dst = '\0';
-}
-
-// ============================================================================
-// ПРОВЕРКА НАЛИЧИЯ YAD
-// ============================================================================
-
-static int has_yad(void) {
-    return (system("which yad >/dev/null 2>&1") == 0);
-}
-
-static int has_zenity(void) {
-    return (system("which zenity >/dev/null 2>&1") == 0);
-}
-
-// ============================================================================
-// ПОКАЗ ОШИБКИ ЧЕРЕЗ YAD
-// ============================================================================
-
-static void show_error_yad(const char *message) {
-    char cmd[8192];
-    char escaped_msg[4096];
-
-    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
-
-    snprintf(cmd, sizeof(cmd),
-             "yad --error "
-             "--title=\"APP DATA SEC - ERROR\" "
-             "--text=\"<span foreground='white' background='#CC0000' font='14' weight='bold'>⚠️ %s</span>\" "
-             "--width=600 --height=400 "
-             "--button=\"OK\":0 "
-             "--button-color=\"#4CAF50\" "
-             "--button-fore=\"white\" "
-             "--back=\"#CC0000\" "
-             "--fore=\"white\" "
-             "2>/dev/null",
-             escaped_msg);
-
-    log_message(LOG_INFO, "Showing error dialog via yad");
-    system(cmd);
-}
-
-static void show_info_yad(const char *message) {
-    char cmd[8192];
-    char escaped_msg[4096];
-
-    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
-
-    snprintf(cmd, sizeof(cmd),
-             "yad --info "
-             "--title=\"APP DATA SEC\" "
-             "--text=\"<span foreground='white' background='#0066CC' font='14' weight='bold'>ℹ️ %s</span>\" "
-             "--width=550 --height=300 "
-             "--button=\"OK\":0 "
-             "--button-color=\"#4CAF50\" "
-             "--button-fore=\"white\" "
-             "--back=\"#0066CC\" "
-             "--fore=\"white\" "
-             "2>/dev/null",
-             escaped_msg);
-
-    log_message(LOG_INFO, "Showing info dialog via yad");
-    system(cmd);
-}
-
-static void show_warning_yad(const char *message) {
-    char cmd[8192];
-    char escaped_msg[4096];
-
-    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
-
-    snprintf(cmd, sizeof(cmd),
-             "yad --warning "
-             "--title=\"APP DATA SEC - WARNING\" "
-             "--text=\"<span foreground='black' background='#FFA500' font='14' weight='bold'>⚠️ %s</span>\" "
-             "--width=550 --height=300 "
-             "--button=\"OK\":0 "
-             "--button-color=\"#4CAF50\" "
-             "--button-fore=\"white\" "
-             "--back=\"#FFA500\" "
-             "--fore=\"black\" "
-             "2>/dev/null",
-             escaped_msg);
-
-    log_message(LOG_INFO, "Showing warning dialog via yad");
-    system(cmd);
-}
-
-// ============================================================================
-// ПОКАЗ ОШИБКИ ЧЕРЕЗ ZENITY
-// ============================================================================
-
-static void show_error_zenity_blocking(const char *message) {
-    char cmd[8192];
-    char escaped_msg[4096];
-
-    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
-
-    snprintf(cmd, sizeof(cmd),
-             "GTK_THEME=Adwaita:dark zenity --error "
-             "--title=\"APP DATA SEC - ERROR\" "
-             "--text=\"<span foreground='white' background='#CC0000' font='14' weight='bold'>⚠️ %s</span>\" "
-             "--width=550 --height=350 "
-             "--ok-label=\"  OK  \" "
-             "2>/dev/null",
-             escaped_msg);
-
-    log_message(LOG_INFO, "Showing error dialog via zenity (dark theme)");
-    system(cmd);
-}
-
-static void show_info_zenity_blocking(const char *message) {
-    char cmd[8192];
-    char escaped_msg[4096];
-
-    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
-
-    snprintf(cmd, sizeof(cmd),
-             "GTK_THEME=Adwaita:dark zenity --info "
-             "--title=\"APP DATA SEC\" "
-             "--text=\"<span foreground='white' background='#0066CC' font='14' weight='bold'>ℹ️ %s</span>\" "
-             "--width=500 --height=300 "
-             "--ok-label=\"  OK  \" "
-             "2>/dev/null",
-             escaped_msg);
-
-    log_message(LOG_INFO, "Showing info dialog via zenity (dark theme)");
-    system(cmd);
-}
-
-static void show_warning_zenity_blocking(const char *message) {
-    char cmd[8192];
-    char escaped_msg[4096];
-
-    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
-
-    snprintf(cmd, sizeof(cmd),
-             "GTK_THEME=Adwaita:dark zenity --warning "
-             "--title=\"APP DATA SEC - WARNING\" "
-             "--text=\"<span foreground='black' background='#FFA500' font='14' weight='bold'>⚠️ %s</span>\" "
-             "--width=500 --height=300 "
-             "--ok-label=\"  OK  \" "
-             "2>/dev/null",
-             escaped_msg);
-
-    log_message(LOG_INFO, "Showing warning dialog via zenity (dark theme)");
-    system(cmd);
-}
-
-// ============================================================================
-// ПОКАЗ СООБЩЕНИЙ
-// ============================================================================
-
-static void show_error_blocking(const char *message) {
-    if (has_yad()) {
-        show_error_yad(message);
-    } else if (has_zenity()) {
-        show_error_zenity_blocking(message);
-    } else {
-        printf("\n\033[41m\033[1;37m[APP DATA SEC ERROR]\033[0m\n");
-        printf("\033[31m%s\033[0m\n", message);
-        printf("\033[33mPress Enter to continue...\033[0m\n");
-        getchar();
-    }
-}
-
-static void show_info_blocking(const char *message) {
-    if (has_yad()) {
-        show_info_yad(message);
-    } else if (has_zenity()) {
-        show_info_zenity_blocking(message);
-    } else {
-        printf("\n\033[44m\033[1;37m[APP DATA SEC]\033[0m\n");
-        printf("\033[36m%s\033[0m\n", message);
-        printf("\033[33mPress Enter to continue...\033[0m\n");
-        getchar();
-    }
-}
-
-static void show_warning_blocking(const char *message) {
-    if (has_yad()) {
-        show_warning_yad(message);
-    } else if (has_zenity()) {
-        show_warning_zenity_blocking(message);
-    } else {
-        printf("\n\033[43m\033[1;30m[APP DATA SEC WARNING]\033[0m\n");
-        printf("\033[33m%s\033[0m\n", message);
-        printf("\033[33mPress Enter to continue...\033[0m\n");
-        getchar();
-    }
-}
-
-// ============================================================================
-// ФУНКЦИИ РАБОТЫ С ПРОЦЕССАМИ
-// ============================================================================
-
-static int is_file_executable(const char *path) {
-    if (!path) return 0;
-    return (access(path, X_OK) == 0);
-}
-
-static char* find_process_path(const char *process_name) {
-    static char full_path[PATH_MAX];
-
-    const char *standard_paths[] = {
-        PROCESS_PATH_DEFAULT,
-        "./app_data_sec_loader",
-        "/usr/bin/app_data_sec_loader",
-        "/usr/local/bin/app_data_sec_loader",
-        "/usr/bin/app_data_sec_loader",
-        "/opt/app_data_sec_loader",
-        "/sbin/app_data_sec_loader",
-        NULL
-    };
-
-    for (int i = 0; standard_paths[i] != NULL; i++) {
-        if (access(standard_paths[i], X_OK) == 0) {
-            if (realpath(standard_paths[i], full_path) != NULL) {
-                return full_path;
-            } else {
-                strcpy(full_path, standard_paths[i]);
-                return full_path;
-            }
-        }
-    }
-
-    char *path_env = getenv("PATH");
-    if (path_env) {
-        char *token;
-        char path_copy[PATH_MAX];
-        strncpy(path_copy, path_env, sizeof(path_copy) - 1);
-
-        token = strtok(path_copy, ":");
-        while (token != NULL) {
-            snprintf(full_path, sizeof(full_path), "%s/%s", token, process_name);
-            if (access(full_path, X_OK) == 0) {
-                return full_path;
-            }
-            token = strtok(NULL, ":");
-        }
-    }
-
-    return NULL;
-}
 
 static int is_process_running(const char *process_name) {
     DIR *dir;
     struct dirent *entry;
-    char path[256];
+    char path[PATH_MAX];
     char cmdline[256];
     FILE *fp;
     int found = 0;
@@ -412,95 +119,188 @@ static int is_process_running(const char *process_name) {
     return found;
 }
 
-static int start_process(const char *path) {
-    if (!path || !is_file_executable(path)) {
-        log_message(LOG_ERR, "Process file not found or not executable: %s", path ? path : "(null)");
-        return -1;
-    }
-
-    pid_t pid = fork();
-    if (pid == -1) {
-        log_message(LOG_ERR, "Failed to fork process: %s", strerror(errno));
-        return -1;
-    }
-
-    if (pid == 0) {
-        char *args[] = {(char*)path, NULL};
-        execvp(path, args);
-        log_message(LOG_ERR, "Failed to exec %s: %s", path, strerror(errno));
-        exit(1);
-    }
-
-    int status;
-    waitpid(pid, &status, 0);
-
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        return 0;
-    }
-
-    log_message(LOG_ERR, "Process %s exited with status: %d", path, WEXITSTATUS(status));
-    return -1;
-}
-
 // ============================================================================
-// ПРОВЕРКА СЕРВИСА
+// ЧТЕНИЕ BPF ЛОГОВ
 // ============================================================================
 
-static int service_exists(const char *service_name) {
-    char cmd[256];
-    int result;
-    snprintf(cmd, sizeof(cmd), "systemctl cat %s >/dev/null 2>&1", service_name);
-    result = system(cmd);
-    return (result == 0);
-}
+static int read_trace_pipe(char *buffer, int size) {
+    static FILE *fp = NULL;
 
-static int check_service_status(const char *service_name) {
-    char cmd[256];
-    char output[256] = {0};
-    FILE *fp;
-    int is_active = 0;
-
-    snprintf(cmd, sizeof(cmd), "systemctl is-active %s 2>/dev/null", service_name);
-
-    fp = popen(cmd, "r");
     if (!fp) {
-        return -1;
-    }
-
-    if (fgets(output, sizeof(output), fp) != NULL) {
-        size_t len = strlen(output);
-        if (len > 0 && output[len-1] == '\n') {
-            output[len-1] = '\0';
+        fp = fopen("/sys/kernel/debug/tracing/trace_pipe", "r");
+        if (!fp) {
+            log_message(LOG_ERR, "Failed to open trace_pipe");
+            return -1;
         }
-
-        if (strcmp(output, "active") == 0) {
-            is_active = 1;
-        } else if (strcmp(output, "inactive") == 0 || strcmp(output, "failed") == 0) {
-            is_active = 0;
-        } else {
-            is_active = 0;
+        int fd = fileno(fp);
+        if (fd >= 0) {
+            int flags = fcntl(fd, F_GETFL, 0);
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         }
     }
 
-    pclose(fp);
-    return is_active;
+    if (fgets(buffer, size, fp) != NULL) {
+        return 1;
+    }
+
+    return 0;
 }
 
-static int restart_service(const char *service_name) {
-    char cmd[256];
-    int result;
+// ============================================================================
+// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ЭКРАНИРОВАНИЯ
+// ============================================================================
 
-    log_message(LOG_INFO, "Restarting service %s via systemctl...", service_name);
-    snprintf(cmd, sizeof(cmd), "systemctl restart %s", service_name);
-    result = system(cmd);
-
-    if (result == 0) {
-        log_message(LOG_INFO, "Service %s restarted successfully", service_name);
-        return 0;
-    } else {
-        log_message(LOG_ERR, "Failed to restart service %s (exit code: %d)", service_name, result);
-        return -1;
+static void escape_zenity_text(const char *src, char *dst, size_t dst_size) {
+    while (*src && (size_t)(dst - dst) < dst_size - 3) {
+        if (*src == '"' || *src == '\\' || *src == '$' || *src == '`') {
+            *dst++ = '\\';
+        }
+        *dst++ = *src++;
     }
+    *dst = '\0';
+}
+
+// ============================================================================
+// ПРОВЕРКА НАЛИЧИЯ YAD
+// ============================================================================
+
+static int has_yad(void) {
+    return (system("which yad >/dev/null 2>&1") == 0);
+}
+
+static int has_zenity(void) {
+    return (system("which zenity >/dev/null 2>&1") == 0);
+}
+
+// ============================================================================
+// ПОКАЗ СООБЩЕНИЙ ЧЕРЕЗ YAD
+// ============================================================================
+
+static void show_warning_yad(const char *message) {
+    char cmd[8192];
+    char escaped_msg[4096];
+
+    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
+
+    snprintf(cmd, sizeof(cmd),
+             "yad --warning "
+             "--title=\"APP DATA SEC - WARNING\" "
+             "--text=\"<span foreground='black' background='#FFA500' font='14' weight='bold'>⚠️ %s</span>\" "
+             "--width=550 --height=300 "
+             "--button=\"OK\":0 "
+             "--button-color=\"#4CAF50\" "
+             "--button-fore=\"white\" "
+             "--back=\"#FFA500\" "
+             "--fore=\"black\" "
+             "2>/dev/null",
+             escaped_msg);
+
+    log_message(LOG_INFO, "Showing warning dialog via yad");
+    if (system(cmd) < 0) {
+        log_message(LOG_WARNING, "Failed to run yad command");
+    }
+}
+
+// ============================================================================
+// ПОКАЗ СООБЩЕНИЙ ЧЕРЕЗ ZENITY
+// ============================================================================
+
+static void show_warning_zenity_blocking(const char *message) {
+    char cmd[8192];
+    char escaped_msg[4096];
+
+    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
+
+    snprintf(cmd, sizeof(cmd),
+             "GTK_THEME=Adwaita:dark zenity --warning "
+             "--title=\"APP DATA SEC - WARNING\" "
+             "--text=\"<span foreground='black' background='#FFA500' font='14' weight='bold'>⚠️ %s</span>\" "
+             "--width=500 --height=300 "
+             "--ok-label=\"  OK  \" "
+             "2>/dev/null",
+             escaped_msg);
+
+    log_message(LOG_INFO, "Showing warning dialog via zenity");
+    if (system(cmd) < 0) {
+        log_message(LOG_WARNING, "Failed to run zenity command");
+    }
+}
+
+// ============================================================================
+// ПОКАЗ СООБЩЕНИЙ (ОБЩАЯ ФУНКЦИЯ)
+// ============================================================================
+
+static void show_warning_message(const char *message) {
+    if (has_yad()) {
+        show_warning_yad(message);
+    } else if (has_zenity()) {
+        show_warning_zenity_blocking(message);
+    } else {
+        printf("\n\033[43m\033[1;30m[APP DATA SEC WARNING]\033[0m\n");
+        printf("\033[33m%s\033[0m\n", message);
+    }
+}
+
+// ============================================================================
+// ОБРАБОТКА СООБЩЕНИЙ ИЗ BPF
+// ============================================================================
+
+static char last_msg[4096] = {0};
+static time_t last_msg_time = 0;
+
+static void process_bpf_message(const char *line) {
+    if (!line || line[0] == '\0') return;
+
+    if (!strstr(line, "APP_DATA_SEC")) return;
+    if (!strstr(line, "BLOCKED")) return;
+
+    // Проверка на дубликаты
+    time_t now = time(NULL);
+    if (strcmp(line, last_msg) == 0 && (now - last_msg_time) < 60) {
+        return;
+    }
+    strncpy(last_msg, line, sizeof(last_msg) - 1);
+    last_msg[sizeof(last_msg) - 1] = '\0'; // Гарантируем завершение
+    last_msg_time = now;
+
+    // Парсим сообщение
+    char pid[16] = "unknown";
+    char uid[16] = "unknown";
+    char path[256] = "unknown";
+    char comm[64] = "unknown";
+    char reason[64] = "unknown";
+
+    char *pid_ptr = strstr(line, "PID=");
+    if (pid_ptr) sscanf(pid_ptr, "PID=%15s", pid);
+
+    char *uid_ptr = strstr(line, "UID=");
+    if (uid_ptr) sscanf(uid_ptr, "UID=%15s", uid);
+
+    char *path_ptr = strstr(line, "PATH=");
+    if (path_ptr) sscanf(path_ptr, "PATH=%255s", path);
+
+    char *comm_ptr = strstr(line, "COMM=");
+    if (comm_ptr) sscanf(comm_ptr, "COMM=%63s", comm);
+
+    char *reason_ptr = strstr(line, "REASON=");
+    if (reason_ptr) sscanf(reason_ptr, "REASON=%63s", reason);
+
+    // Формируем сообщение для отображения
+    char msg[1024];
+    snprintf(msg, sizeof(msg),
+             "Доступ запрещен!\n\n"
+             "Программа: %s\n"
+             "Путь: %s\n"
+             "PID: %s\n"
+             "UID: %s\n"
+             "Причина: %s",
+             comm, path, pid, uid, reason);
+
+    log_message(LOG_WARNING, "BLOCKED: %s (PID=%s, UID=%s, PATH=%s, REASON=%s)",
+                comm, pid, uid, path, reason);
+
+    // Показываем уведомление
+    show_warning_message(msg);
 }
 
 // ============================================================================
@@ -509,16 +309,16 @@ static int restart_service(const char *service_name) {
 
 static void print_usage(const char *prog) {
     fprintf(stderr, "Usage: %s [options]\n", prog);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Watchdog for app_data_sec - shows notifications on access blocks\n");
+    fprintf(stderr, "\n");
     fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  -p, --path <path>    Path to app_data_sec_loader\n");
+    fprintf(stderr, "  -z, --zenity         Use zenity/yad for GUI notifications\n");
+    fprintf(stderr, "  -c, --console        Use console notifications\n");
     fprintf(stderr, "  -i, --interval <sec> Check interval (default: 10)\n");
     fprintf(stderr, "  -d, --daemon         Run as daemon (no GUI)\n");
-    fprintf(stderr, "  -z, --zenity         Use zenity for GUI notifications\n");
-    fprintf(stderr, "  -c, --console        Use console notifications\n");
     fprintf(stderr, "  -s, --syslog         Log to syslog (enabled by default)\n");
     fprintf(stderr, "  -n, --no-syslog      Disable syslog logging\n");
-    fprintf(stderr, "  -m, --max-restarts   Max restart attempts (default: 3)\n");
-    fprintf(stderr, "  -w, --wait-file      Wait for file to appear (default: enabled)\n");
     fprintf(stderr, "  -h, --help           Show this help\n");
 }
 
@@ -531,19 +331,9 @@ int main(int argc, char **argv) {
 
     int check_interval = CHECK_INTERVAL;
     int run_daemon = 0;
-    int use_zenity = 0;
+    int use_gui = 0;
     int use_console = 0;
-    char *process_path = NULL;
-    int restarts_attempted = 0;
-    int max_restarts = MAX_RESTARTS;
-    time_t last_check = 0;
     int first_check = 1;
-    int service_available = 0;
-    int dialog_shown = 0;
-    int wait_for_file = WAIT_FOR_FILE;
-    int file_found = 0;
-    time_t file_wait_start = 0;
-    int waiting_for_file = 0;
 
     syslog_enabled = 1;
 
@@ -555,20 +345,13 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--daemon") == 0) {
             run_daemon = 1;
         } else if (strcmp(argv[i], "-z") == 0 || strcmp(argv[i], "--zenity") == 0) {
-            use_zenity = 1;
+            use_gui = 1;
         } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--console") == 0) {
             use_console = 1;
         } else if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--syslog") == 0) {
             syslog_enabled = 1;
         } else if (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--no-syslog") == 0) {
             syslog_enabled = 0;
-        } else if (strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--max-restarts") == 0) {
-            max_restarts = atoi(argv[++i]);
-            if (max_restarts < 1) max_restarts = 1;
-        } else if (strcmp(argv[i], "-w") == 0 || strcmp(argv[i], "--wait-file") == 0) {
-            wait_for_file = 1;
-        } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--path") == 0) && i + 1 < argc) {
-            process_path = argv[++i];
         } else if ((strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--interval") == 0) && i + 1 < argc) {
             check_interval = atoi(argv[++i]);
             if (check_interval < 2) check_interval = 2;
@@ -581,45 +364,37 @@ int main(int argc, char **argv) {
 
     // В режиме демона отключаем GUI
     if (run_daemon) {
-        use_zenity = 0;
+        use_gui = 0;
         use_console = 0;
         log_message(LOG_INFO, "Running in daemon mode - GUI disabled");
     }
 
-    // Проверяем наличие yad (приоритет) или zenity
-    int has_yad_tool = has_yad();
-    int has_zenity_tool = has_zenity();
-
-    if (!use_zenity && !use_console && !run_daemon) {
-        if (has_yad_tool) {
-            use_zenity = 1;
-            log_message(LOG_INFO, "Using yad for GUI notifications (better than zenity)");
-        } else if (has_zenity_tool) {
-            use_zenity = 1;
-            log_message(LOG_INFO, "Using zenity for GUI notifications (dark theme)");
+    // Проверяем наличие GUI
+    if (use_gui && !run_daemon) {
+        if (has_yad() || has_zenity()) {
+            if (has_yad()) {
+                log_message(LOG_INFO, "Using yad for GUI notifications");
+            } else {
+                log_message(LOG_INFO, "Using zenity for GUI notifications");
+            }
         } else {
+            log_message(LOG_WARNING, "No GUI tool found (yad/zenity), falling back to console");
             use_console = 1;
-            log_message(LOG_INFO, "Using console notifications");
+            use_gui = 0;
         }
     }
 
-    // Проверяем сервис
-    if (service_exists(SERVICE_NAME)) {
-        service_available = 1;
-        log_message(LOG_INFO, "Systemd service '%s' found", SERVICE_NAME);
-    }
-
-    // Если путь не указан, ищем
-    if (!process_path && !service_available) {
-        process_path = find_process_path(PROCESS_NAME);
-        if (process_path) {
-            log_message(LOG_INFO, "Found %s at: %s", PROCESS_NAME, process_path);
-            file_found = 1;
+    if (!use_gui && !use_console && !run_daemon) {
+        if (has_yad() || has_zenity()) {
+            use_gui = 1;
+            if (has_yad()) {
+                log_message(LOG_INFO, "Using yad for GUI notifications");
+            } else {
+                log_message(LOG_INFO, "Using zenity for GUI notifications");
+            }
         } else {
-            log_message(LOG_WARNING, "Could not find %s, will wait for it", PROCESS_NAME);
-            file_found = 0;
-            waiting_for_file = 1;
-            file_wait_start = time(NULL);
+            use_console = 1;
+            log_message(LOG_INFO, "Using console notifications");
         }
     }
 
@@ -636,241 +411,71 @@ int main(int argc, char **argv) {
             return 0;
         }
         setsid();
-        chdir("/");
+        if (chdir("/") < 0) {
+            log_message(LOG_WARNING, "Failed to chdir to /");
+        }
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
     }
 
     log_message(LOG_INFO, "========================================");
-    log_message(LOG_INFO, "APP DATA SEC WATCHDOG");
+    log_message(LOG_INFO, "APP DATA SEC WATCHDOG (MONITOR ONLY)");
     log_message(LOG_INFO, "========================================");
-    if (service_available) {
-        log_message(LOG_INFO, "Service: %s (systemd)", SERVICE_NAME);
-    } else {
-        log_message(LOG_INFO, "Process: %s", process_path ? process_path : "WAITING FOR FILE");
-    }
     log_message(LOG_INFO, "Check interval: %d seconds", check_interval);
-    log_message(LOG_INFO, "Wait for file: %s", wait_for_file ? "enabled" : "disabled");
-    log_message(LOG_INFO, "Max restarts: %d", max_restarts);
-    log_message(LOG_INFO, "GUI: %s", use_zenity ? "enabled" : "disabled");
+    log_message(LOG_INFO, "GUI: %s", use_gui ? "enabled" : "disabled");
     log_message(LOG_INFO, "========================================");
 
-    // Если файл не найден и ожидание включено
-    if (!service_available && !file_found && wait_for_file) {
-        char msg[512];
-        time_t t = time(NULL);
-        struct tm *tm_info = localtime(&t);
-        char time_str[64];
-        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
-
-        log_message(LOG_WARNING, "File not found, waiting for it to appear...");
-
-        if (!run_daemon) {
-            snprintf(msg, sizeof(msg),
-                     "Исполняемый файл '%s' не найден.\n\n"
-                     "Время: %s\n"
-                     "Проверка каждые %d секунд.\n\n"
-                     "Как только файл появится, он будет автоматически загружен.",
-                     PROCESS_NAME, time_str, check_interval);
-
-            show_info_blocking(msg);
-            dialog_shown = 1;
+    // Проверяем доступность trace_pipe
+    if (access("/sys/kernel/debug/tracing/trace_pipe", R_OK) != 0) {
+        log_message(LOG_WARNING, "trace_pipe not accessible, trying to mount debugfs...");
+        if (system("mount -t debugfs none /sys/kernel/debug 2>/dev/null") < 0) {
+            log_message(LOG_WARNING, "Failed to mount debugfs");
         }
+        sleep(1);
     }
 
     // Основной цикл
+    char buffer[4096];
+    int consecutive_errors = 0;
+
     while (1) {
-        time_t now = time(NULL);
+        // Проверяем, запущен ли app_data_sec_loader (только для информации)
+        int is_running = is_process_running(PROCESS_NAME);
 
-        if (now - last_check >= check_interval) {
-            int is_running = 0;
-
-            // ============================================================
-            // ЕСЛИ ФАЙЛ НЕ НАЙДЕН - ПЫТАЕМСЯ НАЙТИ ЗАНОВО
-            // ============================================================
-            if (!service_available && (!file_found || !is_file_executable(process_path))) {
-                char *new_path = find_process_path(PROCESS_NAME);
-                if (new_path) {
-                    process_path = new_path;
-                    file_found = 1;
-                    waiting_for_file = 0;
-                    log_message(LOG_INFO, "FOUND %s at: %s", PROCESS_NAME, process_path);
-
-                    if (!run_daemon) {
-                        char info_msg[512];
-                        snprintf(info_msg, sizeof(info_msg),
-                                 "Исполняемый файл '%s' найден!\n"
-                                 "Путь: %s\n\n"
-                                 "Будет выполнен автоматический запуск.",
-                                 PROCESS_NAME, process_path);
-                        show_info_blocking(info_msg);
-                    }
-                    dialog_shown = 0;
-
-                    // Пытаемся сразу запустить
-                    if (start_process(process_path) == 0) {
-                        log_message(LOG_INFO, "SUCCESS: %s started after file appeared", PROCESS_NAME);
-                        restarts_attempted = 0;
-                        is_running = 1;
-                    }
-                } else {
-                    // Файл всё ещё не найден
-                    if (wait_for_file && !dialog_shown && !run_daemon) {
-                        time_t elapsed = time(NULL) - file_wait_start;
-                        char msg[512];
-                        snprintf(msg, sizeof(msg),
-                                 "Исполняемый файл '%s' всё ещё не найден.\n\n"
-                                 "Время ожидания: %d секунд\n"
-                                 "Проверка каждые %d секунд.\n\n"
-                                 "Файл будет автоматически загружен при появлении.",
-                                 PROCESS_NAME, (int)elapsed, check_interval);
-
-                        show_info_blocking(msg);
-                        dialog_shown = 1;
-                    }
-
-                    last_check = now;
-                    continue;
-                }
-            }
-
-            // ============================================================
-            // ПРОВЕРКА СТАТУСА
-            // ============================================================
-            if (service_available) {
-                int service_status = check_service_status(SERVICE_NAME);
-                if (service_status == 1) {
-                    is_running = 1;
-                } else if (service_status == 0) {
-                    is_running = 0;
-                } else {
-                    is_running = is_process_running(PROCESS_NAME);
-                }
+        if (first_check) {
+            if (is_running) {
+                log_message(LOG_INFO, "Initial check: %s is RUNNING", PROCESS_NAME);
             } else {
-                is_running = is_process_running(PROCESS_NAME);
+                log_message(LOG_WARNING, "Initial check: %s is NOT RUNNING (systemd will handle restart)",
+                            PROCESS_NAME);
             }
-
-            // ============================================================
-            // ПЕРВАЯ ПРОВЕРКА
-            // ============================================================
-            if (first_check) {
-                if (is_running) {
-                    log_message(LOG_INFO, "Initial check: %s is RUNNING", PROCESS_NAME);
-                } else {
-                    log_message(LOG_WARNING, "Initial check: %s is NOT RUNNING", PROCESS_NAME);
-                }
-                first_check = 0;
-            }
-
-            // ============================================================
-            // ЕСЛИ ПРОЦЕСС НЕ ЗАПУЩЕН
-            // ============================================================
-            if (!is_running) {
-                // Проверяем, сколько экземпляров уже запущено
-                int instances = count_process_instances(PROCESS_NAME);
-                if (instances > 1) {
-                    log_message(LOG_WARNING, "Multiple instances (%d) of %s detected, not starting new one",
-                                instances, PROCESS_NAME);
-                    // Не запускаем новый процесс, если уже есть >1
-                    dialog_shown = 0;
-                    last_check = now;
-                    continue;
-                }
-
-                char msg[512];
-                time_t t = time(NULL);
-                struct tm *tm_info = localtime(&t);
-                char time_str[64];
-                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
-
-                log_message(LOG_ERR, "CRITICAL: %s is not running!",
-                            service_available ? SERVICE_NAME : PROCESS_NAME);
-
-                if (!run_daemon && !dialog_shown) {
-                    snprintf(msg, sizeof(msg),
-                             "%s '%s' не запущен!\n"
-                             "Время: %s\n\n"
-                             "Нажмите OK для попытки перезапуска.",
-                             service_available ? "Сервис" : "Процесс",
-                             service_available ? SERVICE_NAME : PROCESS_NAME,
-                             time_str);
-
-                    show_error_blocking(msg);
-                    dialog_shown = 1;
-                }
-
-                log_message(LOG_INFO, "Attempting restart...");
-                sleep(RESTART_DELAY);
-
-                int restart_result = -1;
-
-                if (service_available) {
-                    restart_result = restart_service(SERVICE_NAME);
-                } else if (process_path && is_file_executable(process_path)) {
-                    // Перед запуском проверяем, что процесс всё ещё не запущен
-                    if (!is_process_running(PROCESS_NAME)) {
-                        restart_result = start_process(process_path);
-                    } else {
-                        log_message(LOG_INFO, "Process already running, skipping restart");
-                        restart_result = 0;
-                    }
-                } else {
-                    log_message(LOG_ERR, "No valid method to restart %s", PROCESS_NAME);
-                }
-
-                if (restart_result == 0) {
-                    log_message(LOG_INFO, "SUCCESS: %s restarted",
-                                service_available ? SERVICE_NAME : PROCESS_NAME);
-                    restarts_attempted = 0;
-                    dialog_shown = 0;
-
-                    if (!run_daemon) {
-                        char info_msg[512];
-                        snprintf(info_msg, sizeof(info_msg),
-                                 "%s '%s' успешно перезапущен.\n"
-                                 "Время: %s",
-                                 service_available ? "Сервис" : "Процесс",
-                                 service_available ? SERVICE_NAME : PROCESS_NAME,
-                                 time_str);
-                        show_info_blocking(info_msg);
-                    }
-                } else {
-                    log_message(LOG_ERR, "FAILED: Could not restart %s",
-                                service_available ? SERVICE_NAME : PROCESS_NAME);
-                    restarts_attempted++;
-
-                    if (restarts_attempted >= max_restarts) {
-                        log_message(LOG_ERR, "CRITICAL: Failed to restart after %d attempts", max_restarts);
-
-                        if (!run_daemon) {
-                            char warn_msg[512];
-                            snprintf(warn_msg, sizeof(warn_msg),
-                                     "Не удалось перезапустить '%s' после %d попыток.\n\n"
-                                     "Пожалуйста, запустите %s вручную.\n"
-                                     "Нажмите OK для продолжения мониторинга.",
-                                     service_available ? SERVICE_NAME : PROCESS_NAME,
-                                     max_restarts,
-                                     service_available ? "сервис" : "процесс");
-
-                            show_warning_blocking(warn_msg);
-                        }
-                        restarts_attempted = 0;
-                    }
-                }
-            } else {
-                if (restarts_attempted > 0) {
-                    log_message(LOG_INFO, "%s is running again",
-                                service_available ? SERVICE_NAME : PROCESS_NAME);
-                    restarts_attempted = 0;
-                }
-                dialog_shown = 0;
-            }
-
-            last_check = now;
+            first_check = 0;
         }
 
-        sleep(1);
+        // Читаем логи из trace_pipe
+        int ret = read_trace_pipe(buffer, sizeof(buffer));
+
+        if (ret > 0) {
+            consecutive_errors = 0;
+            char *newline = strchr(buffer, '\n');
+            if (newline) *newline = '\0';
+
+            // Проверяем, содержит ли строка APP_DATA_SEC и BLOCKED
+            if (strstr(buffer, "APP_DATA_SEC") && strstr(buffer, "BLOCKED")) {
+                process_bpf_message(buffer);
+            }
+        } else if (ret == -1) {
+            consecutive_errors++;
+            if (consecutive_errors > 10) {
+                log_message(LOG_ERR, "Too many errors reading trace_pipe, retrying...");
+                consecutive_errors = 0;
+                sleep(check_interval);
+                continue;
+            }
+        }
+
+        sleep(check_interval);
     }
 
     return 0;
