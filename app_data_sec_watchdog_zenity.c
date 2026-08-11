@@ -1,4 +1,4 @@
-// app_data_sec_watchdog_zenity.c - Создает файл на рабочем столе при ошибках (без удаления)
+// app_data_sec_watchdog_zenity.c - Создает файл на рабочем столе при ошибках
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -226,20 +226,7 @@ static int find_desktop_directory(const char *home, char *desktop_path, size_t s
 }
 
 // ============================================================================
-// УСТАНОВКА ПРАВ НА ФАЙЛ
-// ============================================================================
-
-static void set_file_ownership(const char *file_path, uid_t uid, gid_t gid) {
-    if (chown(file_path, uid, gid) != 0) {
-        log_message(LOG_WARNING, "Failed to chown %s: %s", file_path, strerror(errno));
-    }
-    if (chmod(file_path, 0644) != 0) {
-        log_message(LOG_WARNING, "Failed to chmod %s: %s", file_path, strerror(errno));
-    }
-}
-
-// ============================================================================
-// ЗАПИСЬ В ФАЙЛ НА РАБОЧЕМ СТОЛЕ (только если файла нет)
+// ЗАПИСЬ В ФАЙЛ НА РАБОЧЕМ СТОЛЕ (без смены владельца)
 // ============================================================================
 
 static void write_error_to_desktop(const char *message) {
@@ -273,12 +260,20 @@ static void write_error_to_desktop(const char *message) {
             continue;
         }
 
+        // Проверяем, существует ли уже файл
         struct stat st;
         if (stat(file_path, &st) == 0) {
             log_message(LOG_DEBUG, "Error file already exists: %s", file_path);
             continue;
         }
 
+        // Получаем владельца домашней директории (только для информации)
+        if (stat(homes[i], &st) != 0) {
+            log_message(LOG_WARNING, "Cannot stat home directory: %s", homes[i]);
+            continue;
+        }
+
+        // Создаем файл напрямую от root (без смены владельца)
         FILE *fp = fopen(file_path, "w");
         if (!fp) {
             log_message(LOG_WARNING, "Failed to create %s: %s", file_path, strerror(errno));
@@ -292,14 +287,10 @@ static void write_error_to_desktop(const char *message) {
         fprintf(fp, "\n");
         fprintf(fp, "Файл создан: %s\n", time_str);
         fprintf(fp, "\n");
-        fprintf(fp, "Чтобы удалить это сообщение, просто удалите этот файл.\n");
+        fprintf(fp, "Файл создан от root, удалить можно только через sudo.\n");
         fclose(fp);
 
-        if (stat(homes[i], &st) == 0) {
-            set_file_ownership(file_path, st.st_uid, st.st_gid);
-        }
-
-        log_message(LOG_INFO, "Error file created: %s", file_path);
+        // log_message(LOG_INFO, "Error file created: %s", file_path);
     }
 }
 
@@ -377,7 +368,7 @@ int main(int argc, char **argv) {
     log_message(LOG_INFO, "APP DATA SEC WATCHDOG");
     log_message(LOG_INFO, "========================================");
     log_message(LOG_INFO, "Check interval: %d seconds", check_interval);
-    log_message(LOG_INFO, "Desktop file: %s on each user desktop", DESKTOP_FILE_NAME);
+    log_message(LOG_INFO, "Desktop file: %s on each user desktop (owned by root)", DESKTOP_FILE_NAME);
 
     while (1) {
         time_t now = time(NULL);
@@ -410,7 +401,8 @@ int main(int argc, char **argv) {
                          "  sudo systemctl start app_data_sec_loader\n\n"
                          "Проверить статус:\n"
                          "  sudo systemctl status app_data_sec_loader\n"
-                         "  sudo journalctl -u app_data_sec_loader",
+                         "  sudo journalctl -u app_data_sec_loader\n\n"
+                         "Файл создан от root, удалить можно только через sudo.",
                          time_str);
 
                 write_error_to_desktop(msg);
