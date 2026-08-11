@@ -1,4 +1,4 @@
-// app_data_sec_loader.c (НОВАЯ ВЕРСИЯ ДЛЯ АРХИТЕКТУРЫ С FOLDER_CONFIG_MAP)
+// app_data_sec_loader.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -6,6 +6,8 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include <pwd.h>
 #include <dirent.h>
 #include <bpf/libbpf.h>
@@ -43,6 +45,35 @@ do { \
 #else
 #define DEBUG_PRINT(fmt, ...) ((void)0)
 #endif
+
+
+
+// ============================================================================
+// ПРОВЕРКА НА ПОВТОРНЫЙ ЗАПУСК
+// ============================================================================
+
+static int check_single_instance_loader(void) {
+    const char *pid_file = "/var/run/app_data_sec_loader.pid";
+    int fd = open(pid_file, O_CREAT | O_RDWR, 0644);
+    if (fd < 0) {
+        return 1; // Продолжаем, если не можем создать PID-файл
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
+        // Уже запущен
+        close(fd);
+        return 0;
+    }
+
+    // Записываем PID
+    char pid_str[32];
+    snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
+    write(fd, pid_str, strlen(pid_str));
+    ftruncate(fd, strlen(pid_str));
+
+    // Оставляем fd открытым для блокировки
+    return 1;
+}
 
 // ============================================================================
 // ЛОГИРОВАНИЕ В SYSLOG
@@ -774,6 +805,12 @@ static void print_usage(const char *prog) {
 }
 
 int main(int argc, char **argv) {
+    // Проверка на повторный запуск
+    if (!check_single_instance_loader()) {
+        fprintf(stderr, "Another instance of app_data_sec_loader is already running\n");
+        return 1;
+    }
+
     struct bpf_program *prog;
     struct bpf_map *map;
     int err = 0;

@@ -1,4 +1,4 @@
-// app_data_sec_watchdog_zenity.c - Исправленная версия с видимыми кнопками
+// app_data_sec_watchdog_zenity.c - С блокировкой от повторного запуска
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +12,8 @@
 #include <errno.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <sys/file.h>
+#include <fcntl.h>
 
 // ============================================================================
 // НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ
@@ -27,6 +29,8 @@
 #define MAX_RESTARTS 3
 #define DIALOG_TIMEOUT 0
 #define WAIT_FOR_FILE 1             // Ждать появления файла
+#define PID_FILE "/var/run/app_data_sec_watchdog.pid"
+#define LOCK_FILE "/var/lock/app_data_sec_watchdog.lock"
 
 // ============================================================================
 // ЛОГИРОВАНИЕ
@@ -57,6 +61,69 @@ static void log_message(int priority, const char *format, ...) {
 }
 
 // ============================================================================
+// БЛОКИРОВКА ОТ ПОВТОРНОГО ЗАПУСКА
+// ============================================================================
+
+static int check_single_instance(void) {
+    int fd = open(LOCK_FILE, O_CREAT | O_RDWR, 0644);
+    if (fd < 0) {
+        log_message(LOG_ERR, "Failed to open lock file: %s", strerror(errno));
+        return 0;
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
+        log_message(LOG_ERR, "Another instance of watchdog is already running");
+        close(fd);
+        return 0;
+    }
+
+    // Записываем PID в файл
+    char pid_str[32];
+    snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
+    write(fd, pid_str, strlen(pid_str));
+    ftruncate(fd, strlen(pid_str));
+
+    // Сохраняем fd для закрытия при выходе
+    // (будет закрыт автоматически при завершении)
+    return 1;
+}
+
+// ============================================================================
+// ПРОВЕРКА, ЗАПУЩЕН ЛИ УЖЕ app_data_sec_loader
+// ============================================================================
+
+static int count_process_instances(const char *process_name) {
+    DIR *dir;
+    struct dirent *entry;
+    char path[256];
+    char cmdline[256];
+    FILE *fp;
+    int count = 0;
+
+    dir = opendir("/proc");
+    if (!dir) return 0;
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type != DT_DIR) continue;
+        if (!isdigit(entry->d_name[0])) continue;
+
+        snprintf(path, sizeof(path), "/proc/%s/cmdline", entry->d_name);
+        fp = fopen(path, "r");
+        if (!fp) continue;
+
+        if (fgets(cmdline, sizeof(cmdline), fp)) {
+            if (strstr(cmdline, process_name) != NULL &&
+                strstr(cmdline, "watchdog") == NULL) {
+                count++;
+                }
+        }
+        fclose(fp);
+    }
+    closedir(dir);
+    return count;
+}
+
+// ============================================================================
 // ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ЭКРАНИРОВАНИЯ
 // ============================================================================
 
@@ -83,7 +150,7 @@ static int has_zenity(void) {
 }
 
 // ============================================================================
-// ПОКАЗ ОШИБКИ ЧЕРЕЗ YAD (С ВИДИМЫМИ КНОПКАМИ)
+// ПОКАЗ ОШИБКИ ЧЕРЕЗ YAD
 // ============================================================================
 
 static void show_error_yad(const char *message) {
@@ -92,7 +159,6 @@ static void show_error_yad(const char *message) {
 
     escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
 
-    // YAD позволяет задать фон кнопок и текста
     snprintf(cmd, sizeof(cmd),
              "yad --error "
              "--title=\"APP DATA SEC - ERROR\" "
@@ -157,7 +223,7 @@ static void show_warning_yad(const char *message) {
 }
 
 // ============================================================================
-// ПОКАЗ ОШИБКИ ЧЕРЕЗ ZENITY С ПРИНУДИТЕЛЬНОЙ ТЕМОЙ
+// ПОКАЗ ОШИБКИ ЧЕРЕЗ ZENITY
 // ============================================================================
 
 static void show_error_zenity_blocking(const char *message) {
@@ -166,8 +232,6 @@ static void show_error_zenity_blocking(const char *message) {
 
     escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
 
-    // Принудительно используем тему с контрастными кнопками
-    // Используем GTK_THEME для темной темы, где кнопки видны
     snprintf(cmd, sizeof(cmd),
              "GTK_THEME=Adwaita:dark zenity --error "
              "--title=\"APP DATA SEC - ERROR\" "
@@ -220,7 +284,7 @@ static void show_warning_zenity_blocking(const char *message) {
 }
 
 // ============================================================================
-// ПОКАЗ СООБЩЕНИЙ (ОБЩАЯ ФУНКЦИЯ)
+// ПОКАЗ СООБЩЕНИЙ
 // ============================================================================
 
 static void show_error_blocking(const char *message) {
@@ -229,7 +293,6 @@ static void show_error_blocking(const char *message) {
     } else if (has_zenity()) {
         show_error_zenity_blocking(message);
     } else {
-        // Fallback: консоль
         printf("\n\033[41m\033[1;37m[APP DATA SEC ERROR]\033[0m\n");
         printf("\033[31m%s\033[0m\n", message);
         printf("\033[33mPress Enter to continue...\033[0m\n");
@@ -460,6 +523,12 @@ static void print_usage(const char *prog) {
 }
 
 int main(int argc, char **argv) {
+    // Проверка на повторный запуск
+    if (!check_single_instance()) {
+        fprintf(stderr, "ERROR: Another instance of watchdog is already running\n");
+        return 1;
+    }
+
     int check_interval = CHECK_INTERVAL;
     int run_daemon = 0;
     int use_zenity = 0;
@@ -698,6 +767,17 @@ int main(int argc, char **argv) {
             // ЕСЛИ ПРОЦЕСС НЕ ЗАПУЩЕН
             // ============================================================
             if (!is_running) {
+                // Проверяем, сколько экземпляров уже запущено
+                int instances = count_process_instances(PROCESS_NAME);
+                if (instances > 1) {
+                    log_message(LOG_WARNING, "Multiple instances (%d) of %s detected, not starting new one",
+                                instances, PROCESS_NAME);
+                    // Не запускаем новый процесс, если уже есть >1
+                    dialog_shown = 0;
+                    last_check = now;
+                    continue;
+                }
+
                 char msg[512];
                 time_t t = time(NULL);
                 struct tm *tm_info = localtime(&t);
@@ -728,7 +808,13 @@ int main(int argc, char **argv) {
                 if (service_available) {
                     restart_result = restart_service(SERVICE_NAME);
                 } else if (process_path && is_file_executable(process_path)) {
-                    restart_result = start_process(process_path);
+                    // Перед запуском проверяем, что процесс всё ещё не запущен
+                    if (!is_process_running(PROCESS_NAME)) {
+                        restart_result = start_process(process_path);
+                    } else {
+                        log_message(LOG_INFO, "Process already running, skipping restart");
+                        restart_result = 0;
+                    }
                 } else {
                     log_message(LOG_ERR, "No valid method to restart %s", PROCESS_NAME);
                 }
