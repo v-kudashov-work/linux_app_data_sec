@@ -626,20 +626,31 @@ User=root
 Group=root
 ExecStart=/usr/local/bin/app_data_sec_loader -l 1
 ExecStop=/bin/kill -SIGTERM $MAINPID
-ExecReload=/bin/kill -SIGHUP $MAINPID
 Restart=always
-RestartSec=10
+RestartSec=5
+
+# Повышение приоритета
+Nice=-20
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=99
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+
+# Ускорение
+TimeoutStartSec=10
+TimeoutStopSec=5
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=app_data_sec_loader
 
-# Снимаем ВСЕ ограничения для доступа к /home
+# Доступ к системе
 PrivateTmp=false
 ProtectSystem=false
 ProtectHome=false
 NoNewPrivileges=false
 ReadWritePaths=/
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_DAC_OVERRIDE CAP_SYS_NICE CAP_IPC_LOCK
 
 [Install]
 WantedBy=multi-user.target
