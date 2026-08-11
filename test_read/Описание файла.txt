@@ -3,3 +3,5 @@ gcc -o read_file read_file.c
 
 # Запуск
 ./read_file /etc/app_data_sec.conf
+
+./read_file /home/vladimir_a/.cache/yandex-browser/1/2/3/4/5/6/7/8/9/test.text
