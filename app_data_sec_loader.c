@@ -1,4 +1,4 @@
-// app_data_sec_loader.c
+// app_data_sec_loader.c - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ (БЕЗ ПРОВЕРКИ НА ПОВТОРНЫЙ ЗАПУСК)
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -6,8 +6,6 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/file.h>
-#include <fcntl.h>
 #include <pwd.h>
 #include <dirent.h>
 #include <bpf/libbpf.h>
@@ -18,15 +16,17 @@
 #include <syslog.h>
 #include <stdarg.h>
 
+// ============================================================================
+// НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ (ОПТИМИЗИРОВАННЫЕ)
+// ============================================================================
+
 #define CONFIG_PATH "/etc/app_data_sec.conf"
 #define MAX_LINE_LEN 1024
 #define MAX_PATHS 5000
 #define MAX_ALLOWED 20
-// #define MAX_SCRIPTS_PER_FOLDER 3
-// #define MAX_UNIQUE_SCRIPTS 100
+#define MAX_PATH_LEN 256             // Вместо PATH_MAX (4096) -> 256
 #define CHECK_INTERVAL 5
 #define RETRY_INTERVAL 30
-#define MAX_PATH_LEN 32
 #define MAX_DEPTH 8
 
 // ============================================================================
@@ -45,35 +45,6 @@ do { \
 #else
 #define DEBUG_PRINT(fmt, ...) ((void)0)
 #endif
-
-
-
-// ============================================================================
-// ПРОВЕРКА НА ПОВТОРНЫЙ ЗАПУСК
-// ============================================================================
-
-// static int check_single_instance_loader(void) {
-//     const char *pid_file = "/var/run/app_data_sec_loader.pid";
-//     int fd = open(pid_file, O_CREAT | O_RDWR, 0644);
-//     if (fd < 0) {
-//         return 1; // Продолжаем, если не можем создать PID-файл
-//     }
-//
-//     if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
-//         // Уже запущен
-//         close(fd);
-//         return 0;
-//     }
-//
-//     // Записываем PID
-//     char pid_str[32];
-//     snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
-//     write(fd, pid_str, strlen(pid_str));
-//     ftruncate(fd, strlen(pid_str));
-//
-//     // Оставляем fd открытым для блокировки
-//     return 1;
-// }
 
 // ============================================================================
 // ЛОГИРОВАНИЕ В SYSLOG
@@ -100,42 +71,49 @@ static void log_to_syslog(int priority, const char *format, ...) {
 #define SYSLOG_INFO(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__)
 
 // ============================================================================
-// СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
+// ОПТИМИЗИРОВАННЫЕ СТРУКТУРЫ
 // ============================================================================
 
 struct protected_folder_config {
     __u64 folder_inode;
     __u32 allowed_program_count;
-    // __u32 script_count;
 };
 
+// Оптимизированная структура записи
 struct protect_entry {
-    char path[PATH_MAX];
-    __u64 inode;
-    __u64 allowed_inodes[MAX_ALLOWED];
-    char allowed_paths[MAX_ALLOWED][PATH_MAX];
-    int allowed_count;
-    int is_active;
-    time_t last_check;
+    char path[MAX_PATH_LEN];                          // 256 байт (было 4096)
+    __u64 inode;                                      // 8 байт
+    __u64 allowed_inodes[MAX_ALLOWED];                // 20 * 8 = 160 байт
+    char allowed_paths[MAX_ALLOWED][MAX_PATH_LEN];    // 20 * 256 = 5120 байт
+    int allowed_count;                                // 4 байта
+    int is_active;                                    // 4 байта
+    time_t last_check;                                // 8 байт
 };
+// Итого: ~5560 байт (вместо ~86192)
+// 5000 записей = ~27.8 МБ (вместо ~430 МБ)
 
 struct protect_template {
-    char pattern[PATH_MAX];
-    char subpath[PATH_MAX];
-    __u64 allowed_inodes[MAX_ALLOWED];
-    char allowed_paths[MAX_ALLOWED][PATH_MAX];
-    int allowed_count;
-    int enabled;
+    char pattern[MAX_PATH_LEN];                       // 256 байт
+    char subpath[MAX_PATH_LEN];                       // 256 байт
+    __u64 allowed_inodes[MAX_ALLOWED];                // 160 байт
+    char allowed_paths[MAX_ALLOWED][MAX_PATH_LEN];    // 5120 байт
+    int allowed_count;                                // 4 байта
+    int enabled;                                      // 4 байта
 };
+// Итого: ~5800 байт
+// 5000 записей = ~29 МБ
 
-struct protect_entry entries[MAX_PATHS];
-struct protect_template templates[MAX_PATHS];
-int entry_count = 0;
-int template_count = 0;
-int config_enabled = 0;
-time_t config_mtime = 0;
+// ============================================================================
+// ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
+// ============================================================================
 
-struct bpf_object *g_bpf_obj = NULL;
+static struct protect_entry entries[MAX_PATHS];
+static struct protect_template templates[MAX_PATHS];
+static int entry_count = 0;
+static int template_count = 0;
+static int config_enabled = 0;
+static time_t config_mtime = 0;
+static struct bpf_object *g_bpf_obj = NULL;
 
 // ============================================================================
 // БЕЗОПАСНОЕ КОПИРОВАНИЕ СТРОК
@@ -164,12 +142,6 @@ static int path_exists(const char *path) {
     struct stat st;
     return (stat(path, &st) == 0);
 }
-
-// static int is_script_file(const char *path) {
-//     if (!path) return 0;
-//     int len = strlen(path);
-//     return (len > 3 && path[len-3] == '.' && path[len-2] == 's' && path[len-1] == 'h');
-// }
 
 // ============================================================================
 // СКАНИРОВАНИЕ ДОМАШНИХ ДИРЕКТОРИЙ
@@ -230,7 +202,7 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 }
 
 // ============================================================================
-// ПАРСИНГ КОНФИГУРАЦИИ (НОВАЯ ВЕРСИЯ)
+// ПАРСИНГ КОНФИГУРАЦИИ
 // ============================================================================
 
 static int parse_config(void) {
@@ -290,7 +262,7 @@ static int parse_config(void) {
                 continue;
             }
 
-            char raw_path[PATH_MAX];
+            char raw_path[MAX_PATH_LEN];
             char *path_end = ptr;
             while (*path_end && *path_end != ' ' && *path_end != '\t') path_end++;
 
@@ -300,7 +272,7 @@ static int parse_config(void) {
             raw_path[path_len] = '\0';
 
             __u64 allowed_inodes[MAX_ALLOWED];
-            char allowed_paths[MAX_ALLOWED][PATH_MAX];
+            char allowed_paths[MAX_ALLOWED][MAX_PATH_LEN];
             int allowed_count = 0;
             memset(allowed_inodes, 0, sizeof(allowed_inodes));
             memset(allowed_paths, 0, sizeof(allowed_paths));
@@ -324,7 +296,7 @@ static int parse_config(void) {
                         __u64 allowed_inode = get_inode_from_path(real_allowed_path);
                         if (allowed_inode != 0) {
                             allowed_inodes[allowed_count] = allowed_inode;
-                            strcpy(allowed_paths[allowed_count], real_allowed_path);
+                            safe_strcpy(allowed_paths[allowed_count], real_allowed_path, MAX_PATH_LEN);
                             allowed_count++;
                             SYSLOG_INFO("  Allowed program: %s (inode: %lu)",
                                         real_allowed_path, (unsigned long)allowed_inode);
@@ -345,7 +317,7 @@ static int parse_config(void) {
 
                 for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
                     tmpl->allowed_inodes[i] = allowed_inodes[i];
-                    strcpy(tmpl->allowed_paths[i], allowed_paths[i]);
+                    safe_strcpy(tmpl->allowed_paths[i], allowed_paths[i], MAX_PATH_LEN);
                 }
                 tmpl->allowed_count = allowed_count;
                 tmpl->enabled = 1;
@@ -367,7 +339,7 @@ static int parse_config(void) {
 
                     for (int j = 0; j < tmpl->allowed_count && j < MAX_ALLOWED; j++) {
                         entry->allowed_inodes[j] = tmpl->allowed_inodes[j];
-                        strcpy(entry->allowed_paths[j], tmpl->allowed_paths[j]);
+                        safe_strcpy(entry->allowed_paths[j], tmpl->allowed_paths[j], MAX_PATH_LEN);
                         entry->allowed_count++;
                     }
 
@@ -391,7 +363,7 @@ static int parse_config(void) {
 
                 for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
                     entry->allowed_inodes[i] = allowed_inodes[i];
-                    strcpy(entry->allowed_paths[i], allowed_paths[i]);
+                    safe_strcpy(entry->allowed_paths[i], allowed_paths[i], MAX_PATH_LEN);
                     entry->allowed_count++;
                 }
 
@@ -422,7 +394,7 @@ static int parse_config(void) {
 }
 
 // ============================================================================
-// ЗАГРУЗКА В BPF (НОВАЯ АРХИТЕКТУРА)
+// ЗАГРУЗКА В BPF
 // ============================================================================
 
 static int load_entries_to_bpf(struct bpf_object *obj) {
@@ -435,7 +407,6 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
         return 0;
     }
 
-    // ======== 1. ЗАГРУЖАЕМ КОНФИГУРАЦИИ ПАПОК (folder_config_map) ========
     map = bpf_object__find_map_by_name(obj, "folder_config_map");
     if (!map) {
         SYSLOG_ERR("Failed to find folder_config_map");
@@ -450,34 +421,25 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
 
     SYSLOG_INFO("Loading %d protected folders to BPF...", entry_count);
 
-     for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
-         if (entries[i].inode == 0) continue;
+    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+        if (entries[i].inode == 0) continue;
 
-         struct protected_folder_config config = {
-             .folder_inode = entries[i].inode,
-             .allowed_program_count = entries[i].allowed_count,
-//             .script_count = 0
-         };
+        struct protected_folder_config config = {
+            .folder_inode = entries[i].inode,
+            .allowed_program_count = entries[i].allowed_count,
+        };
 
-         // Подсчет скриптов
-//         for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
-//             if (is_script_file(entries[i].allowed_paths[j])) {
-//                 config.script_count++;
-//             }
-//         }
+        err = bpf_map_update_elem(fd, &entries[i].inode, &config, BPF_ANY);
+        if (err < 0) {
+            SYSLOG_ERR("  Failed to update folder_config_map for inode %lu: %d",
+                       (unsigned long)entries[i].inode, err);
+        } else {
+            SYSLOG_INFO("  [%d] Loaded folder: %s (inode: %lu, programs: %d)",
+                        i, entries[i].path, (unsigned long)entries[i].inode,
+                        config.allowed_program_count);
+        }
+    }
 
-         err = bpf_map_update_elem(fd, &entries[i].inode, &config, BPF_ANY);
-         if (err < 0) {
-             SYSLOG_ERR("  Failed to update folder_config_map for inode %lu: %d",
-                        (unsigned long)entries[i].inode, err);
-         } else {
-             SYSLOG_INFO("  [%d] Loaded folder: %s (inode: %lu, programs: %d)",
-                         i, entries[i].path, (unsigned long)entries[i].inode,
-                         config.allowed_program_count);
-         }
-     }
-
-    // ======== 2. ЗАГРУЖАЕМ РАЗРЕШЕННЫЕ ПРОГРАММЫ (folder_allowed_programs_map) ========
     map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
     if (!map) {
         SYSLOG_ERR("Failed to find folder_allowed_programs_map");
@@ -495,9 +457,6 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
         if (entries[i].inode == 0) continue;
 
         for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
-            // Пропускаем скрипты (они идут в другую карту)
-            // if (is_script_file(entries[i].allowed_paths[j])) continue;
-
             __u64 key = (entries[i].inode << 32) | j;
             __u64 value = entries[i].allowed_inodes[j];
 
@@ -515,60 +474,6 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
         }
     }
 
-    // ======== 3. ЗАГРУЖАЕМ СКРИПТЫ (folder_scripts_map) ========
-    // map = bpf_object__find_map_by_name(obj, "folder_scripts_map");
-    // if (!map) {
-    //     SYSLOG_WARN("folder_scripts_map not found, scripts support disabled");
-    // } else {
-    //     fd = bpf_map__fd(map);
-    //     if (fd >= 0) {
-    //         int total_scripts = 0;
-    //         for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
-    //             if (entries[i].inode == 0) continue;
-    //
-    //             int script_idx = 0;
-    //             for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
-    //                 if (!is_script_file(entries[i].allowed_paths[j])) continue;
-    //
-    //                 __u64 key = (entries[i].inode << 32) | script_idx;
-    //                 char *path = entries[i].allowed_paths[j];
-    //
-    //                 // Обрезаем путь до MAX_PATH_LEN
-    //                 char truncated[MAX_PATH_LEN] = {0};
-    //                 int len = strlen(path);
-    //                 int start = (len >= MAX_PATH_LEN) ? (len - MAX_PATH_LEN + 1) : 0;
-    //                 strncpy(truncated, path + start, MAX_PATH_LEN - 1);
-    //
-    //                 err = bpf_map_update_elem(fd, &key, truncated, BPF_ANY);
-    //                 if (err < 0) {
-    //                     SYSLOG_ERR("  Failed to update folder_scripts_map for folder %lu, script %d: %d",
-    //                                (unsigned long)entries[i].inode, script_idx, err);
-    //                 } else {
-    //                     SYSLOG_INFO("  [%lu] Script %d: %s",
-    //                                 (unsigned long)entries[i].inode, script_idx, truncated);
-    //                     script_idx++;
-    //                     total_scripts++;
-    //                 }
-    //             }
-    //         }
-    //         SYSLOG_INFO("Total scripts loaded: %d", total_scripts);
-    //     }
-    // }
-
-    // ======== 4. НАСТРАИВАЕМ ВКЛЮЧЕНИЕ СКРИПТОВ (scripts_enabled_map) ========
-    // map = bpf_object__find_map_by_name(obj, "scripts_enabled_map");
-    // if (map) {
-    //     fd = bpf_map__fd(map);
-    //     if (fd >= 0) {
-    //         __u32 key = 0;
-    //         __u32 enabled = 1; // Включаем проверку скриптов
-    //         err = bpf_map_update_elem(fd, &key, &enabled, BPF_ANY);
-    //         if (err < 0) {
-    //             SYSLOG_ERR("Failed to update scripts_enabled_map: %d", err);
-    //         }
-    //     }
-    // }
-
     SYSLOG_INFO("Total loaded: %d folders, %d programs", entry_count, total_programs);
     return 0;
 }
@@ -583,7 +488,6 @@ static int remove_folder_from_bpf(struct bpf_object *obj, __u64 folder_inode) {
     int err;
     struct bpf_map *map;
 
-    // Удаляем из folder_config_map
     map = bpf_object__find_map_by_name(obj, "folder_config_map");
     if (map) {
         int fd = bpf_map__fd(map);
@@ -596,31 +500,16 @@ static int remove_folder_from_bpf(struct bpf_object *obj, __u64 folder_inode) {
         }
     }
 
-    // Удаляем программы для этой папки
     map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
     if (map) {
         int fd = bpf_map__fd(map);
         if (fd >= 0) {
             for (int i = 0; i < MAX_ALLOWED; i++) {
                 __u64 key = (folder_inode << 32) | i;
-                err = bpf_map_delete_elem(fd, &key);
-                // Игнорируем ENOENT
+                bpf_map_delete_elem(fd, &key);
             }
         }
     }
-
-    // Удаляем скрипты для этой папки
-    // map = bpf_object__find_map_by_name(obj, "folder_scripts_map");
-    // if (map) {
-    //     int fd = bpf_map__fd(map);
-    //     if (fd >= 0) {
-    //         for (int i = 0; i < MAX_SCRIPTS_PER_FOLDER; i++) {
-    //             __u64 key = (folder_inode << 32) | i;
-    //             err = bpf_map_delete_elem(fd, &key);
-    //             // Игнорируем ENOENT
-    //         }
-    //     }
-    // }
 
     return 0;
 }
@@ -631,20 +520,6 @@ static int remove_folder_from_bpf(struct bpf_object *obj, __u64 folder_inode) {
 
 static int reload_all_entries(struct bpf_object *obj) {
     SYSLOG_INFO("Reloading all entries to BPF...");
-
-    // Очищаем старые данные
-    struct bpf_map *map;
-
-    // Очищаем folder_config_map
-    map = bpf_object__find_map_by_name(obj, "folder_config_map");
-    if (map) {
-        int fd = bpf_map__fd(map);
-        if (fd >= 0) {
-            // Просто перезаписываем все заново
-        }
-    }
-
-    // Загружаем заново
     return load_entries_to_bpf(obj);
 }
 
@@ -658,14 +533,7 @@ static int load_single_entry(struct bpf_object *obj, struct protect_entry *entry
     struct protected_folder_config config = {
         .folder_inode = entry->inode,
         .allowed_program_count = entry->allowed_count,
-        // .script_count = 0
     };
-
-    // for (int j = 0; j < entry->allowed_count && j < MAX_ALLOWED; j++) {
-    //     if (is_script_file(entry->allowed_paths[j])) {
-    //         config.script_count++;
-    //     }
-    // }
 
     struct bpf_map *map = bpf_object__find_map_by_name(obj, "folder_config_map");
     if (!map) return -1;
@@ -724,7 +592,7 @@ static int scan_templates_and_load(struct bpf_object *obj) {
 
                 for (int j = 0; j < templates[t].allowed_count && j < MAX_ALLOWED; j++) {
                     entry->allowed_inodes[j] = templates[t].allowed_inodes[j];
-                    strcpy(entry->allowed_paths[j], templates[t].allowed_paths[j]);
+                    safe_strcpy(entry->allowed_paths[j], templates[t].allowed_paths[j], MAX_PATH_LEN);
                     entry->allowed_count++;
                 }
 
@@ -805,17 +673,20 @@ static void print_usage(const char *prog) {
 }
 
 int main(int argc, char **argv) {
-    // Проверка на повторный запуск
-    // if (!check_single_instance_loader()) {
-    //     fprintf(stderr, "Another instance of app_data_sec_loader is already running\n");
-    //     return 1;
-    // }
-
     struct bpf_program *prog;
     struct bpf_map *map;
     int err = 0;
     int log_level = 1;
     const char *bpf_file = NULL;
+
+    // Вывод информации о размере структур
+    printf("sizeof(protect_entry) = %zu bytes\n", sizeof(struct protect_entry));
+    printf("sizeof(protect_template) = %zu bytes\n", sizeof(struct protect_template));
+    printf("entries array (%d): %zu KB\n", MAX_PATHS, (sizeof(entries) / 1024));
+    printf("templates array (%d): %zu KB\n", MAX_PATHS, (sizeof(templates) / 1024));
+    printf("Total: %zu KB (%.2f MB)\n",
+           (sizeof(entries) + sizeof(templates)) / 1024,
+           (double)(sizeof(entries) + sizeof(templates)) / (1024 * 1024));
 
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
     SYSLOG_INFO("APP DATA SEC LOADER STARTING (PID: %d)", getpid());
@@ -880,7 +751,6 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    // Загружаем записи в BPF
     if (config_enabled && entry_count > 0) {
         err = load_entries_to_bpf(g_bpf_obj);
         if (err) {
@@ -892,7 +762,6 @@ int main(int argc, char **argv) {
                     config_enabled, entry_count);
     }
 
-    // Прикрепляем LSM-программы
     bpf_object__for_each_program(prog, g_bpf_obj) {
         const char *name = bpf_program__name(prog);
         if (strncmp(name, "block_", 6) != 0) continue;
@@ -905,7 +774,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Устанавливаем уровень логирования
     map = bpf_object__find_map_by_name(g_bpf_obj, "log_level_map");
     if (map) {
         int fd = bpf_map__fd(map);
@@ -932,7 +800,6 @@ int main(int argc, char **argv) {
         if (config_changed()) {
             SYSLOG_INFO("Config changed! Reloading...");
 
-            // Запоминаем старые inode для удаления
             __u64 old_inodes[MAX_PATHS];
             int old_count = 0;
             for (int i = 0; i < entry_count; i++) {
@@ -955,7 +822,6 @@ int main(int argc, char **argv) {
 
             if (!config_enabled) {
                 SYSLOG_INFO("Config: module disabled");
-                // Удаляем все старые записи
                 for (int i = 0; i < old_count; i++) {
                     remove_folder_from_bpf(g_bpf_obj, old_inodes[i]);
                 }
@@ -967,7 +833,6 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            // Удаляем старые папки, которых нет в новом конфиге
             for (int i = 0; i < old_count; i++) {
                 int found = 0;
                 for (int j = 0; j < entry_count; j++) {
@@ -986,7 +851,6 @@ int main(int argc, char **argv) {
             last_folder_check = now;
         }
 
-        // Проверка новых/пересозданных папок
         if (now - last_folder_check >= RETRY_INTERVAL) {
             int changed = 0;
 

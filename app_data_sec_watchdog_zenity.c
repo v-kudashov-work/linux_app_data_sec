@@ -13,6 +13,7 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <sys/file.h>
+#include <sys/mount.h>
 #include <fcntl.h>
 #include <limits.h>
 
@@ -24,6 +25,8 @@
 #define CHECK_INTERVAL 10           // Проверка каждые 10 секунд
 #define PID_FILE "/var/run/app_data_sec_watchdog.pid"
 #define LOCK_FILE "/var/lock/app_data_sec_watchdog.lock"
+#define TRACE_PIPE "/sys/kernel/debug/tracing/trace_pipe"
+#define DEBUGFS "/sys/kernel/debug"
 
 // ============================================================================
 // ЛОГИРОВАНИЕ
@@ -120,29 +123,86 @@ static int is_process_running(const char *process_name) {
 }
 
 // ============================================================================
+// НАСТРОЙКА TRACE_PIPE
+// ============================================================================
+
+static int ensure_trace_pipe_available(void) {
+    // Проверяем, существует ли debugfs
+    struct stat st;
+    if (stat(DEBUGFS, &st) != 0) {
+        log_message(LOG_WARNING, "debugfs does not exist, trying to mount...");
+        if (mount("none", DEBUGFS, "debugfs", 0, NULL) != 0) {
+            log_message(LOG_ERR, "Failed to mount debugfs: %s", strerror(errno));
+            return 0;
+        }
+        log_message(LOG_INFO, "debugfs mounted successfully");
+    }
+
+    // Проверяем, существует ли trace_pipe
+    if (stat(TRACE_PIPE, &st) != 0) {
+        log_message(LOG_ERR, "trace_pipe does not exist at %s", TRACE_PIPE);
+        log_message(LOG_ERR, "Kernel may not have CONFIG_TRACING enabled");
+        return 0;
+    }
+
+    // Проверяем права доступа
+    if (access(TRACE_PIPE, R_OK) != 0) {
+        log_message(LOG_ERR, "trace_pipe not readable: %s", strerror(errno));
+        log_message(LOG_ERR, "Try: sudo chmod 644 %s", TRACE_PIPE);
+        return 0;
+    }
+
+    log_message(LOG_INFO, "trace_pipe is available at %s", TRACE_PIPE);
+    return 1;
+}
+
+// ============================================================================
 // ЧТЕНИЕ BPF ЛОГОВ
 // ============================================================================
 
 static int read_trace_pipe(char *buffer, int size) {
     static FILE *fp = NULL;
+    static int reinit_counter = 0;
 
-    if (!fp) {
-        fp = fopen("/sys/kernel/debug/tracing/trace_pipe", "r");
-        if (!fp) {
-            log_message(LOG_ERR, "Failed to open trace_pipe");
-            return -1;
+    // Если файл уже открыт, пробуем читать
+    if (fp) {
+        if (fgets(buffer, size, fp) != NULL) {
+            return 1;
         }
-        int fd = fileno(fp);
-        if (fd >= 0) {
-            int flags = fcntl(fd, F_GETFL, 0);
+        // Если EOF или ошибка - переоткрываем
+        if (feof(fp) || ferror(fp)) {
+            fclose(fp);
+            fp = NULL;
+            log_message(LOG_WARNING, "trace_pipe closed, re-opening...");
+            return 0;
+        }
+        return 0;
+    }
+
+    // Открываем trace_pipe
+    fp = fopen(TRACE_PIPE, "r");
+    if (!fp) {
+        reinit_counter++;
+        if (reinit_counter % 6 == 0) { // Каждые ~60 секунд
+            log_message(LOG_ERR, "Failed to open trace_pipe: %s (attempt %d)",
+                        strerror(errno), reinit_counter);
+            // Пытаемся перемонтировать debugfs
+            ensure_trace_pipe_available();
+        }
+        return -1;
+    }
+
+    // Устанавливаем неблокирующий режим
+    int fd = fileno(fp);
+    if (fd >= 0) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) {
             fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         }
     }
 
-    if (fgets(buffer, size, fp) != NULL) {
-        return 1;
-    }
-
+    reinit_counter = 0;
+    log_message(LOG_INFO, "trace_pipe opened successfully");
     return 0;
 }
 
@@ -260,7 +320,7 @@ static void process_bpf_message(const char *line) {
         return;
     }
     strncpy(last_msg, line, sizeof(last_msg) - 1);
-    last_msg[sizeof(last_msg) - 1] = '\0'; // Гарантируем завершение
+    last_msg[sizeof(last_msg) - 1] = '\0';
     last_msg_time = now;
 
     // Парсим сообщение
@@ -334,6 +394,7 @@ int main(int argc, char **argv) {
     int use_gui = 0;
     int use_console = 0;
     int first_check = 1;
+    int trace_ready = 0;
 
     syslog_enabled = 1;
 
@@ -427,12 +488,12 @@ int main(int argc, char **argv) {
     log_message(LOG_INFO, "========================================");
 
     // Проверяем доступность trace_pipe
-    if (access("/sys/kernel/debug/tracing/trace_pipe", R_OK) != 0) {
-        log_message(LOG_WARNING, "trace_pipe not accessible, trying to mount debugfs...");
-        if (system("mount -t debugfs none /sys/kernel/debug 2>/dev/null") < 0) {
-            log_message(LOG_WARNING, "Failed to mount debugfs");
-        }
-        sleep(1);
+    log_message(LOG_INFO, "Checking trace_pipe availability...");
+    trace_ready = ensure_trace_pipe_available();
+
+    if (!trace_ready) {
+        log_message(LOG_WARNING, "trace_pipe not available, will retry every %d seconds", check_interval);
+        log_message(LOG_WARNING, "Check that kernel has CONFIG_TRACING and CONFIG_DEBUG_FS enabled");
     }
 
     // Основной цикл
@@ -453,6 +514,13 @@ int main(int argc, char **argv) {
             first_check = 0;
         }
 
+        // Если trace_pipe недоступен, пытаемся восстановить
+        if (!trace_ready) {
+            trace_ready = ensure_trace_pipe_available();
+            sleep(check_interval);
+            continue;
+        }
+
         // Читаем логи из trace_pipe
         int ret = read_trace_pipe(buffer, sizeof(buffer));
 
@@ -468,11 +536,16 @@ int main(int argc, char **argv) {
         } else if (ret == -1) {
             consecutive_errors++;
             if (consecutive_errors > 10) {
-                log_message(LOG_ERR, "Too many errors reading trace_pipe, retrying...");
+                log_message(LOG_ERR, "Too many errors reading trace_pipe, will retry...");
+                trace_ready = 0;
                 consecutive_errors = 0;
                 sleep(check_interval);
                 continue;
             }
+            sleep(1);
+        } else {
+            // ret == 0 - нет данных, просто ждем
+            consecutive_errors = 0;
         }
 
         sleep(check_interval);
