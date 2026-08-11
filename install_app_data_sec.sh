@@ -72,6 +72,9 @@ if [ "$IS_UPDATE" -eq 1 ]; then
     if [ -f "$INSTALL_PATH/app_data_sec_loader" ]; then
         cp "$INSTALL_PATH/app_data_sec_loader" "$BACKUP_DIR/app_data_sec_loader.backup"
     fi
+    if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
+        cp "$INSTALL_PATH/app_data_sec_watchdog" "$BACKUP_DIR/app_data_sec_watchdog.backup"
+    fi
 
     # Останавливаем сервисы
     systemctl stop app_data_sec_loader 2>/dev/null || true
@@ -150,10 +153,6 @@ if [ "$IS_ALT" -eq 1 ]; then
     $PKG_INSTALL kernel-headers-modules-std-def 2>/dev/null || true
     $PKG_INSTALL kernel-headers-modules-un-def 2>/dev/null || true
 
-    # GUI пакеты
-    $PKG_INSTALL zenity 2>/dev/null || true
-    $PKG_INSTALL yad 2>/dev/null || true
-
     # BPF инструменты
     $PKG_INSTALL bpftool 2>/dev/null || true
 else
@@ -164,10 +163,6 @@ else
     check_package libbpf-dev
     check_package libelf-dev
     check_package zlib1g-dev
-
-    # GUI пакеты
-    check_package zenity
-    check_package yad
 
     # BPF инструменты
     if ! command -v bpftool &> /dev/null; then
@@ -402,12 +397,7 @@ fi
 # Компиляция загрузчика
 echo -e "${BLUE}[INFO]${NC} Compiling loader..."
 
-if [ "$IS_ALT" -eq 1 ]; then
-    # Для ALT Linux может потребоваться дополнительные флаги
-    gcc -Wall -O2 -o app_data_sec_loader app_data_sec_loader.c -lbpf -lelf -lz 2>&1
-else
-    gcc -Wall -O2 -o app_data_sec_loader app_data_sec_loader.c -lbpf -lelf -lz 2>&1
-fi
+gcc -Wall -O2 -o app_data_sec_loader app_data_sec_loader.c -lbpf -lelf -lz 2>&1
 
 if [ ! -f "app_data_sec_loader" ]; then
     echo -e "${RED}[ERROR]${NC} Loader compilation failed!"
@@ -618,13 +608,9 @@ echo -e "${GREEN}[OK]${NC} Log files created"
 
 echo -e "\n${BLUE}[INFO]${NC} Creating/updating systemd services..."
 
-# Определяем DISPLAY для ALT Linux
-DISPLAY_VAR=":0"
-if [ -n "$DISPLAY" ]; then
-    DISPLAY_VAR="$DISPLAY"
-elif command -v who &> /dev/null; then
-    DISPLAY_VAR=$(who 2>/dev/null | grep -E "\(:[0-9]+\)" | head -1 | sed -E 's/.*\((:[0-9]+)\)$/\1/' || echo ":0")
-fi
+# ============================================================================
+# СЕРВИС APP_DATA_SEC_LOADER
+# ============================================================================
 
 # Сервис для app_data_sec_loader
 cat > "$SERVICE_DIR/app_data_sec_loader.service" << 'EOF'
@@ -661,25 +647,24 @@ WantedBy=multi-user.target
 EOF
 echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_loader.service"
 
-# Сервис для watchdog (если собран)
-if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
-    cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << EOF
+# ============================================================================
+# СЕРВИС APP_DATA_SEC_WATCHDOG
+# ============================================================================
+
+cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << 'EOF'
 [Unit]
 Description=APP DATA SEC Watchdog Service
 Documentation=https://github.com/your-repo/app_data_sec
-After=network.target multi-user.target graphical.target
-Wants=network.target
+After=network.target multi-user.target
+Wants=app_data_sec_loader.service
 
 [Service]
 Type=simple
 User=root
 Group=root
-Environment=DISPLAY=$DISPLAY_VAR
-Environment=XAUTHORITY=/root/.Xauthority
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus
-ExecStart=/usr/local/bin/app_data_sec_watchdog -z -i 10
-ExecStop=/bin/kill -SIGTERM \$MAINPID
-ExecReload=/bin/kill -SIGHUP \$MAINPID
+ExecStart=/usr/local/bin/app_data_sec_watchdog
+ExecStop=/bin/kill -SIGTERM $MAINPID
+ExecReload=/bin/kill -SIGHUP $MAINPID
 Restart=always
 RestartSec=10
 StandardOutput=append:/var/log/app_data_sec_watchdog.log
@@ -687,45 +672,19 @@ StandardError=append:/var/log/app_data_sec_watchdog_error.log
 SyslogIdentifier=app_data_sec_watchdog
 PIDFile=/run/app_data_sec_watchdog.pid
 
-# Сняты ограничения для GUI
+# Права для работы с файлами на рабочих столах
 PrivateTmp=false
 ProtectSystem=false
 ProtectHome=false
 NoNewPrivileges=false
-ReadWritePaths=/ /var/log /tmp /run/user/0 /home
+ReadWritePaths=/ /var/log /home /tmp /root
+
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID
 
 [Install]
-WantedBy=multi-user.target graphical.target
+WantedBy=multi-user.target
 EOF
-    echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_watchdog.service"
-fi
-
-# ============================================================================
-# НАСТРОЙКА XAUTHORITY (для GUI)
-# ============================================================================
-
-echo -e "\n${BLUE}[INFO]${NC} Setting up Xauthority..."
-
-mkdir -p /run/user/0
-chmod 700 /run/user/0
-
-XAUTH_FILE=""
-for f in /root/.Xauthority /home/*/.Xauthority /tmp/.Xauthority; do
-    if [ -f "$f" ]; then
-        XAUTH_FILE="$f"
-        break
-    fi
-done
-
-if [ -n "$XAUTH_FILE" ]; then
-    cp "$XAUTH_FILE" /run/user/0/Xauthority 2>/dev/null || true
-    chmod 600 /run/user/0/Xauthority 2>/dev/null || true
-    echo -e "${GREEN}[OK]${NC} Xauthority set up"
-else
-    echo -e "${YELLOW}[WARNING]${NC} No Xauthority file found. GUI dialogs may not work."
-    echo -e "${YELLOW}[INFO]${NC} Run 'xauth list' to find the correct Xauthority file"
-fi
+echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_watchdog.service"
 
 # ============================================================================
 # ЗАПУСК СЕРВИСОВ
@@ -757,11 +716,9 @@ echo ""
 echo -e "${BLUE}app_data_sec_loader:${NC}"
 systemctl status app_data_sec_loader --no-pager || true
 
-if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
-    echo ""
-    echo -e "${BLUE}app_data_sec_watchdog:${NC}"
-    systemctl status app_data_sec_watchdog --no-pager || true
-fi
+echo ""
+echo -e "${BLUE}app_data_sec_watchdog:${NC}"
+systemctl status app_data_sec_watchdog --no-pager || true
 
 # ============================================================================
 # ПРОВЕРКА ЛОГОВ
@@ -773,11 +730,9 @@ echo ""
 echo -e "${BLUE}app_data_sec_loader logs:${NC}"
 journalctl -u app_data_sec_loader -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
 
-if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
-    echo ""
-    echo -e "${BLUE}app_data_sec_watchdog logs:${NC}"
-    journalctl -u app_data_sec_watchdog -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
-fi
+echo ""
+echo -e "${BLUE}app_data_sec_watchdog logs:${NC}"
+journalctl -u app_data_sec_watchdog -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
 
 # ============================================================================
 # ПРОВЕРКА BPF
@@ -820,16 +775,17 @@ ${BLUE}Installed files:${NC}
 
 ${BLUE}Services:${NC}
   app_data_sec_loader   - Main protection service
-  app_data_sec_watchdog - Watchdog service (if compiled)
+  app_data_sec_watchdog - Watchdog service (creates desktop file on errors)
 
-${BLUE}Utils:${NC}
-  app_data_sec_merge_config - Merge config tool
-  app_data_sec_unprotect    - Remove protection from config
+${BLUE}Watchdog:${NC}
+  When app_data_sec_loader stops, watchdog creates:
+  app_data_sec_errors.txt on each user's desktop
 
 ${BLUE}Commands:${NC}
   sudo systemctl status app_data_sec_loader
+  sudo systemctl status app_data_sec_watchdog
   sudo journalctl -u app_data_sec_loader -f
-  sudo tail -f /var/log/app_data_sec_loader.log
+  sudo journalctl -u app_data_sec_watchdog -f
 
 ${BLUE}Configuration:${NC}
   Edit: sudo nano $CONFIG_PATH
@@ -858,7 +814,10 @@ echo "  2. Check LSM: cat /sys/kernel/security/lsm"
 echo "  3. For BPF LSM: add 'bpf' to lsm= in /etc/default/grub"
 echo "  4. Check BPF headers: find /usr -name \"bpf_helpers.h\""
 echo "  5. Install packages: apt-get install libbpf-devel kernel-headers-modules-std-def"
-echo "  6. For GUI notifications: apt-get install yad zenity"
+echo ""
+echo -e "${BLUE}Watchdog desktop file:${NC}"
+echo "  If error occurs, file appears on desktop: app_data_sec_errors.txt"
+echo "  User can delete it after reading"
 
 if [ "$IS_UPDATE" -eq 1 ]; then
     echo ""

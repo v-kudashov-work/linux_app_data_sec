@@ -24,10 +24,12 @@ fi
 echo -e "${YELLOW}[WARNING]${NC} This will remove:"
 echo "  - app_data_sec_loader"
 echo "  - app_data_sec_merge_config"
+echo "  - app_data_sec_unprotect"
 echo "  - app_data_sec_watchdog"
 echo "  - BPF objects (app_data_sec.bpf.o)"
 echo "  - Systemd services"
 echo "  - Log files"
+echo "  - Desktop error files (optional)"
 echo "  - Configuration (optional)"
 echo ""
 read -p "Are you sure you want to continue? (y/n) " -n 1 -r
@@ -63,9 +65,11 @@ echo -e "\n${BLUE}[INFO]${NC} Removing files..."
 # Бинарники
 rm -f /usr/local/bin/app_data_sec_loader
 rm -f /usr/local/bin/app_data_sec_merge_config
+rm -f /usr/local/bin/app_data_sec_unprotect
 rm -f /usr/local/bin/app_data_sec_watchdog
 rm -f /usr/bin/app_data_sec_loader 2>/dev/null || true
 rm -f /usr/bin/app_data_sec_merge_config 2>/dev/null || true
+rm -f /usr/bin/app_data_sec_unprotect 2>/dev/null || true
 rm -f /usr/bin/app_data_sec_watchdog 2>/dev/null || true
 echo -e "${GREEN}[OK]${NC} Removed binaries"
 
@@ -92,6 +96,10 @@ rm -f /run/app_data_sec_loader.pid
 rm -f /run/app_data_sec_watchdog.pid
 echo -e "${GREEN}[OK]${NC} Removed PID files"
 
+# Lock файлы
+rm -f /var/lock/app_data_sec_watchdog.lock
+echo -e "${GREEN}[OK]${NC} Removed lock files"
+
 # ============================================================================
 # КОНФИГУРАЦИЯ (опционально)
 # ============================================================================
@@ -105,6 +113,39 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo -e "${GREEN}[OK]${NC} Removed configuration"
 else
     echo -e "${YELLOW}[INFO]${NC} Keeping configuration: /etc/app_data_sec.conf"
+fi
+
+# ============================================================================
+# ДЕСКТОПНЫЕ ФАЙЛЫ (опционально)
+# ============================================================================
+
+echo ""
+echo -e "${YELLOW}[INFO]${NC} Desktop error files may remain on user desktops."
+echo "These files are: app_data_sec_errors.txt"
+echo ""
+read -p "Remove desktop error files from all users? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo -e "${BLUE}[INFO]${NC} Removing desktop error files..."
+
+    # Находим все домашние директории пользователей
+    for home in /home/* /root; do
+        if [ -d "$home" ]; then
+            # Ищем desktop директории
+            for desktop in "$home/Desktop" "$home/Рабочий стол" "$home/Рабочий стол"; do
+                if [ -d "$desktop" ]; then
+                    rm -f "$desktop/app_data_sec_errors.txt"
+                    if [ -f "$desktop/app_data_sec_errors.txt" ]; then
+                        echo -e "  Removed: $desktop/app_data_sec_errors.txt"
+                    fi
+                fi
+            done
+        fi
+    done
+    echo -e "${GREEN}[OK]${NC} Removed desktop error files"
+else
+    echo -e "${YELLOW}[INFO]${NC} Desktop files kept"
+    echo -e "${YELLOW}[INFO]${NC} To remove manually: rm ~/Desktop/app_data_sec_errors.txt"
 fi
 
 # ============================================================================
@@ -162,11 +203,13 @@ ${GREEN}✅ Uninstall completed successfully!${NC}
 ${BLUE}Removed:${NC}
   - app_data_sec_loader binary
   - app_data_sec_merge_config binary
+  - app_data_sec_unprotect binary
   - app_data_sec_watchdog binary
   - BPF objects (app_data_sec.bpf.o)
   - Systemd services
   - Log files
   - PID files
+  - Lock files
 
 ${YELLOW}To verify:${NC}
   systemctl status app_data_sec_loader 2>/dev/null || echo "  Service not found"
