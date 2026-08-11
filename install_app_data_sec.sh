@@ -150,8 +150,9 @@ if [ "$IS_ALT" -eq 1 ]; then
     $PKG_INSTALL kernel-headers-modules-std-def 2>/dev/null || true
     $PKG_INSTALL kernel-headers-modules-un-def 2>/dev/null || true
 
-    # GUI
+    # GUI пакеты
     $PKG_INSTALL zenity 2>/dev/null || true
+    $PKG_INSTALL yad 2>/dev/null || true
 
     # BPF инструменты
     $PKG_INSTALL bpftool 2>/dev/null || true
@@ -163,7 +164,10 @@ else
     check_package libbpf-dev
     check_package libelf-dev
     check_package zlib1g-dev
+
+    # GUI пакеты
     check_package zenity
+    check_package yad
 
     # BPF инструменты
     if ! command -v bpftool &> /dev/null; then
@@ -446,6 +450,36 @@ else
 fi
 
 # ============================================================================
+# КОМПИЛЯЦИЯ UNPROTECT
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Building app_data_sec_unprotect..."
+
+# Ищем файл unprotect
+UNPROTECT_SRC=""
+if [ -f "app_data_sec_unprotect.c" ]; then
+    UNPROTECT_SRC="app_data_sec_unprotect.c"
+elif [ -f "unprotect/app_data_sec_unprotect.c" ]; then
+    UNPROTECT_SRC="unprotect/app_data_sec_unprotect.c"
+else
+    UNPROTECT_SRC=$(find . -name "app_data_sec_unprotect.c" -type f 2>/dev/null | head -1)
+fi
+
+if [ -n "$UNPROTECT_SRC" ] && [ -f "$UNPROTECT_SRC" ]; then
+    echo -e "${BLUE}[INFO]${NC} Found: $UNPROTECT_SRC"
+    echo -e "${BLUE}[INFO]${NC} Compiling unprotect..."
+    gcc -Wall -O2 -o app_data_sec_unprotect "$UNPROTECT_SRC" 2>&1
+
+    if [ -f "app_data_sec_unprotect" ]; then
+        echo -e "${GREEN}[OK]${NC} Unprotect compiled"
+    else
+        echo -e "${RED}[ERROR]${NC} Unprotect compilation failed!"
+    fi
+else
+    echo -e "${YELLOW}[WARNING]${NC} app_data_sec_unprotect.c not found, skipping"
+fi
+
+# ============================================================================
 # КОМПИЛЯЦИЯ WATCHDOG
 # ============================================================================
 
@@ -497,6 +531,13 @@ if [ -f "app_data_sec_merge_config" ]; then
     echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_merge_config"
 fi
 
+# Устанавливаем unprotect
+if [ -f "app_data_sec_unprotect" ]; then
+    cp -f app_data_sec_unprotect "$INSTALL_PATH/"
+    chmod 755 "$INSTALL_PATH/app_data_sec_unprotect"
+    echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_unprotect"
+fi
+
 # Устанавливаем watchdog
 if [ -f "app_data_sec_watchdog" ]; then
     cp -f app_data_sec_watchdog "$INSTALL_PATH/"
@@ -516,6 +557,11 @@ echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_loader"
 if [ -f "$INSTALL_PATH/app_data_sec_merge_config" ]; then
     ln -sf "$INSTALL_PATH/app_data_sec_merge_config" /usr/bin/app_data_sec_merge_config 2>/dev/null || true
     echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_merge_config"
+fi
+
+if [ -f "$INSTALL_PATH/app_data_sec_unprotect" ]; then
+    ln -sf "$INSTALL_PATH/app_data_sec_unprotect" /usr/bin/app_data_sec_unprotect 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_unprotect"
 fi
 
 if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
@@ -767,6 +813,8 @@ ${GREEN}✅ $UPDATE_MSG completed successfully!${NC}
 ${BLUE}Installed files:${NC}
   $INSTALL_PATH/app_data_sec_loader
   $INSTALL_PATH/app_data_sec_merge_config
+  $INSTALL_PATH/app_data_sec_unprotect
+  $INSTALL_PATH/app_data_sec_watchdog
   $BPF_OBJ_PATH/app_data_sec.bpf.o
   $CONFIG_PATH
 
@@ -776,6 +824,7 @@ ${BLUE}Services:${NC}
 
 ${BLUE}Utils:${NC}
   app_data_sec_merge_config - Merge config tool
+  app_data_sec_unprotect    - Remove protection from config
 
 ${BLUE}Commands:${NC}
   sudo systemctl status app_data_sec_loader
@@ -789,6 +838,11 @@ ${BLUE}Configuration:${NC}
 ${BLUE}Merge config:${NC}
   app_data_sec_merge_config /tmp/new.conf
   app_data_sec_merge_config -m /etc/app_data_sec.conf /tmp/new.conf
+
+${BLUE}Remove protection:${NC}
+  app_data_sec_unprotect /tmp/remove.conf
+  app_data_sec_unprotect -c /etc/app_data_sec.conf /tmp/remove.conf
+  app_data_sec_unprotect -l
 
 EOF
 
@@ -804,6 +858,7 @@ echo "  2. Check LSM: cat /sys/kernel/security/lsm"
 echo "  3. For BPF LSM: add 'bpf' to lsm= in /etc/default/grub"
 echo "  4. Check BPF headers: find /usr -name \"bpf_helpers.h\""
 echo "  5. Install packages: apt-get install libbpf-devel kernel-headers-modules-std-def"
+echo "  6. For GUI notifications: apt-get install yad zenity"
 
 if [ "$IS_UPDATE" -eq 1 ]; then
     echo ""

@@ -1,4 +1,4 @@
-// app_data_sec_watchdog_zenity.c
+// app_data_sec_watchdog_zenity.c - Исправленная версия с видимыми кнопками
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,70 +57,210 @@ static void log_message(int priority, const char *format, ...) {
 }
 
 // ============================================================================
-// ПОКАЗ ОШИБКИ ЧЕРЕЗ ZENITY
+// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ЭКРАНИРОВАНИЯ
+// ============================================================================
+
+static void escape_zenity_text(const char *src, char *dst, size_t dst_size) {
+    while (*src && (size_t)(dst - dst) < dst_size - 3) {
+        if (*src == '"' || *src == '\\' || *src == '$' || *src == '`') {
+            *dst++ = '\\';
+        }
+        *dst++ = *src++;
+    }
+    *dst = '\0';
+}
+
+// ============================================================================
+// ПРОВЕРКА НАЛИЧИЯ YAD
+// ============================================================================
+
+static int has_yad(void) {
+    return (system("which yad >/dev/null 2>&1") == 0);
+}
+
+static int has_zenity(void) {
+    return (system("which zenity >/dev/null 2>&1") == 0);
+}
+
+// ============================================================================
+// ПОКАЗ ОШИБКИ ЧЕРЕЗ YAD (С ВИДИМЫМИ КНОПКАМИ)
+// ============================================================================
+
+static void show_error_yad(const char *message) {
+    char cmd[8192];
+    char escaped_msg[4096];
+
+    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
+
+    // YAD позволяет задать фон кнопок и текста
+    snprintf(cmd, sizeof(cmd),
+             "yad --error "
+             "--title=\"APP DATA SEC - ERROR\" "
+             "--text=\"<span foreground='white' background='#CC0000' font='14' weight='bold'>⚠️ %s</span>\" "
+             "--width=600 --height=400 "
+             "--button=\"OK\":0 "
+             "--button-color=\"#4CAF50\" "
+             "--button-fore=\"white\" "
+             "--back=\"#CC0000\" "
+             "--fore=\"white\" "
+             "2>/dev/null",
+             escaped_msg);
+
+    log_message(LOG_INFO, "Showing error dialog via yad");
+    system(cmd);
+}
+
+static void show_info_yad(const char *message) {
+    char cmd[8192];
+    char escaped_msg[4096];
+
+    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
+
+    snprintf(cmd, sizeof(cmd),
+             "yad --info "
+             "--title=\"APP DATA SEC\" "
+             "--text=\"<span foreground='white' background='#0066CC' font='14' weight='bold'>ℹ️ %s</span>\" "
+             "--width=550 --height=300 "
+             "--button=\"OK\":0 "
+             "--button-color=\"#4CAF50\" "
+             "--button-fore=\"white\" "
+             "--back=\"#0066CC\" "
+             "--fore=\"white\" "
+             "2>/dev/null",
+             escaped_msg);
+
+    log_message(LOG_INFO, "Showing info dialog via yad");
+    system(cmd);
+}
+
+static void show_warning_yad(const char *message) {
+    char cmd[8192];
+    char escaped_msg[4096];
+
+    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
+
+    snprintf(cmd, sizeof(cmd),
+             "yad --warning "
+             "--title=\"APP DATA SEC - WARNING\" "
+             "--text=\"<span foreground='black' background='#FFA500' font='14' weight='bold'>⚠️ %s</span>\" "
+             "--width=550 --height=300 "
+             "--button=\"OK\":0 "
+             "--button-color=\"#4CAF50\" "
+             "--button-fore=\"white\" "
+             "--back=\"#FFA500\" "
+             "--fore=\"black\" "
+             "2>/dev/null",
+             escaped_msg);
+
+    log_message(LOG_INFO, "Showing warning dialog via yad");
+    system(cmd);
+}
+
+// ============================================================================
+// ПОКАЗ ОШИБКИ ЧЕРЕЗ ZENITY С ПРИНУДИТЕЛЬНОЙ ТЕМОЙ
 // ============================================================================
 
 static void show_error_zenity_blocking(const char *message) {
-    char cmd[4096];
+    char cmd[8192];
     char escaped_msg[4096];
-    char *src = (char*)message;
-    char *dst = escaped_msg;
 
-    while (*src && dst - escaped_msg < sizeof(escaped_msg) - 3) {
-        if (*src == '"' || *src == '\\' || *src == '$' || *src == '`') {
-            *dst++ = '\\';
-        }
-        *dst++ = *src++;
-    }
-    *dst = '\0';
+    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
 
-    if (DIALOG_TIMEOUT > 0) {
-        snprintf(cmd, sizeof(cmd),
-                 "timeout %d zenity --error --title=\"APP DATA SEC - ERROR\" --text=\"%s\" --width=500 --height=300 2>/dev/null",
-                 DIALOG_TIMEOUT, escaped_msg);
-    } else {
-        snprintf(cmd, sizeof(cmd),
-                 "zenity --error --title=\"APP DATA SEC - ERROR\" --text=\"%s\" --width=500 --height=300 2>/dev/null",
-                 escaped_msg);
-    }
+    // Принудительно используем тему с контрастными кнопками
+    // Используем GTK_THEME для темной темы, где кнопки видны
+    snprintf(cmd, sizeof(cmd),
+             "GTK_THEME=Adwaita:dark zenity --error "
+             "--title=\"APP DATA SEC - ERROR\" "
+             "--text=\"<span foreground='white' background='#CC0000' font='14' weight='bold'>⚠️ %s</span>\" "
+             "--width=550 --height=350 "
+             "--ok-label=\"  OK  \" "
+             "2>/dev/null",
+             escaped_msg);
 
-    log_message(LOG_INFO, "Showing error dialog (waiting for user to close)");
+    log_message(LOG_INFO, "Showing error dialog via zenity (dark theme)");
     system(cmd);
-    log_message(LOG_INFO, "User closed error dialog");
 }
 
 static void show_info_zenity_blocking(const char *message) {
-    char cmd[4096];
+    char cmd[8192];
     char escaped_msg[4096];
-    char *src = (char*)message;
-    char *dst = escaped_msg;
 
-    while (*src && dst - escaped_msg < sizeof(escaped_msg) - 3) {
-        if (*src == '"' || *src == '\\' || *src == '$' || *src == '`') {
-            *dst++ = '\\';
-        }
-        *dst++ = *src++;
-    }
-    *dst = '\0';
+    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
 
-    if (DIALOG_TIMEOUT > 0) {
-        snprintf(cmd, sizeof(cmd),
-                 "timeout %d zenity --info --title=\"APP DATA SEC\" --text=\"%s\" --width=450 --height=200 2>/dev/null",
-                 DIALOG_TIMEOUT, escaped_msg);
-    } else {
-        snprintf(cmd, sizeof(cmd),
-                 "zenity --info --title=\"APP DATA SEC\" --text=\"%s\" --width=450 --height=200 2>/dev/null",
-                 escaped_msg);
-    }
+    snprintf(cmd, sizeof(cmd),
+             "GTK_THEME=Adwaita:dark zenity --info "
+             "--title=\"APP DATA SEC\" "
+             "--text=\"<span foreground='white' background='#0066CC' font='14' weight='bold'>ℹ️ %s</span>\" "
+             "--width=500 --height=300 "
+             "--ok-label=\"  OK  \" "
+             "2>/dev/null",
+             escaped_msg);
 
-    log_message(LOG_INFO, "Showing info dialog");
+    log_message(LOG_INFO, "Showing info dialog via zenity (dark theme)");
     system(cmd);
 }
 
-static void show_error_console_blocking(const char *message) {
-    printf("\n%s\n", message);
-    printf("Press Enter to continue...\n");
-    getchar();
+static void show_warning_zenity_blocking(const char *message) {
+    char cmd[8192];
+    char escaped_msg[4096];
+
+    escape_zenity_text(message, escaped_msg, sizeof(escaped_msg));
+
+    snprintf(cmd, sizeof(cmd),
+             "GTK_THEME=Adwaita:dark zenity --warning "
+             "--title=\"APP DATA SEC - WARNING\" "
+             "--text=\"<span foreground='black' background='#FFA500' font='14' weight='bold'>⚠️ %s</span>\" "
+             "--width=500 --height=300 "
+             "--ok-label=\"  OK  \" "
+             "2>/dev/null",
+             escaped_msg);
+
+    log_message(LOG_INFO, "Showing warning dialog via zenity (dark theme)");
+    system(cmd);
+}
+
+// ============================================================================
+// ПОКАЗ СООБЩЕНИЙ (ОБЩАЯ ФУНКЦИЯ)
+// ============================================================================
+
+static void show_error_blocking(const char *message) {
+    if (has_yad()) {
+        show_error_yad(message);
+    } else if (has_zenity()) {
+        show_error_zenity_blocking(message);
+    } else {
+        // Fallback: консоль
+        printf("\n\033[41m\033[1;37m[APP DATA SEC ERROR]\033[0m\n");
+        printf("\033[31m%s\033[0m\n", message);
+        printf("\033[33mPress Enter to continue...\033[0m\n");
+        getchar();
+    }
+}
+
+static void show_info_blocking(const char *message) {
+    if (has_yad()) {
+        show_info_yad(message);
+    } else if (has_zenity()) {
+        show_info_zenity_blocking(message);
+    } else {
+        printf("\n\033[44m\033[1;37m[APP DATA SEC]\033[0m\n");
+        printf("\033[36m%s\033[0m\n", message);
+        printf("\033[33mPress Enter to continue...\033[0m\n");
+        getchar();
+    }
+}
+
+static void show_warning_blocking(const char *message) {
+    if (has_yad()) {
+        show_warning_yad(message);
+    } else if (has_zenity()) {
+        show_warning_zenity_blocking(message);
+    } else {
+        printf("\n\033[43m\033[1;30m[APP DATA SEC WARNING]\033[0m\n");
+        printf("\033[33m%s\033[0m\n", message);
+        printf("\033[33mPress Enter to continue...\033[0m\n");
+        getchar();
+    }
 }
 
 // ============================================================================
@@ -377,11 +517,17 @@ int main(int argc, char **argv) {
         log_message(LOG_INFO, "Running in daemon mode - GUI disabled");
     }
 
-    // По умолчанию используем zenity если доступен
+    // Проверяем наличие yad (приоритет) или zenity
+    int has_yad_tool = has_yad();
+    int has_zenity_tool = has_zenity();
+
     if (!use_zenity && !use_console && !run_daemon) {
-        if (system("which zenity >/dev/null 2>&1") == 0) {
+        if (has_yad_tool) {
             use_zenity = 1;
-            log_message(LOG_INFO, "Using Zenity for GUI notifications");
+            log_message(LOG_INFO, "Using yad for GUI notifications (better than zenity)");
+        } else if (has_zenity_tool) {
+            use_zenity = 1;
+            log_message(LOG_INFO, "Using zenity for GUI notifications (dark theme)");
         } else {
             use_console = 1;
             log_message(LOG_INFO, "Using console notifications");
@@ -453,20 +599,13 @@ int main(int argc, char **argv) {
 
         if (!run_daemon) {
             snprintf(msg, sizeof(msg),
-                     "APP DATA SEC - ОЖИДАНИЕ ФАЙЛА\n\n"
                      "Исполняемый файл '%s' не найден.\n\n"
-                     "Время: %s\n\n"
-                     "Watchdog будет ждать появления файла.\n"
+                     "Время: %s\n"
                      "Проверка каждые %d секунд.\n\n"
-                     "Как только файл появится, он будет автоматически загружен.\n"
-                     "Нажмите OK для продолжения.",
+                     "Как только файл появится, он будет автоматически загружен.",
                      PROCESS_NAME, time_str, check_interval);
 
-            if (use_zenity) {
-                show_info_zenity_blocking(msg);
-            } else if (use_console) {
-                show_error_console_blocking(msg);
-            }
+            show_info_blocking(msg);
             dialog_shown = 1;
         }
     }
@@ -489,15 +628,14 @@ int main(int argc, char **argv) {
                     waiting_for_file = 0;
                     log_message(LOG_INFO, "FOUND %s at: %s", PROCESS_NAME, process_path);
 
-                    if (!run_daemon && use_zenity) {
+                    if (!run_daemon) {
                         char info_msg[512];
                         snprintf(info_msg, sizeof(info_msg),
-                                 "APP DATA SEC\n\n"
                                  "Исполняемый файл '%s' найден!\n"
                                  "Путь: %s\n\n"
                                  "Будет выполнен автоматический запуск.",
                                  PROCESS_NAME, process_path);
-                        show_info_zenity_blocking(info_msg);
+                        show_info_blocking(info_msg);
                     }
                     dialog_shown = 0;
 
@@ -513,18 +651,13 @@ int main(int argc, char **argv) {
                         time_t elapsed = time(NULL) - file_wait_start;
                         char msg[512];
                         snprintf(msg, sizeof(msg),
-                                 "APP DATA SEC - ОЖИДАНИЕ ФАЙЛА\n\n"
                                  "Исполняемый файл '%s' всё ещё не найден.\n\n"
                                  "Время ожидания: %d секунд\n"
                                  "Проверка каждые %d секунд.\n\n"
                                  "Файл будет автоматически загружен при появлении.",
                                  PROCESS_NAME, (int)elapsed, check_interval);
 
-                        if (use_zenity) {
-                            show_info_zenity_blocking(msg);
-                        } else if (use_console) {
-                            show_error_console_blocking(msg);
-                        }
+                        show_info_blocking(msg);
                         dialog_shown = 1;
                     }
 
@@ -576,7 +709,6 @@ int main(int argc, char **argv) {
 
                 if (!run_daemon && !dialog_shown) {
                     snprintf(msg, sizeof(msg),
-                             "APP DATA SEC - КРИТИЧЕСКАЯ ОШИБКА\n\n"
                              "%s '%s' не запущен!\n"
                              "Время: %s\n\n"
                              "Нажмите OK для попытки перезапуска.",
@@ -584,11 +716,7 @@ int main(int argc, char **argv) {
                              service_available ? SERVICE_NAME : PROCESS_NAME,
                              time_str);
 
-                    if (use_zenity) {
-                        show_error_zenity_blocking(msg);
-                    } else if (use_console) {
-                        show_error_console_blocking(msg);
-                    }
+                    show_error_blocking(msg);
                     dialog_shown = 1;
                 }
 
@@ -611,16 +739,15 @@ int main(int argc, char **argv) {
                     restarts_attempted = 0;
                     dialog_shown = 0;
 
-                    if (!run_daemon && use_zenity) {
+                    if (!run_daemon) {
                         char info_msg[512];
                         snprintf(info_msg, sizeof(info_msg),
-                                 "APP DATA SEC\n\n"
                                  "%s '%s' успешно перезапущен.\n"
                                  "Время: %s",
                                  service_available ? "Сервис" : "Процесс",
                                  service_available ? SERVICE_NAME : PROCESS_NAME,
                                  time_str);
-                        show_info_zenity_blocking(info_msg);
+                        show_info_blocking(info_msg);
                     }
                 } else {
                     log_message(LOG_ERR, "FAILED: Could not restart %s",
@@ -633,7 +760,6 @@ int main(int argc, char **argv) {
                         if (!run_daemon) {
                             char warn_msg[512];
                             snprintf(warn_msg, sizeof(warn_msg),
-                                     "APP DATA SEC - КРИТИЧЕСКАЯ ОШИБКА\n\n"
                                      "Не удалось перезапустить '%s' после %d попыток.\n\n"
                                      "Пожалуйста, запустите %s вручную.\n"
                                      "Нажмите OK для продолжения мониторинга.",
@@ -641,11 +767,7 @@ int main(int argc, char **argv) {
                                      max_restarts,
                                      service_available ? "сервис" : "процесс");
 
-                            if (use_zenity) {
-                                show_error_zenity_blocking(warn_msg);
-                            } else if (use_console) {
-                                show_error_console_blocking(warn_msg);
-                            }
+                            show_warning_blocking(warn_msg);
                         }
                         restarts_attempted = 0;
                     }
