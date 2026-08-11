@@ -7,19 +7,19 @@
 #define EPERM 1
 #endif
 
-#define MAX_PROTECTED_PATHS 500
-#define MAX_ALLOWED_PROGRAMS 10
-#define MAX_UNIQUE_SCRIPTS 10
-#define MAX_SCRIPTS_PER_FOLDER 3
-#define MAX_DEPTH 5
+#define MAX_PROTECTED_PATHS 5000
+#define MAX_ALLOWED_PROGRAMS 20
+// #define MAX_UNIQUE_SCRIPTS 10
+// #define MAX_SCRIPTS_PER_FOLDER 3
+#define MAX_DEPTH 8
 #define MAX_NAME_LEN 32
-#define MAX_PATH_LEN 32
+#define MAX_LOG_PATH_LEN 128
 
 // СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
 struct protected_folder_config {
     __u64 folder_inode;
     __u32 allowed_program_count;
-    __u32 script_count;
+    // __u32 script_count;
 };
 
 // Карта: inode папки -> конфигурация папки
@@ -39,20 +39,20 @@ struct {
 } folder_allowed_programs_map SEC(".maps");
 
 // Карта: inode папки + индекс скрипта -> путь к скрипту
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_PROTECTED_PATHS * MAX_SCRIPTS_PER_FOLDER);
-    __type(key, __u64);
-    __type(value, char[MAX_PATH_LEN]);
-} folder_scripts_map SEC(".maps");
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, MAX_PROTECTED_PATHS * MAX_SCRIPTS_PER_FOLDER);
+//     __type(key, __u64);
+//     __type(value, char[MAX_PATH_LEN]);
+// } folder_scripts_map SEC(".maps");
 
 // Карта для контроля включения проверки скриптов (глобально)
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, __u32);
-} scripts_enabled_map SEC(".maps");
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, 1);
+//     __type(key, __u32);
+//     __type(value, __u32);
+// } scripts_enabled_map SEC(".maps");
 
 // Карта для уровня логирования
 struct {
@@ -204,60 +204,60 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
 }
 
 // Проверка скрипта в командной строке (ИСПРАВЛЕНА)
-static __always_inline int is_script_path_in_cmdline(const char *cmdline, const char *script_path)
-{
-    if (!cmdline || !script_path) {
-        return 0;
-    }
-
-    char cmdline_copy[MAX_PATH_LEN] = {};
-    char script_copy[MAX_PATH_LEN] = {};
-
-    // Безопасно копируем строки в локальные буферы
-    long ret1 = bpf_probe_read_kernel_str(cmdline_copy, sizeof(cmdline_copy), cmdline);
-    long ret2 = bpf_probe_read_kernel_str(script_copy, sizeof(script_copy), script_path);
-
-    if (ret1 <= 0 || ret2 <= 0) {
-        return 0;
-    }
-
-    // Находим начало пути к скрипту (первый пробел после /bin/bash)
-    int start = 0;
-    int found_space = 0;
-
-    #pragma unroll
-    for (int i = 0; i < MAX_PATH_LEN - 1; i++) {
-        if (cmdline_copy[i] == '\0') break;
-        if (cmdline_copy[i] == ' ') {
-            start = i + 1;
-            found_space = 1;
-            break;
-        }
-    }
-
-    if (!found_space) {
-        return 0;
-    }
-
-    // Сравниваем строки
-    #pragma unroll
-    for (int i = 0; i < MAX_PATH_LEN - 1; i++) {
-        if (script_copy[i] == '\0') {
-            if (cmdline_copy[start + i] == '\0' || cmdline_copy[start + i] == ' ') {
-                return 1;
-            }
-            return 0;
-        }
-        if (cmdline_copy[start + i] != script_copy[i]) {
-            return 0;
-        }
-        if (cmdline_copy[start + i] == '\0') {
-            return 0;
-        }
-    }
-
-    return 0;
-}
+// static __always_inline int is_script_path_in_cmdline(const char *cmdline, const char *script_path)
+// {
+//     if (!cmdline || !script_path) {
+//         return 0;
+//     }
+//
+//     char cmdline_copy[MAX_PATH_LEN] = {};
+//     char script_copy[MAX_PATH_LEN] = {};
+//
+//     // Безопасно копируем строки в локальные буферы
+//     long ret1 = bpf_probe_read_kernel_str(cmdline_copy, sizeof(cmdline_copy), cmdline);
+//     long ret2 = bpf_probe_read_kernel_str(script_copy, sizeof(script_copy), script_path);
+//
+//     if (ret1 <= 0 || ret2 <= 0) {
+//         return 0;
+//     }
+//
+//     // Находим начало пути к скрипту (первый пробел после /bin/bash)
+//     int start = 0;
+//     int found_space = 0;
+//
+//     #pragma unroll
+//     for (int i = 0; i < MAX_PATH_LEN - 1; i++) {
+//         if (cmdline_copy[i] == '\0') break;
+//         if (cmdline_copy[i] == ' ') {
+//             start = i + 1;
+//             found_space = 1;
+//             break;
+//         }
+//     }
+//
+//     if (!found_space) {
+//         return 0;
+//     }
+//
+//     // Сравниваем строки
+//     #pragma unroll
+//     for (int i = 0; i < MAX_PATH_LEN - 1; i++) {
+//         if (script_copy[i] == '\0') {
+//             if (cmdline_copy[start + i] == '\0' || cmdline_copy[start + i] == ' ') {
+//                 return 1;
+//             }
+//             return 0;
+//         }
+//         if (cmdline_copy[start + i] != script_copy[i]) {
+//             return 0;
+//         }
+//         if (cmdline_copy[start + i] == '\0') {
+//             return 0;
+//         }
+//     }
+//
+//     return 0;
+// }
 
 // Проверка скрипта для конкретной папки (ИСПРАВЛЕНА)
 // static __always_inline int is_script_allowed_for_folder(const char *cmdline, __u64 folder_inode)
@@ -354,14 +354,14 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
         return 0;
     }
 
-    char comm[16] = {};
-    bpf_get_current_comm(&comm, sizeof(comm));
-
-    comm[15] = 0;
-
-    if (log_level >= 2) {
-        bpf_printk("APP_DATA_SEC: comm=%s", comm);
-    }
+    // char comm[16] = {};
+    // bpf_get_current_comm(&comm, sizeof(comm));
+    //
+    // comm[15] = 0;
+    //
+    // if (log_level >= 2) {
+    //     bpf_printk("APP_DATA_SEC: comm=%s", comm);
+    // }
 
     // __u32 key = 0;
     // __u32 *scripts_enabled = bpf_map_lookup_elem(&scripts_enabled_map, &key);
@@ -492,8 +492,6 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     }
 
     __u64 pid = bpf_get_current_pid_tgid() >> 32;
-    char comm[16] = {};
-    bpf_get_current_comm(&comm, sizeof(comm));
 
     __u64 folder_inode = get_protected_folder_inode(dentry);
     int is_protected = (folder_inode != 0);
@@ -551,6 +549,10 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
             char parent_name[MAX_NAME_LEN] = {};
             get_dentry_name(dentry, name, MAX_NAME_LEN);
             get_parent_name(dentry, parent_name, MAX_NAME_LEN);
+
+            char comm[MAX_LOG_PATH_LEN] = {};
+            bpf_get_current_comm(&comm, sizeof(comm));
+
             bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu PATH=%s PARENT=%s FOLDER_INODE=%llu REASON=%s COMM=%s\n",
                        operation, pid, uid, name, parent_name, folder_inode, reason, comm);
         }
