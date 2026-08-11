@@ -547,10 +547,10 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         if (log_level >= 1) {
             char name[MAX_NAME_LEN] = {};
             char parent_name[MAX_NAME_LEN] = {};
+            char comm[MAX_LOG_PATH_LEN] = {};
+
             get_dentry_name(dentry, name, MAX_NAME_LEN);
             get_parent_name(dentry, parent_name, MAX_NAME_LEN);
-
-            char comm[MAX_LOG_PATH_LEN] = {};
             bpf_get_current_comm(&comm, sizeof(comm));
 
             bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu PATH=%s PARENT=%s FOLDER_INODE=%llu REASON=%s COMM=%s\n",
