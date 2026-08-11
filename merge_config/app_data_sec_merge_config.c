@@ -104,8 +104,8 @@ static int get_config_files(const char *dir_path, char files[MAX_CONFIG_FILES][P
         char *ext = strrchr(entry->d_name, '.');
         if (!ext || strcmp(ext, ".conf") != 0) continue;
 
-        strncpy(files[count], full_path, PATH_MAX - 1);
-        files[count][PATH_MAX - 1] = '\0';
+        // Используем snprintf для безопасного копирования
+        snprintf(files[count], PATH_MAX, "%s", full_path);
         count++;
     }
 
