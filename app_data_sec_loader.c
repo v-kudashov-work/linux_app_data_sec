@@ -27,7 +27,8 @@
 #define MAX_PATH_LEN 256             // Вместо PATH_MAX (4096) -> 256
 #define CHECK_INTERVAL 5
 #define RETRY_INTERVAL 30
-#define MAX_DEPTH 8
+#define MAX_DEPTH_FOR_PATH 64
+#define MAX_DEPTH_FOR_APP 8
 
 // ============================================================================
 // ОТЛАДКА

@@ -1,0 +1,5 @@
+# Компиляция
+gcc -o read_file read_file.c
+
+# Запуск
+./read_file /etc/app_data_sec.conf

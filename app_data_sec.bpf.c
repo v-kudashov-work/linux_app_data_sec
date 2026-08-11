@@ -7,11 +7,16 @@
 #define EPERM 1
 #endif
 
+//#ifndef EACCES
+//#define EACCES 13
+//#endif
+
 #define MAX_PROTECTED_PATHS 5000
 #define MAX_ALLOWED_PROGRAMS 20
 // #define MAX_UNIQUE_SCRIPTS 10
 // #define MAX_SCRIPTS_PER_FOLDER 3
-#define MAX_DEPTH 8
+#define MAX_DEPTH_FOR_APP 8
+#define MAX_DEPTH_FOR_PATH 64
 #define MAX_NAME_LEN 32
 #define MAX_LOG_PATH_LEN 128
 
@@ -168,7 +173,7 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
     struct task_struct *current_task = task;
 
     #pragma unroll
-    for (int depth = 0; depth < MAX_DEPTH; depth++) {
+    for (int depth = 0; depth < MAX_DEPTH_FOR_APP; depth++) {
         if (!current_task) {
             break;
         }
@@ -385,7 +390,7 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
     struct task_struct *task = current_task;
 
     #pragma unroll
-    for (int depth = 0; depth < MAX_DEPTH; depth++) {
+    for (int depth = 0; depth < MAX_DEPTH_FOR_APP; depth++) {
         if (!task) {
             break;
         }
@@ -431,7 +436,7 @@ static __always_inline __u64 get_protected_folder_inode(struct dentry *dentry)
     struct dentry *current = dentry;
 
     #pragma unroll
-    for (int depth = 0; depth < MAX_DEPTH; depth++) {
+    for (int depth = 0; depth < MAX_DEPTH_FOR_PATH; depth++) {
         if (!current) {
             break;
         }
@@ -628,5 +633,30 @@ int BPF_PROG(block_inode_mkdir, struct inode *dir, struct dentry *dentry, umode_
 {
     return check_access(dentry->d_parent, "INODE_MKDIR", 1);
 }
+
+//SEC("lsm/file_permission")
+//int BPF_PROG(block_file_permission, struct file *file, int mask)
+//{
+//    if (!file || !file->f_path.dentry) {
+//        return 0;
+//    }
+//
+//    // mask - битовая маска запрашиваемых прав:
+//    // MAY_READ  = 0x04
+//    // MAY_WRITE = 0x02
+//    // MAY_EXEC  = 0x01
+//
+//    // Проверяем доступ через check_access
+//    // block_self = 1 - блокируем доступ к содержимому
+//    int ret = check_access(file->f_path.dentry, "PERMISSION", 1);
+//
+//    if (ret != 0) {
+//        // Возвращаем -EACCES (Permission denied)
+//        // Это стандартная ошибка для операций доступа
+//        return -EACCES;
+//    }
+//
+//    return 0;
+//}
 
 char LICENSE[] SEC("license") = "GPL";
