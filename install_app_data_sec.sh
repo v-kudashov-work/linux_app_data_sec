@@ -697,15 +697,17 @@ User=root
 Group=root
 ExecStart=/usr/local/bin/app_data_sec_watchdog
 ExecStop=/bin/kill -SIGTERM $MAINPID
-ExecReload=/bin/kill -SIGHUP $MAINPID
 Restart=always
 RestartSec=10
-StandardOutput=append:/var/log/app_data_sec_watchdog.log
-StandardError=append:/var/log/app_data_sec_watchdog_error.log
+
+# Логи отправляем в journald (syslog)
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=app_data_sec_watchdog
+
 PIDFile=/run/app_data_sec_watchdog.pid
 
-# Снимаем ВСЕ ограничения
+# Снимаем все ограничения
 PrivateTmp=false
 ProtectSystem=false
 ProtectHome=false
@@ -721,11 +723,9 @@ MemoryDenyWriteExecute=false
 RestrictRealtime=false
 RestrictSUIDSGID=false
 
-# Разрешаем доступ ко всем директориям
 ReadWritePaths=/
 ReadOnlyPaths=
 
-# Даем все необходимые capabilities
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID CAP_SYS_PTRACE CAP_DAC_OVERRIDE
 
 [Install]
