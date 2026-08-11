@@ -280,15 +280,6 @@ static void write_error_to_desktop(const char *message) {
             continue;
         }
 
-        log_message(LOG_ERR, "⚠️ APP DATA SEC ERROR\n");
-        log_message(LOG_ERR, "========================================\n");
-        log_message(LOG_ERR, "%s\n", message);
-        log_message(LOG_ERR, "========================================\n");
-        log_message(LOG_ERR, "\n");
-        log_message(LOG_ERR, "Файл создан: %s\n", time_str);
-        log_message(LOG_ERR, "\n");
-        log_message(LOG_ERR, "Файл создан от root, удалить можно только через sudo.\n");
-
         fprintf(fp, "⚠️ APP DATA SEC ERROR\n");
         fprintf(fp, "========================================\n");
         fprintf(fp, "%s\n", message);
