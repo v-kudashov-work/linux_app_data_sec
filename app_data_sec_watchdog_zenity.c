@@ -276,21 +276,26 @@ static void write_error_to_desktop(const char *message) {
         // Создаем файл напрямую от root (без смены владельца)
         FILE *fp = fopen(file_path, "w");
         if (!fp) {
-            log_message(LOG_WARNING, "Failed to create %s: %s", file_path, strerror(errno));
+            log_message(LOG_ERR, "Failed to create error file: %s", file_path);
             continue;
         }
 
-        fprintf(fp, "⚠️ APP DATA SEC ERROR\n");
-        fprintf(fp, "========================================\n");
-        fprintf(fp, "%s\n", message);
-        fprintf(fp, "========================================\n");
-        fprintf(fp, "\n");
-        fprintf(fp, "Файл создан: %s\n", time_str);
-        fprintf(fp, "\n");
-        fprintf(fp, "Файл создан от root, удалить можно только через sudo.\n");
-        fclose(fp);
+        log_message(LOG_ERR, "⚠️ APP DATA SEC ERROR\n");
+        log_message(LOG_ERR, "========================================\n");
+        log_message(LOG_ERR, "%s\n", message);
+        log_message(LOG_ERR, "========================================\n");
+        log_message(LOG_ERR, "\n");
+        log_message(LOG_ERR, "Файл создан: %s\n", time_str);
+        log_message(LOG_ERR, "\n");
+        log_message(LOG_ERR, "Файл создан от root, удалить можно только через sudo.\n");
 
-        // log_message(LOG_INFO, "Error file created: %s", file_path);
+        // Закрываем файл и проверяем результат
+        int close_result = fclose(fp);
+        if (close_result != 0) {
+            log_message(LOG_ERR, "Failed to close error file: %s", file_path);
+            unlink(file_path);
+            continue;
+        }
     }
 }
 
