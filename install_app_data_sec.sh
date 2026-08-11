@@ -616,7 +616,7 @@ echo -e "\n${BLUE}[INFO]${NC} Creating/updating systemd services..."
 cat > "$SERVICE_DIR/app_data_sec_loader.service" << 'EOF'
 [Unit]
 Description=APP DATA SEC Loader Service
-Documentation=https://github.com/your-repo/app_data_sec
+Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
 After=network.target multi-user.target
 Wants=network.target
 
@@ -629,18 +629,17 @@ ExecStop=/bin/kill -SIGTERM $MAINPID
 ExecReload=/bin/kill -SIGHUP $MAINPID
 Restart=always
 RestartSec=10
-StandardOutput=append:/var/log/app_data_sec_loader.log
-StandardError=append:/var/log/app_data_sec_loader_error.log
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=app_data_sec_loader
-PIDFile=/run/app_data_sec_loader.pid
 
-# Security hardening
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-NoNewPrivileges=true
-ReadWritePaths=/var/log
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+# Снимаем ВСЕ ограничения для доступа к /home
+PrivateTmp=false
+ProtectSystem=false
+ProtectHome=false
+NoNewPrivileges=false
+ReadWritePaths=/
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_DAC_OVERRIDE
 
 [Install]
 WantedBy=multi-user.target
@@ -687,7 +686,7 @@ echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_loader.service"
 cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << 'EOF'
 [Unit]
 Description=APP DATA SEC Watchdog Service
-Documentation=https://github.com/your-repo/app_data_sec
+Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
 After=network.target multi-user.target
 Wants=app_data_sec_loader.service
 
