@@ -650,6 +650,39 @@ echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_loader.service"
 # ============================================================================
 # СЕРВИС APP_DATA_SEC_WATCHDOG
 # ============================================================================
+#cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << 'EOF'
+#[Unit]
+#Description=APP DATA SEC Watchdog Service
+#Documentation=https://github.com/your-repo/app_data_sec
+#After=network.target multi-user.target
+#Wants=app_data_sec_loader.service
+#
+#[Service]
+#Type=simple
+#User=root
+#Group=root
+#ExecStart=/usr/local/bin/app_data_sec_watchdog
+#ExecStop=/bin/kill -SIGTERM $MAINPID
+#ExecReload=/bin/kill -SIGHUP $MAINPID
+#Restart=always
+#RestartSec=10
+#StandardOutput=append:/var/log/app_data_sec_watchdog.log
+#StandardError=append:/var/log/app_data_sec_watchdog_error.log
+#SyslogIdentifier=app_data_sec_watchdog
+#PIDFile=/run/app_data_sec_watchdog.pid
+#
+## Права для работы с файлами на рабочих столах
+#PrivateTmp=false
+#ProtectSystem=false
+#ProtectHome=false
+#NoNewPrivileges=false
+#ReadWritePaths=/ /var/log /home /tmp /root
+#
+#CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID
+#
+#[Install]
+#WantedBy=multi-user.target
+#EOF
 
 cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << 'EOF'
 [Unit]
@@ -672,18 +705,33 @@ StandardError=append:/var/log/app_data_sec_watchdog_error.log
 SyslogIdentifier=app_data_sec_watchdog
 PIDFile=/run/app_data_sec_watchdog.pid
 
-# Права для работы с файлами на рабочих столах
+# Снимаем ВСЕ ограничения
 PrivateTmp=false
 ProtectSystem=false
 ProtectHome=false
 NoNewPrivileges=false
-ReadWritePaths=/ /var/log /home /tmp /root
+PrivateDevices=false
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectControlGroups=false
+RestrictAddressFamilies=false
+RestrictNamespaces=false
+LockPersonality=false
+MemoryDenyWriteExecute=false
+RestrictRealtime=false
+RestrictSUIDSGID=false
 
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID
+# Разрешаем доступ ко всем директориям
+ReadWritePaths=/
+ReadOnlyPaths=
+
+# Даем все необходимые capabilities
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID CAP_SYS_PTRACE CAP_DAC_OVERRIDE
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
 echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_watchdog.service"
 
 # ============================================================================
