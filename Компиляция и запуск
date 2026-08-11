@@ -57,6 +57,10 @@ bash
 # Просмотр сообщений от eBPF
 sudo cat /sys/kernel/debug/tracing/trace_pipe
 
+Найти имя исполняемого файла по его PID:
+для PID 12345
+ls -l /proc/12345/exe
+
 
 
 

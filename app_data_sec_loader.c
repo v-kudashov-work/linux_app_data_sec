@@ -419,32 +419,32 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
 
     SYSLOG_INFO("Loading %d protected folders to BPF...", entry_count);
 
-    // for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
-    //     if (entries[i].inode == 0) continue;
-    //
-    //     struct protected_folder_config config = {
-    //         .folder_inode = entries[i].inode,
-    //         .allowed_program_count = entries[i].allowed_count,
-    //         .script_count = 0
-    //     };
-    //
-    //     // Подсчет скриптов
-    //     for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
-    //         if (is_script_file(entries[i].allowed_paths[j])) {
-    //             config.script_count++;
-    //         }
-    //     }
-    //
-    //     err = bpf_map_update_elem(fd, &entries[i].inode, &config, BPF_ANY);
-    //     if (err < 0) {
-    //         SYSLOG_ERR("  Failed to update folder_config_map for inode %lu: %d",
-    //                    (unsigned long)entries[i].inode, err);
-    //     } else {
-    //         SYSLOG_INFO("  [%d] Loaded folder: %s (inode: %lu, programs: %d, scripts: %d)",
-    //                     i, entries[i].path, (unsigned long)entries[i].inode,
-    //                     config.allowed_program_count, config.script_count);
-    //     }
-    // }
+     for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+         if (entries[i].inode == 0) continue;
+
+         struct protected_folder_config config = {
+             .folder_inode = entries[i].inode,
+             .allowed_program_count = entries[i].allowed_count,
+//             .script_count = 0
+         };
+
+         // Подсчет скриптов
+//         for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
+//             if (is_script_file(entries[i].allowed_paths[j])) {
+//                 config.script_count++;
+//             }
+//         }
+
+         err = bpf_map_update_elem(fd, &entries[i].inode, &config, BPF_ANY);
+         if (err < 0) {
+             SYSLOG_ERR("  Failed to update folder_config_map for inode %lu: %d",
+                        (unsigned long)entries[i].inode, err);
+         } else {
+             SYSLOG_INFO("  [%d] Loaded folder: %s (inode: %lu, programs: %d)",
+                         i, entries[i].path, (unsigned long)entries[i].inode,
+                         config.allowed_program_count);
+         }
+     }
 
     // ======== 2. ЗАГРУЖАЕМ РАЗРЕШЕННЫЕ ПРОГРАММЫ (folder_allowed_programs_map) ========
     map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
