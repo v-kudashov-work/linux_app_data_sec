@@ -422,6 +422,11 @@ static int add_program_to_folder(struct bpf_object *obj, struct protect_entry *e
         return -1;
     }
 
+    if (!program_path || program_path[0] == '\0') {
+        SYSLOG_ERR("Empty program path");
+        return -1;
+    }
+
     // Проверяем, не превышен ли лимит программ
     if (entry->allowed_count >= MAX_ALLOWED) {
         SYSLOG_ERR("Max programs reached for folder %s (%d/%d)",
@@ -517,12 +522,10 @@ static int clear_all_entries(struct bpf_object *obj) {
    template_count = 0;
    config_enabled = 0;
 
-
-    //Эти строки не нужны, время обновляется в main
-//    struct stat st;
-//    if (stat(CONFIG_PATH, &st) == 0) {
-//        config_mtime = st.st_mtime;
-//    }
+   struct stat st;
+   if (stat(CONFIG_PATH, &st) == 0) {
+       config_mtime = st.st_mtime;
+   }
 
     SYSLOG_INFO("=== CLEAR ALL ENTRIES COMPLETE ===");
     return 0;
@@ -771,20 +774,20 @@ static int parse_config_to_temp(struct protect_entry *temp_entries, int *temp_co
                     char prog_path[PATH_MAX];
                     strncpy(prog_path, ptr, arg_len);
                     prog_path[arg_len] = '\0';
+                    // Всегда сохраняем путь
+                    safe_strcpy(allowed_paths[allowed_count], prog_path, MAX_PATH_LEN);
 
-                    char real_allowed_path[PATH_MAX];
-                    if (realpath(prog_path, real_allowed_path) != NULL) {
-                        __u64 allowed_inode = get_inode_from_path(real_allowed_path);
-                        if (allowed_inode != 0) {
-                            allowed_inodes[allowed_count] = allowed_inode;
-                            safe_strcpy(allowed_paths[allowed_count], real_allowed_path, MAX_PATH_LEN);
-                            allowed_count++;
-                            SYSLOG_INFO("  Allowed program: %s (inode: %lu)",
-                                        real_allowed_path, (unsigned long)allowed_inode);
-                        }
+                    // Пытаемся получить inode
+                    __u64 allowed_inode = get_inode_from_path(prog_path);
+                    allowed_inodes[allowed_count] = allowed_inode;
+
+                    if (allowed_inode != 0) {
+                        SYSLOG_INFO("  Allowed program: %s (inode: %lu)", prog_path, (unsigned long)allowed_inode);
                     } else {
-                        SYSLOG_WARN("  Allowed program '%s' not found", prog_path);
+                        SYSLOG_WARN("  Allowed program NOT FOUND (will retry): %s", prog_path);
                     }
+                    allowed_count++;
+
                 }
 
                 ptr = arg_end;
