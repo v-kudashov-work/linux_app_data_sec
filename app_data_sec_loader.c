@@ -25,8 +25,8 @@
 #define MAX_PATHS 5000
 #define MAX_ALLOWED 20
 #define MAX_PATH_LEN 256
-#define CHECK_INTERVAL 10
-#define RETRY_INTERVAL 30
+#define CHECK_INTERVAL 5
+#define RETRY_INTERVAL 15
 #define MAX_DEPTH 64
 
 // ============================================================================
@@ -972,15 +972,15 @@ static int config_changed(void) {
 // ============================================================================
 
 // Проверка, существует ли программа в entries для папки
-static int program_exists_in_folder(struct protect_entry *entry, __u64 program_inode) {
-    if (!entry) return 0;
-    for (int i = 0; i < entry->allowed_count; i++) {
-        if (entry->allowed_inodes[i] == program_inode) {
-            return 1;
-        }
-    }
-    return 0;
-}
+// static int program_exists_in_folder(struct protect_entry *entry, __u64 program_inode) {
+//     if (!entry) return 0;
+//     for (int i = 0; i < entry->allowed_count; i++) {
+//         if (entry->allowed_inodes[i] == program_inode) {
+//             return 1;
+//         }
+//     }
+//     return 0;
+// }
 
 // Получение всех исполняемых файлов по путям из конфига
 // static int scan_allowed_programs(struct protect_entry *entry) {
@@ -1024,7 +1024,7 @@ static int program_exists_in_folder(struct protect_entry *entry, __u64 program_i
 //     return found_count + added_count;
 // }
 
-// Сканирование всех папок и их программ
+// Сканирование всех программ папок на появление или удаление
 static int scan_all_entries(struct bpf_object *obj) {
     if (!obj) return -1;
 
@@ -1084,6 +1084,69 @@ static int scan_all_entries(struct bpf_object *obj) {
     SYSLOG_INFO("Found: %d, Added: %d, Removed: %d",
                 total_found, total_added, total_removed);
     return 0;
+}
+
+static int scan_missing_programs(struct bpf_object *obj) {
+    if (!obj) return -1;
+
+    SYSLOG_INFO("=== SCANNING MISSING PROGRAMS ===");
+
+    int found_new = 0;
+
+    for (int i = 0; i < entry_count; i++) {
+        if (entries[i].inode == 0) continue;
+        if (entries[i].allowed_count == 0) continue;
+
+        SYSLOG_INFO("Checking folder: %s", entries[i].path);
+
+        for (int j = 0; j < entries[i].allowed_count; j++) {
+            // Если inode == 0, значит программа не была найдена ранее
+            if (entries[i].allowed_inodes[j] == 0) {
+                const char *program_path = entries[i].allowed_paths[j];
+                __u64 current_inode = get_inode_from_path(program_path);
+
+                if (current_inode != 0) {
+                    // Программа появилась!
+                    SYSLOG_INFO("  Program appeared: %s (inode: %lu)",
+                                program_path, (unsigned long)current_inode);
+
+                    // Обновляем inode в entries
+                    entries[i].allowed_inodes[j] = current_inode;
+
+                    // Добавляем в BPF
+                    struct bpf_map *map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
+                    if (map) {
+                        int fd = bpf_map__fd(map);
+                        if (fd >= 0) {
+                            __u64 key = (entries[i].inode << 32) | j;
+                            bpf_map_update_elem(fd, &key, &current_inode, BPF_ANY);
+                            SYSLOG_INFO("    Program added to BPF");
+                        }
+                    }
+
+                    // Обновляем конфигурацию папки
+                    map = bpf_object__find_map_by_name(obj, "folder_config_map");
+                    if (map) {
+                        int fd = bpf_map__fd(map);
+                        if (fd >= 0) {
+                            struct protected_folder_config config = {
+                                .folder_inode = entries[i].inode,
+                                .allowed_program_count = entries[i].allowed_count,
+                            };
+                            bpf_map_update_elem(fd, &entries[i].inode, &config, BPF_ANY);
+                            SYSLOG_INFO("    Folder config updated");
+                        }
+                    }
+
+                    found_new++;
+                }
+            }
+        }
+    }
+
+    SYSLOG_INFO("Found %d new programs", found_new);
+    SYSLOG_INFO("=== SCAN MISSING PROGRAMS COMPLETE ===");
+    return found_new;
 }
 
 // Сканирование новых программ для папки (добавление новых путей)
@@ -1411,8 +1474,13 @@ int main(int argc, char **argv) {
                 changed = 1;
             }
 
-            // Сканируем программы в файловой системе
+            // Сканируем программы в файловой системе на удаление или изменение
             if (scan_all_entries(bpf_obj) > 0) {
+                changed = 1;
+            }
+
+            // Сканируем появившиеся программы
+            if (scan_missing_programs(bpf_obj) > 0) {
                 changed = 1;
             }
 
