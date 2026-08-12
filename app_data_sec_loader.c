@@ -124,7 +124,7 @@ static int load_single_entry(struct bpf_object *obj, struct protect_entry *entry
 static int scan_templates_and_load(struct bpf_object *obj);
 static int config_changed(void);
 static const char* find_bpf_object(void);
-static int find_folder_index_by_inode(__u64 folder_inode);
+// static int find_folder_index_by_inode(__u64 folder_inode);
 
 // ============================================================================
 // БЕЗОПАСНОЕ КОПИРОВАНИЕ СТРОК
@@ -214,16 +214,16 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 // ОПЕРАЦИЯ 1: ДОБАВЛЕНИЕ ПАПКИ В ENTRIES И BPF
 // ============================================================================
 
-static int find_folder_index_by_inode(__u64 folder_inode) {
-    if (folder_inode == 0) return -1;
-
-    for (int i = 0; i < entry_count; i++) {
-        if (entries[i].inode == folder_inode) {
-            return i;
-        }
-    }
-    return -1;
-}
+// static int find_folder_index_by_inode(__u64 folder_inode) {
+//     if (folder_inode == 0) return -1;
+//
+//     for (int i = 0; i < entry_count; i++) {
+//         if (entries[i].inode == folder_inode) {
+//             return i;
+//         }
+//     }
+//     return -1;
+// }
 
 static int add_folder_to_entries(struct bpf_object *obj, struct protect_entry *new_entry) {
     if (!new_entry || new_entry->inode == 0) {
@@ -432,7 +432,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
             config_mtime = st.st_mtime;
         }
 
-        return  res
+        return res;
     }
 
     // ============================================================
@@ -969,7 +969,7 @@ int main(int argc, char **argv) {
             temp_templates,
             temp_template_count,
             temp_config_enabled
-            )
+    );
 //    if (config_enabled && entry_count > 0) {
 //        for (int i = 0; i < entry_count; i++) {
 //            if (entries[i].inode != 0) {
