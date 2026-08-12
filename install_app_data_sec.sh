@@ -617,8 +617,10 @@ cat > "$SERVICE_DIR/app_data_sec_loader.service" << 'EOF'
 [Unit]
 Description=APP DATA SEC Loader Service
 Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
-After=network.target multi-user.target
-Wants=network.target
+# Убираем стандартные зависимости, чтобы сервис не ждал всё подряд
+DefaultDependencies=no
+# Запускаем как можно раньше (перед sysinit.target)
+Before=sysinit.target
 
 [Service]
 Type=simple
