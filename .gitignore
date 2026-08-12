@@ -1,0 +1,4 @@
+/app_data_sec_loader
+/app_data_sec.bpf.o
+/app_data_sec_merge_config
+/app_data_sec_watchdog
