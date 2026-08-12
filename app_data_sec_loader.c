@@ -410,6 +410,95 @@ static int remove_folder_from_entries(struct bpf_object *obj, int entry_idx) {
     return 0;
 }
 
+
+// ============================================================================
+// АТОМАРНОЕ ДОБАВЛЕНИЕ ПРОГРАММЫ В ENTRIES И BPF (ПО УКАЗАТЕЛЮ НА ENTRY)
+// ============================================================================
+
+static int add_program_to_folder(struct bpf_object *obj, struct protect_entry *entry,
+                                 __u64 program_inode, const char *program_path) {
+    if (!entry || program_inode == 0 || !program_path) {
+        SYSLOG_ERR("Invalid parameters for add_program_to_folder");
+        return -1;
+    }
+
+    // Проверяем, не превышен ли лимит программ
+    if (entry->allowed_count >= MAX_ALLOWED) {
+        SYSLOG_ERR("Max programs reached for folder %s (%d/%d)",
+                   entry->path, entry->allowed_count, MAX_ALLOWED);
+        return -1;
+    }
+
+    // Проверяем, не существует ли уже такая программа
+    for (int i = 0; i < entry->allowed_count; i++) {
+        if (entry->allowed_inodes[i] == program_inode) {
+            SYSLOG_WARN("Program already exists in %s: %s (inode: %lu)",
+                        entry->path, program_path, (unsigned long)program_inode);
+            return 0;
+        }
+    }
+
+    __u64 folder_inode = entry->inode;
+    int new_idx = entry->allowed_count;
+
+    SYSLOG_INFO("Adding program to folder %s: %s (inode: %lu)",
+                entry->path, program_path, (unsigned long)program_inode);
+
+    // 1. Добавляем в BPF (если объект существует)
+    if (obj) {
+        struct bpf_map *map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
+        if (map) {
+            int fd = bpf_map__fd(map);
+            if (fd >= 0) {
+                __u64 key = (folder_inode << 32) | new_idx;
+                int err = bpf_map_update_elem(fd, &key, &program_inode, BPF_ANY);
+                if (err < 0) {
+                    SYSLOG_ERR("  Failed to add program to BPF: %d", err);
+                    return -1;
+                }
+                SYSLOG_INFO("  Program added to BPF: key=%llu (folder=%llu, idx=%d), value=%llu",
+                            (unsigned long long)key, (unsigned long long)folder_inode,
+                            new_idx, (unsigned long long)program_inode);
+            }
+        }
+    }
+
+    // 2. Добавляем в entries
+    entry->allowed_inodes[new_idx] = program_inode;
+    safe_strcpy(entry->allowed_paths[new_idx], program_path, MAX_PATH_LEN);
+    entry->allowed_count++;
+
+    // 3. Обновляем конфигурацию папки в BPF (увеличиваем счетчик программ)
+    if (obj) {
+        struct bpf_map *map = bpf_object__find_map_by_name(obj, "folder_config_map");
+        if (map) {
+            int fd = bpf_map__fd(map);
+            if (fd >= 0) {
+                struct protected_folder_config config = {
+                    .folder_inode = folder_inode,
+                    .allowed_program_count = entry->allowed_count,
+                };
+                // Ключ - folder_inode, значение - config
+                int err = bpf_map_update_elem(fd, &folder_inode, &config, BPF_ANY);
+                if (err < 0) {
+                    SYSLOG_ERR("  Failed to update folder config in BPF: %d", err);
+                    // Откатываем добавление программы в entries
+                    entry->allowed_count--;
+                    entry->allowed_inodes[new_idx] = 0;
+                    memset(entry->allowed_paths[new_idx], 0, MAX_PATH_LEN);
+                    return -1;
+                }
+                SYSLOG_INFO("  Folder config updated: inode=%llu, programs=%d",
+                            (unsigned long long)folder_inode, entry->allowed_count);
+            }
+        }
+    }
+
+    SYSLOG_INFO("Program added successfully: %s (now %d programs)",
+                entry->path, entry->allowed_count);
+    return 0;
+}
+
 // ============================================================================
 // ОПЕРАЦИЯ 4: ОЧИСТКА ВСЕХ ЗАПИСЕЙ
 // ============================================================================
@@ -422,13 +511,12 @@ static int clear_all_entries(struct bpf_object *obj) {
         remove_folder_from_entries(obj, entry_count - 1);
     }
 
-    //Эти строки не нужны, удалять шаблоны не нужно
-//    memset(templates, 0, sizeof(templates));
-//    template_count = 0;
-//    config_enabled = 0;
-//
+   memset(templates, 0, sizeof(templates));
+   template_count = 0;
+   config_enabled = 0;
 
-    //Эти строки не нужны, время обновляется в main
+
+    //Эти строки не нужны, время обновляется в основной функции
 //    struct stat st;
 //    if (stat(CONFIG_PATH, &st) == 0) {
 //        config_mtime = st.st_mtime;
@@ -518,10 +606,19 @@ static int sync_config_to_entries(struct bpf_object *obj,
             }
         }
 
+        if (!found) {
+            // Новая папка - добавляем
+            SYSLOG_INFO("Adding new folder: %s (inode: %lu, programs: %d)",
+                        temp_entries[i].path, (unsigned long)temp_entries[i].inode,
+                        temp_entries[i].allowed_count);
+            add_folder_to_entries(obj, &temp_entries[i]);
+        }
+
         // Второй проход для добавления программ
         for (j = entry_count - 1; j >= 0; j--) {
             if (temp_entries[i].inode == entries[j].inode) {
-                SYSLOG_INFO("Adding new programs to: %s", entries[j].path);
+                SYSLOG_INFO("Adding new programs to: %s, total count: %i", entries[j].path, entries[j].allowed_count);
+
                 // Добавляем новые программы
                 for (k = 0; k < temp_entries[i].allowed_count; k++) {
                     int prog_found = 0;
@@ -532,51 +629,11 @@ static int sync_config_to_entries(struct bpf_object *obj,
                         }
                     }
                     if (!prog_found) {
-                        // Добавляем новую программу
-                        if (entries[j].allowed_count < MAX_ALLOWED) {
-                            SYSLOG_INFO("Adding new program: %s (inode: %lu)",
-                                        temp_entries[i].allowed_paths[k],
-                                        (unsigned long)temp_entries[i].allowed_inodes[k]);
-
-                            entries[j].allowed_inodes[entries[j].allowed_count] =
-                            temp_entries[i].allowed_inodes[k];
-                            strcpy(entries[j].allowed_paths[entries[j].allowed_count],
-                                   temp_entries[i].allowed_paths[k]);
-                            entries[j].allowed_count++;
-
-                            // Добавляем в BPF
-                            if (obj) {
-                                struct bpf_map *map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
-                                if (map) {
-                                    int fd = bpf_map__fd(map);
-                                    if (fd >= 0) {
-                                        int idx = entries[j].allowed_count - 1;
-                                        __u64 key = (entries[j].inode << 32) | idx;
-                                        __u64 value = entries[j].allowed_inodes[idx];
-                                        if (bpf_map_update_elem(fd, &key, &value, BPF_ANY) < 0) {
-                                            SYSLOG_ERR("  Failed to add program to BPF");
-                                        } else {
-                                            SYSLOG_INFO("  Program added to BPF: %s",
-                                                        entries[j].allowed_paths[idx]);
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            SYSLOG_WARN("Max programs reached for %s", entries[j].path);
-                        }
+                        add_program_to_folder(obj, &entries[j], &temp_entries[i].allowed_inodes[k], &temp_entries[i].allowed_paths[k]);
                     }
                 }
                 break;
             }
-        }
-
-        if (!found) {
-            // Новая папка - добавляем
-            SYSLOG_INFO("Adding new folder: %s (inode: %lu, programs: %d)",
-                        temp_entries[i].path, (unsigned long)temp_entries[i].inode,
-                        temp_entries[i].allowed_count);
-            add_folder_to_entries(obj, &temp_entries[i]);
         }
     }
 
@@ -1048,19 +1105,21 @@ int main(int argc, char **argv) {
     // ТОЛЬКО ПОСЛЕ ЗАГРУЗКИ BPF инициализируем entries из temp
     DEBUG_PRINT("Initializing entries from temp...");
     memset(entries, 0, sizeof(entries));
-    for (int i = 0; i < temp_count; i++) {
-        memcpy(&entries[i], &temp_entries[i], sizeof(struct protect_entry));
-        DEBUG_PRINT("  entries[%d]: path=%s, inode=%lu, allowed_count=%d",
-                    i, entries[i].path, (unsigned long)entries[i].inode, entries[i].allowed_count);
-    }
-    entry_count = temp_count;
-    DEBUG_PRINT("entry_count = %d", entry_count);
 
-    memset(templates, 0, sizeof(templates));
-    memcpy(templates, temp_templates, sizeof(struct protect_template) * temp_template_count);
-    template_count = temp_template_count;
-    config_enabled = temp_config_enabled;
-    DEBUG_PRINT("template_count = %d, config_enabled = %d", template_count, config_enabled);
+//    Это не нужно, иначе не добавляются папки в ebpf
+    // for (int i = 0; i < temp_count; i++) {
+    //     memcpy(&entries[i], &temp_entries[i], sizeof(struct protect_entry));
+    //     DEBUG_PRINT("  entries[%d]: path=%s, inode=%lu, allowed_count=%d",
+    //                 i, entries[i].path, (unsigned long)entries[i].inode, entries[i].allowed_count);
+    // }
+    // entry_count = temp_count;
+    // DEBUG_PRINT("entry_count = %d", entry_count);
+
+    // memset(templates, 0, sizeof(templates));
+    // memcpy(templates, temp_templates, sizeof(struct protect_template) * temp_template_count);
+    // template_count = temp_template_count;
+    // config_enabled = temp_config_enabled;
+    // DEBUG_PRINT("template_count = %d, config_enabled = %d", template_count, config_enabled);
 
     // Синхронизируем entries с BPF
     DEBUG_PRINT("Syncing entries to BPF...");
