@@ -1,4 +1,4 @@
-// app_data_sec_loader.c - С атомарными операциями добавления/удаления
+// app_data_sec_loader.c - С отладочным выводом
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -100,6 +100,9 @@ struct protect_template {
 
 static struct protect_entry entries[MAX_PATHS];
 static struct protect_template templates[MAX_PATHS];
+static struct protect_entry temp_entries[MAX_PATHS];
+static struct protect_template temp_templates[MAX_PATHS];
+
 static int entry_count = 0;
 static int template_count = 0;
 static int config_enabled = 0;
@@ -124,7 +127,6 @@ static int load_single_entry(struct bpf_object *obj, struct protect_entry *entry
 static int scan_templates_and_load(struct bpf_object *obj);
 static int config_changed(void);
 static const char* find_bpf_object(void);
-// static int find_folder_index_by_inode(__u64 folder_inode);
 
 // ============================================================================
 // БЕЗОПАСНОЕ КОПИРОВАНИЕ СТРОК
@@ -573,22 +575,40 @@ static int parse_config_to_temp(struct protect_entry *temp_entries, int *temp_co
     int new_template_count = 0;
     int new_config_enabled = 0;
 
-    memset(temp_entries, 0, sizeof(struct protect_entry) * MAX_PATHS);
-    memset(temp_templates, 0, sizeof(struct protect_template) * MAX_PATHS);
+//    memset(temp_entries, 0, sizeof(struct protect_entry) * MAX_PATHS);
+//    memset(temp_templates, 0, sizeof(struct protect_template) * MAX_PATHS);
 
     while (fgets(line, sizeof(line), fp)) {
         line_num++;
 
+        // Удаляем перевод строки в конце
+        size_t len = strlen(line);
+        if (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
+            line[len-1] = '\0';
+            if (len > 1 && line[len-2] == '\r') {
+                line[len-2] = '\0';
+            }
+        }
+
+        // Пропускаем пустые строки
+        if (line[0] == '\0') continue;
+
+        // Находим начало строки (пропускаем пробелы в начале)
         char *start = line;
         while (*start == ' ' || *start == '\t') start++;
 
-        if (*start == '\0' || *start == '#') continue;
+        // Пропускаем комментарии
+        if (*start == '#' || *start == '\0') continue;
 
+        // Удаляем пробелы в конце
         char *end = start + strlen(start) - 1;
-        while (end > start && (*end == '\n' || *end == '\r' || *end == ' ' || *end == '\t')) {
+        while (end > start && (*end == ' ' || *end == '\t')) {
             *end = '\0';
             end--;
         }
+
+        // Пропускаем пустые строки после обрезки
+        if (start[0] == '\0') continue;
 
         if (strncmp(start, "enable", 6) == 0) {
             char *eq = strchr(start, '=');
@@ -860,7 +880,7 @@ static const char* find_bpf_object(void) {
 }
 
 // ============================================================================
-// ОСНОВНАЯ ФУНКЦИЯ
+// ОСНОВНАЯ ФУНКЦИЯ С ОТЛАДКОЙ
 // ============================================================================
 
 static void print_usage(const char *prog) {
@@ -871,6 +891,8 @@ static void print_usage(const char *prog) {
 }
 
 int main(int argc, char **argv) {
+    DEBUG_PRINT("=== MAIN START ===");
+
     struct bpf_program *prog;
     struct bpf_map *map;
     struct bpf_object *bpf_obj = NULL;
@@ -878,17 +900,18 @@ int main(int argc, char **argv) {
     int log_level = 1;
     const char *bpf_file = NULL;
 
-    printf("sizeof(protect_entry) = %zu bytes\n", sizeof(struct protect_entry));
-    printf("sizeof(protect_template) = %zu bytes\n", sizeof(struct protect_template));
-    printf("entries array (%d): %zu KB\n", MAX_PATHS, (sizeof(entries) / 1024));
-    printf("templates array (%d): %zu KB\n", MAX_PATHS, (sizeof(templates) / 1024));
-    printf("Total: %zu KB (%.2f MB)\n",
-            (sizeof(entries) + sizeof(templates)) / 1024,
-            (double)(sizeof(entries) + sizeof(templates)) / (1024 * 1024));
+    DEBUG_PRINT("sizeof(protect_entry) = %zu bytes", sizeof(struct protect_entry));
+    DEBUG_PRINT("sizeof(protect_template) = %zu bytes", sizeof(struct protect_template));
+    DEBUG_PRINT("entries array (%d): %zu KB\n", MAX_PATHS, (sizeof(entries) / 1024));
+    DEBUG_PRINT("templates array (%d): %zu KB\n", MAX_PATHS, (sizeof(templates) / 1024));
+    DEBUG_PRINT("Total: %zu KB (%.2f MB)\n",
+           (sizeof(entries) + sizeof(templates)) / 1024,
+           (double)(sizeof(entries) + sizeof(templates)) / (1024 * 1024));
 
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
     SYSLOG_INFO("APP DATA SEC LOADER STARTING (PID: %d)", getpid());
 
+    DEBUG_PRINT("Parsing command line arguments...");
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--log-level") == 0) {
             if (i + 1 < argc) {
@@ -896,32 +919,39 @@ int main(int argc, char **argv) {
                 if (log_level < 0 || log_level > 2) {
                     SYSLOG_ERR("Invalid log_level: %d", log_level);
                     print_usage(argv[0]);
+                    closelog();
                     return 1;
                 }
                 i++;
             } else {
                 SYSLOG_ERR("--log-level requires a value");
                 print_usage(argv[0]);
+                closelog();
                 return 1;
             }
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
+            closelog();
             return 0;
         } else {
             SYSLOG_ERR("Unknown option: %s", argv[i]);
             print_usage(argv[0]);
+            closelog();
             return 1;
         }
     }
 
     int requested_log_level = log_level;
 
+    DEBUG_PRINT("Loading config to temp...");
     // Загружаем конфиг во временный массив
-    struct protect_entry temp_entries[MAX_PATHS];
-    struct protect_template temp_templates[MAX_PATHS];
+
     int temp_count = 0;
     int temp_template_count = 0;
     int temp_config_enabled = 0;
+
+    memset(temp_entries, 0, sizeof(temp_entries));
+    memset(temp_templates, 0, sizeof(temp_templates));
 
     if (parse_config_to_temp(temp_entries, &temp_count, temp_templates, &temp_template_count, &temp_config_enabled) != 0) {
         SYSLOG_ERR("Failed to parse config");
@@ -929,55 +959,65 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Инициализируем entries из temp
-//    memset(entries, 0, sizeof(entries));
-//    for (int i = 0; i < temp_count; i++) {
-//        memcpy(&entries[i], &temp_entries[i], sizeof(struct protect_entry));
-//    }
-//    entry_count = temp_count;
+    DEBUG_PRINT("Config loaded: temp_count=%d, temp_template_count=%d, temp_config_enabled=%d",
+                temp_count, temp_template_count, temp_config_enabled);
 
-//    memset(templates, 0, sizeof(templates));
-//    memcpy(templates, temp_templates, sizeof(struct protect_template) * temp_template_count);
-//    template_count = temp_template_count;
-//    config_enabled = temp_config_enabled;
-
+    DEBUG_PRINT("Finding BPF object...");
     bpf_file = find_bpf_object();
     if (!bpf_file) {
         SYSLOG_ERR("BPF object file not found!");
         closelog();
         return 1;
     }
+    DEBUG_PRINT("BPF object found: %s", bpf_file);
 
+    DEBUG_PRINT("Opening BPF object...");
     bpf_obj = bpf_object__open_file(bpf_file, NULL);
     if (libbpf_get_error(bpf_obj)) {
         SYSLOG_ERR("Failed to open BPF object %s: %s", bpf_file, strerror(-libbpf_get_error(bpf_obj)));
         closelog();
         return 1;
     }
+    DEBUG_PRINT("BPF object opened successfully");
 
+    DEBUG_PRINT("Loading BPF object...");
     err = bpf_object__load(bpf_obj);
     if (err) {
         SYSLOG_ERR("Failed to load BPF object: %d", err);
         goto cleanup;
     }
+    DEBUG_PRINT("BPF object loaded successfully");
+
+    // ТОЛЬКО ПОСЛЕ ЗАГРУЗКИ BPF инициализируем entries из temp
+    DEBUG_PRINT("Initializing entries from temp...");
+    memset(entries, 0, sizeof(entries));
+    for (int i = 0; i < temp_count; i++) {
+        memcpy(&entries[i], &temp_entries[i], sizeof(struct protect_entry));
+        DEBUG_PRINT("  entries[%d]: path=%s, inode=%lu, allowed_count=%d",
+                    i, entries[i].path, (unsigned long)entries[i].inode, entries[i].allowed_count);
+    }
+    entry_count = temp_count;
+    DEBUG_PRINT("entry_count = %d", entry_count);
+
+    memset(templates, 0, sizeof(templates));
+    memcpy(templates, temp_templates, sizeof(struct protect_template) * temp_template_count);
+    template_count = temp_template_count;
+    config_enabled = temp_config_enabled;
+    DEBUG_PRINT("template_count = %d, config_enabled = %d", template_count, config_enabled);
 
     // Синхронизируем entries с BPF
+    DEBUG_PRINT("Syncing entries to BPF...");
     sync_config_to_entries(
-            bpf_obj,
-            temp_entries,
-            temp_count,
-            temp_templates,
-            temp_template_count,
-            temp_config_enabled
+        bpf_obj,
+        temp_entries,
+        temp_count,
+        temp_templates,
+        temp_template_count,
+        temp_config_enabled
     );
-//    if (config_enabled && entry_count > 0) {
-//        for (int i = 0; i < entry_count; i++) {
-//            if (entries[i].inode != 0) {
-//                add_folder_to_entries(bpf_obj, &entries[i]);
-//            }
-//        }
-//    }
+    DEBUG_PRINT("Sync complete");
 
+    DEBUG_PRINT("Attaching LSM programs...");
     bpf_object__for_each_program(prog, bpf_obj) {
         const char *name = bpf_program__name(prog);
         if (strncmp(name, "block_", 6) != 0) continue;
@@ -989,7 +1029,9 @@ int main(int argc, char **argv) {
             SYSLOG_ERR("Failed to attach: %s", name);
         }
     }
+    DEBUG_PRINT("LSM programs attached");
 
+    DEBUG_PRINT("Setting log level...");
     map = bpf_object__find_map_by_name(bpf_obj, "log_level_map");
     if (map) {
         int fd = bpf_map__fd(map);
@@ -997,6 +1039,7 @@ int main(int argc, char **argv) {
             __u32 key = 0;
             __u32 log_level_val = requested_log_level;
             bpf_map_update_elem(fd, &key, &log_level_val, BPF_ANY);
+            DEBUG_PRINT("Log level set to %d", requested_log_level);
         }
     }
 
@@ -1008,6 +1051,7 @@ int main(int argc, char **argv) {
     SYSLOG_INFO("Config file: %s", CONFIG_PATH);
 
     time_t last_folder_check = time(NULL);
+    DEBUG_PRINT("Entering main loop...");
 
     while (1) {
         sleep(CHECK_INTERVAL);
@@ -1077,5 +1121,6 @@ int main(int argc, char **argv) {
     }
     SYSLOG_INFO("APP DATA SEC LOADER EXITING");
     closelog();
+    DEBUG_PRINT("=== MAIN EXIT ===");
     return err;
 }
