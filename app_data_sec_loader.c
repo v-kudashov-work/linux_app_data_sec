@@ -32,7 +32,7 @@
 // ============================================================================
 // ОТЛАДКА
 // ============================================================================
-#define DEBUG_ENABLED 0
+// #define DEBUG_ENABLED 1
 
 #ifdef DEBUG_ENABLED
 #define DEBUG_PRINT(fmt, ...) \
@@ -370,7 +370,10 @@ static int remove_folder_from_entries(struct bpf_object *obj, int entry_idx) {
     }
 
     __u64 folder_inode = entries[entry_idx].inode;
+
+#ifdef DEBUG_ENABLED
     char *path = entries[entry_idx].path;
+#endif
 
     SYSLOG_INFO_D("=== REMOVE FOLDER ===");
     SYSLOG_INFO_D("  Path: %s", path);
