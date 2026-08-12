@@ -23,7 +23,7 @@
 // ============================================================================
 
 #define PROCESS_NAME "app_data_sec_loader"
-#define CHECK_INTERVAL 10
+#define CHECK_INTERVAL 9
 #define LOCK_FILE "/var/lock/app_data_sec_watchdog.lock"
 #define DESKTOP_FILE_NAME "app_data_sec_errors.txt"
 #define MAX_USERS 100

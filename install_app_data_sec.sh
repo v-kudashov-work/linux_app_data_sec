@@ -629,7 +629,7 @@ Group=root
 ExecStart=/usr/local/bin/app_data_sec_loader -l 1
 ExecStop=/bin/kill -SIGTERM $MAINPID
 Restart=always
-RestartSec=5
+RestartSec=10
 
 # Повышение приоритета
 Nice=-20
@@ -700,8 +700,11 @@ cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << 'EOF'
 [Unit]
 Description=APP DATA SEC Watchdog Service
 Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
-After=network.target multi-user.target
-Wants=app_data_sec_loader.service
+# Убираем стандартные зависимости
+DefaultDependencies=no
+# Запускаем после загрузчика
+After=app_data_sec_loader.service
+Before=sysinit.target
 
 [Service]
 Type=simple
@@ -710,14 +713,23 @@ Group=root
 ExecStart=/usr/local/bin/app_data_sec_watchdog
 ExecStop=/bin/kill -SIGTERM $MAINPID
 Restart=always
-RestartSec=10
+RestartSec=2
 
-# Логи отправляем в journald (syslog)
+# Повышение приоритета
+Nice=-10
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=80
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+
+# Ускорение
+TimeoutStartSec=5
+TimeoutStopSec=5
+
+# Логи
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=app_data_sec_watchdog
-
-PIDFile=/run/app_data_sec_watchdog.pid
 
 # Снимаем все ограничения
 PrivateTmp=false
