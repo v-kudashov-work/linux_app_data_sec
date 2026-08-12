@@ -511,12 +511,14 @@ static int clear_all_entries(struct bpf_object *obj) {
         remove_folder_from_entries(obj, entry_count - 1);
     }
 
+    entry_count = 0;
+
    memset(templates, 0, sizeof(templates));
    template_count = 0;
    config_enabled = 0;
 
 
-    //Эти строки не нужны, время обновляется в основной функции
+    //Эти строки не нужны, время обновляется в main
 //    struct stat st;
 //    if (stat(CONFIG_PATH, &st) == 0) {
 //        config_mtime = st.st_mtime;
@@ -629,7 +631,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
                         }
                     }
                     if (!prog_found) {
-                        add_program_to_folder(obj, &entries[j], &temp_entries[i].allowed_inodes[k], &temp_entries[i].allowed_paths[k]);
+                        add_program_to_folder(obj, &entries[j], temp_entries[i].allowed_inodes[k], temp_entries[i].allowed_paths[k]);
                     }
                 }
                 break;
@@ -1132,6 +1134,11 @@ int main(int argc, char **argv) {
         temp_config_enabled
     );
     DEBUG_PRINT("Sync complete");
+
+    struct stat st;
+    if (stat(CONFIG_PATH, &st) == 0) {
+        config_mtime = st.st_mtime;
+    }
 
     DEBUG_PRINT("Attaching LSM programs...");
     bpf_object__for_each_program(prog, bpf_obj) {
