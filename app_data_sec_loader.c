@@ -1,4 +1,4 @@
-// app_data_sec_loader.c - С поддержкой удаления записей из BPF
+// app_data_sec_loader.c - С инкрементальным обновлением (исправлен)
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -80,7 +80,6 @@ struct protected_folder_config {
     __u32 allowed_program_count;
 };
 
-// Оптимизированная структура записи
 struct protect_entry {
     char path[MAX_PATH_LEN];                          // 256 байт (было 4096)
     __u64 inode;                                      // 8 байт
@@ -115,6 +114,13 @@ static int template_count = 0;
 static int config_enabled = 0;
 static time_t config_mtime = 0;
 static struct bpf_object *g_bpf_obj = NULL;
+
+// ============================================================================
+// ПРОТОТИПЫ ФУНКЦИЙ
+// ============================================================================
+
+static int remove_folder_from_bpf(struct bpf_object *obj, __u64 folder_inode);
+static int update_entries_in_bpf(struct bpf_object *obj);
 
 // ============================================================================
 // БЕЗОПАСНОЕ КОПИРОВАНИЕ СТРОК
@@ -221,7 +227,7 @@ static int parse_config(void) {
     int new_template_count = 0;
     int new_config_enabled = 0;
 
-    // Сохраняем старые inode для сравнения
+    // Сохраняем старые данные для сравнения
     __u64 old_folder_inodes[MAX_PATHS];
     int old_folder_count = 0;
     for (int i = 0; i < entry_count; i++) {
@@ -421,103 +427,6 @@ static int parse_config(void) {
 }
 
 // ============================================================================
-// ЗАГРУЗКА В BPF (С УДАЛЕНИЕМ СТАРЫХ ЗАПИСЕЙ)
-// ============================================================================
-
-static int load_entries_to_bpf(struct bpf_object *obj) {
-    struct bpf_map *map;
-    int err;
-    int fd;
-
-    if (entry_count == 0) {
-        SYSLOG_INFO("No entries to load");
-        return 0;
-    }
-
-    // 1. Сначала удаляем старые записи программ для каждой папки
-    map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
-    if (map) {
-        fd = bpf_map__fd(map);
-        if (fd >= 0) {
-            // Удаляем все старые записи (будем перезаписывать)
-            // Для этого просто не удаляем, а перезаписываем
-        }
-    }
-
-    // 2. Загружаем конфигурации папок
-    map = bpf_object__find_map_by_name(obj, "folder_config_map");
-    if (!map) {
-        SYSLOG_ERR("Failed to find folder_config_map");
-        return -1;
-    }
-
-    fd = bpf_map__fd(map);
-    if (fd < 0) {
-        SYSLOG_ERR("Failed to get map fd");
-        return fd;
-    }
-
-    SYSLOG_INFO("Loading %d protected folders to BPF...", entry_count);
-
-    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
-        if (entries[i].inode == 0) continue;
-
-        struct protected_folder_config config = {
-            .folder_inode = entries[i].inode,
-            .allowed_program_count = entries[i].allowed_count,
-        };
-
-        err = bpf_map_update_elem(fd, &entries[i].inode, &config, BPF_ANY);
-        if (err < 0) {
-            SYSLOG_ERR("  Failed to update folder_config_map for inode %lu: %d",
-                       (unsigned long)entries[i].inode, err);
-        } else {
-            SYSLOG_INFO("  [%d] Loaded folder: %s (inode: %lu, programs: %d)",
-                        i, entries[i].path, (unsigned long)entries[i].inode,
-                        config.allowed_program_count);
-        }
-    }
-
-    // 3. Загружаем разрешенные программы
-    map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
-    if (!map) {
-        SYSLOG_ERR("Failed to find folder_allowed_programs_map");
-        return -1;
-    }
-
-    fd = bpf_map__fd(map);
-    if (fd < 0) {
-        SYSLOG_ERR("Failed to get map fd for folder_allowed_programs_map");
-        return fd;
-    }
-
-    int total_programs = 0;
-    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
-        if (entries[i].inode == 0) continue;
-
-        for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
-            __u64 key = (entries[i].inode << 32) | j;
-            __u64 value = entries[i].allowed_inodes[j];
-
-            err = bpf_map_update_elem(fd, &key, &value, BPF_ANY);
-            if (err < 0) {
-                SYSLOG_ERR("  Failed to update folder_allowed_programs_map for folder %lu, prog %d: %d",
-                           (unsigned long)entries[i].inode, j, err);
-            } else {
-                SYSLOG_INFO("  [%lu] Program %d: %s (inode: %lu)",
-                            (unsigned long)entries[i].inode, j,
-                            entries[i].allowed_paths[j],
-                            (unsigned long)entries[i].allowed_inodes[j]);
-                total_programs++;
-            }
-        }
-    }
-
-    SYSLOG_INFO("Total loaded: %d folders, %d programs", entry_count, total_programs);
-    return 0;
-}
-
-// ============================================================================
 // УДАЛЕНИЕ ПАПКИ ИЗ BPF
 // ============================================================================
 
@@ -526,6 +435,8 @@ static int remove_folder_from_bpf(struct bpf_object *obj, __u64 folder_inode) {
 
     int err;
     struct bpf_map *map;
+
+    SYSLOG_INFO("Removing folder with inode: %lu", (unsigned long)folder_inode);
 
     // Удаляем из folder_config_map
     map = bpf_object__find_map_by_name(obj, "folder_config_map");
@@ -561,12 +472,196 @@ static int remove_folder_from_bpf(struct bpf_object *obj, __u64 folder_inode) {
 }
 
 // ============================================================================
-// ПЕРЕЗАГРУЗКА ВСЕХ ЗАПИСЕЙ
+// ИНКРЕМЕНТАЛЬНОЕ ОБНОВЛЕНИЕ ЗАПИСЕЙ В BPF
 // ============================================================================
 
-static int reload_all_entries(struct bpf_object *obj) {
-    SYSLOG_INFO("Reloading all entries to BPF...");
-    return load_entries_to_bpf(obj);
+static int update_entries_in_bpf(struct bpf_object *obj) {
+    struct bpf_map *map;
+    int err;
+    int fd;
+    int deleted = 0;
+
+    // ============================================================
+    // Если конфиг отключен ИЛИ нет записей - очищаем BPF
+    // ============================================================
+    if (!config_enabled || entry_count == 0) {
+        SYSLOG_INFO("Config disabled or empty, clearing BPF entries...");
+
+        // ============================================================
+        // 1. Очищаем folder_config_map
+        // ============================================================
+        map = bpf_object__find_map_by_name(obj, "folder_config_map");
+        if (map) {
+            fd = bpf_map__fd(map);
+            if (fd >= 0) {
+                // Удаляем все известные нам inode из entries
+                for (int i = 0; i < entry_count; i++) {
+                    if (entries[i].inode != 0) {
+                        err = bpf_map_delete_elem(fd, &entries[i].inode);
+                        if (err == 0) {
+                            SYSLOG_INFO("  Removed folder_config: %lu", (unsigned long)entries[i].inode);
+                            deleted++;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ============================================================
+        // 2. Очищаем folder_allowed_programs_map
+        // ============================================================
+        map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
+        if (map) {
+            fd = bpf_map__fd(map);
+            if (fd >= 0) {
+                // Удаляем программы для каждой известной папки
+                for (int i = 0; i < entry_count; i++) {
+                    if (entries[i].inode == 0) continue;
+                    for (int j = 0; j < MAX_ALLOWED; j++) {
+                        __u64 key = (entries[i].inode << 32) | j;
+                        err = bpf_map_delete_elem(fd, &key);
+                        if (err == 0) {
+                            deleted++;
+                            SYSLOG_INFO("  Removed program for folder %lu, index %d",
+                                        (unsigned long)entries[i].inode, j);
+                        }
+                    }
+                }
+            }
+        }
+
+        SYSLOG_INFO("BPF entries cleared (config disabled or empty), removed %d entries", deleted);
+        return 0;
+    }
+
+    // ============================================================
+    // Обновляем конфигурации папок
+    // ============================================================
+    map = bpf_object__find_map_by_name(obj, "folder_config_map");
+    if (!map) {
+        SYSLOG_ERR("Failed to find folder_config_map");
+        return -1;
+    }
+
+    fd = bpf_map__fd(map);
+    if (fd < 0) {
+        SYSLOG_ERR("Failed to get map fd");
+        return fd;
+    }
+
+    SYSLOG_INFO("Updating %d protected folders in BPF...", entry_count);
+
+    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+        if (entries[i].inode == 0) continue;
+
+        struct protected_folder_config config = {
+            .folder_inode = entries[i].inode,
+            .allowed_program_count = entries[i].allowed_count,
+        };
+
+        err = bpf_map_update_elem(fd, &entries[i].inode, &config, BPF_ANY);
+        if (err < 0) {
+            SYSLOG_ERR("  Failed to update folder_config_map for inode %lu: %d",
+                       (unsigned long)entries[i].inode, err);
+        } else {
+            SYSLOG_INFO("  [%d] Updated folder: %s (inode: %lu, programs: %d)",
+                        i, entries[i].path, (unsigned long)entries[i].inode,
+                        config.allowed_program_count);
+        }
+    }
+
+    // ============================================================
+    // Обновляем программы инкрементально
+    // ============================================================
+    map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
+    if (!map) {
+        SYSLOG_ERR("Failed to find folder_allowed_programs_map");
+        return -1;
+    }
+
+    fd = bpf_map__fd(map);
+    if (fd < 0) {
+        SYSLOG_ERR("Failed to get map fd for folder_allowed_programs_map");
+        return fd;
+    }
+
+    // Для каждой папки проверяем программы
+    for (int i = 0; i < entry_count && i < MAX_PATHS; i++) {
+        if (entries[i].inode == 0) continue;
+
+        __u64 folder_inode = entries[i].inode;
+
+        // Сначала собираем текущие программы в BPF для этой папки
+        __u64 bpf_programs[MAX_ALLOWED] = {0};
+        int bpf_count = 0;
+
+        for (int j = 0; j < MAX_ALLOWED; j++) {
+            __u64 key = (folder_inode << 32) | j;
+            __u64 value;
+            if (bpf_map_lookup_elem(fd, &key, &value) == 0) {
+                bpf_programs[bpf_count] = value;
+                bpf_count++;
+            }
+        }
+
+        // Проверяем каждую программу из конфига
+        for (int j = 0; j < entries[i].allowed_count && j < MAX_ALLOWED; j++) {
+            __u64 program_inode = entries[i].allowed_inodes[j];
+            __u64 key = (folder_inode << 32) | j;
+
+            // Проверяем, существует ли уже эта программа в BPF
+            int exists = 0;
+            for (int k = 0; k < bpf_count; k++) {
+                if (bpf_programs[k] == program_inode) {
+                    exists = 1;
+                    break;
+                }
+            }
+
+            if (!exists) {
+                // Новая программа - добавляем
+                err = bpf_map_update_elem(fd, &key, &program_inode, BPF_ANY);
+                if (err < 0) {
+                    SYSLOG_ERR("  Failed to add program for folder %lu, index %d: %d",
+                               (unsigned long)folder_inode, j, err);
+                } else {
+                    SYSLOG_INFO("  [%lu] Added program %d: %s (inode: %lu)",
+                                (unsigned long)folder_inode, j,
+                                entries[i].allowed_paths[j],
+                                (unsigned long)program_inode);
+                }
+            }
+        }
+
+        // Удаляем программы, которых больше нет в конфиге
+        for (int j = 0; j < MAX_ALLOWED; j++) {
+            __u64 key = (folder_inode << 32) | j;
+            __u64 value;
+            if (bpf_map_lookup_elem(fd, &key, &value) == 0) {
+                // Проверяем, есть ли эта программа в конфиге
+                int found = 0;
+                for (int k = 0; k < entries[i].allowed_count && k < MAX_ALLOWED; k++) {
+                    if (entries[i].allowed_inodes[k] == value) {
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) {
+                    err = bpf_map_delete_elem(fd, &key);
+                    if (err < 0) {
+                        SYSLOG_ERR("  Failed to remove program for folder %lu, index %d: %d",
+                                   (unsigned long)folder_inode, j, err);
+                    } else {
+                        SYSLOG_INFO("  [%lu] Removed program index %d (inode: %lu)",
+                                    (unsigned long)folder_inode, j, (unsigned long)value);
+                    }
+                }
+            }
+        }
+    }
+
+    SYSLOG_INFO("Incremental update completed");
+    return 0;
 }
 
 // ============================================================================
@@ -725,7 +820,6 @@ int main(int argc, char **argv) {
     int log_level = 1;
     const char *bpf_file = NULL;
 
-    // Вывод информации о размере структур
     printf("sizeof(protect_entry) = %zu bytes\n", sizeof(struct protect_entry));
     printf("sizeof(protect_template) = %zu bytes\n", sizeof(struct protect_template));
     printf("entries array (%d): %zu KB\n", MAX_PATHS, (sizeof(entries) / 1024));
@@ -797,15 +891,11 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    if (config_enabled && entry_count > 0) {
-        err = load_entries_to_bpf(g_bpf_obj);
-        if (err) {
-            SYSLOG_ERR("Failed to load entries: %d", err);
-            goto cleanup;
-        }
-    } else {
-        SYSLOG_INFO("No entries to load (config_enabled=%d, entry_count=%d)",
-                    config_enabled, entry_count);
+    // ВСЕГДА обновляем BPF (даже если config_enabled=0 или entry_count=0)
+    err = update_entries_in_bpf(g_bpf_obj);
+    if (err) {
+        SYSLOG_ERR("Failed to update entries: %d", err);
+        goto cleanup;
     }
 
     bpf_object__for_each_program(prog, g_bpf_obj) {
@@ -874,11 +964,15 @@ int main(int argc, char **argv) {
                 for (int i = 0; i < old_count; i++) {
                     remove_folder_from_bpf(g_bpf_obj, old_inodes[i]);
                 }
+                // Обновляем BPF (очищаем)
+                update_entries_in_bpf(g_bpf_obj);
                 continue;
             }
 
             if (entry_count == 0) {
                 SYSLOG_WARN("No entries in config, waiting...");
+                // Все равно нужно обновить BPF (очистить)
+                update_entries_in_bpf(g_bpf_obj);
                 continue;
             }
 
@@ -897,7 +991,8 @@ int main(int argc, char **argv) {
                 }
             }
 
-            reload_all_entries(g_bpf_obj);
+            // Инкрементальное обновление (без полной очистки)
+            update_entries_in_bpf(g_bpf_obj);
             last_folder_check = now;
         }
 
@@ -942,8 +1037,8 @@ int main(int argc, char **argv) {
             }
 
             if (changed) {
-                SYSLOG_INFO("Changes detected, reloading all entries...");
-                reload_all_entries(g_bpf_obj);
+                SYSLOG_INFO("Changes detected, updating entries...");
+                update_entries_in_bpf(g_bpf_obj);
             }
 
             last_folder_check = now;
