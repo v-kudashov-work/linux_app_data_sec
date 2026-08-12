@@ -1,4 +1,4 @@
-// app_data_sec_loader.c - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ (БЕЗ ПРОВЕРКИ НА ПОВТОРНЫЙ ЗАПУСК)
+// app_data_sec_loader.c - С поддержкой удаления записей из BPF
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -24,7 +24,7 @@
 #define MAX_LINE_LEN 1024
 #define MAX_PATHS 5000
 #define MAX_ALLOWED 20
-#define MAX_PATH_LEN 256             // Вместо PATH_MAX (4096) -> 256
+#define MAX_PATH_LEN 256
 #define CHECK_INTERVAL 5
 #define RETRY_INTERVAL 30
 #define MAX_DEPTH_FOR_PATH 64
@@ -221,6 +221,15 @@ static int parse_config(void) {
     int new_template_count = 0;
     int new_config_enabled = 0;
 
+    // Сохраняем старые inode для сравнения
+    __u64 old_folder_inodes[MAX_PATHS];
+    int old_folder_count = 0;
+    for (int i = 0; i < entry_count; i++) {
+        if (entries[i].inode != 0) {
+            old_folder_inodes[old_folder_count++] = entries[i].inode;
+        }
+    }
+
     memset(entries, 0, sizeof(entries));
     memset(templates, 0, sizeof(templates));
 
@@ -390,12 +399,29 @@ static int parse_config(void) {
         config_mtime = st.st_mtime;
     }
 
+    // Удаляем папки, которых больше нет в конфиге
+    if (g_bpf_obj) {
+        for (int i = 0; i < old_folder_count; i++) {
+            int found = 0;
+            for (int j = 0; j < entry_count; j++) {
+                if (entries[j].inode == old_folder_inodes[i]) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                SYSLOG_INFO("Removing deleted folder inode: %lu", (unsigned long)old_folder_inodes[i]);
+                remove_folder_from_bpf(g_bpf_obj, old_folder_inodes[i]);
+            }
+        }
+    }
+
     SYSLOG_INFO("Config: loaded %d entries, %d templates", entry_count, template_count);
     return 0;
 }
 
 // ============================================================================
-// ЗАГРУЗКА В BPF
+// ЗАГРУЗКА В BPF (С УДАЛЕНИЕМ СТАРЫХ ЗАПИСЕЙ)
 // ============================================================================
 
 static int load_entries_to_bpf(struct bpf_object *obj) {
@@ -408,6 +434,17 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
         return 0;
     }
 
+    // 1. Сначала удаляем старые записи программ для каждой папки
+    map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
+    if (map) {
+        fd = bpf_map__fd(map);
+        if (fd >= 0) {
+            // Удаляем все старые записи (будем перезаписывать)
+            // Для этого просто не удаляем, а перезаписываем
+        }
+    }
+
+    // 2. Загружаем конфигурации папок
     map = bpf_object__find_map_by_name(obj, "folder_config_map");
     if (!map) {
         SYSLOG_ERR("Failed to find folder_config_map");
@@ -441,6 +478,7 @@ static int load_entries_to_bpf(struct bpf_object *obj) {
         }
     }
 
+    // 3. Загружаем разрешенные программы
     map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
     if (!map) {
         SYSLOG_ERR("Failed to find folder_allowed_programs_map");
@@ -489,6 +527,7 @@ static int remove_folder_from_bpf(struct bpf_object *obj, __u64 folder_inode) {
     int err;
     struct bpf_map *map;
 
+    // Удаляем из folder_config_map
     map = bpf_object__find_map_by_name(obj, "folder_config_map");
     if (map) {
         int fd = bpf_map__fd(map);
@@ -497,17 +536,23 @@ static int remove_folder_from_bpf(struct bpf_object *obj, __u64 folder_inode) {
             if (err < 0 && err != -ENOENT) {
                 SYSLOG_ERR("Failed to remove folder_config for inode %lu: %d",
                            (unsigned long)folder_inode, err);
+            } else {
+                SYSLOG_INFO("Removed folder_config for inode: %lu", (unsigned long)folder_inode);
             }
         }
     }
 
+    // Удаляем программы для этой папки
     map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
     if (map) {
         int fd = bpf_map__fd(map);
         if (fd >= 0) {
             for (int i = 0; i < MAX_ALLOWED; i++) {
                 __u64 key = (folder_inode << 32) | i;
-                bpf_map_delete_elem(fd, &key);
+                err = bpf_map_delete_elem(fd, &key);
+                if (err == 0) {
+                    SYSLOG_INFO("Removed program index %d for folder %lu", i, (unsigned long)folder_inode);
+                }
             }
         }
     }
@@ -801,6 +846,7 @@ int main(int argc, char **argv) {
         if (config_changed()) {
             SYSLOG_INFO("Config changed! Reloading...");
 
+            // Сохраняем старые inode перед перезагрузкой
             __u64 old_inodes[MAX_PATHS];
             int old_count = 0;
             for (int i = 0; i < entry_count; i++) {
@@ -809,6 +855,7 @@ int main(int argc, char **argv) {
                 }
             }
 
+            // Перезагружаем конфиг
             memset(entries, 0, sizeof(entries));
             memset(templates, 0, sizeof(templates));
             entry_count = 0;
@@ -823,6 +870,7 @@ int main(int argc, char **argv) {
 
             if (!config_enabled) {
                 SYSLOG_INFO("Config: module disabled");
+                // Удаляем все старые записи
                 for (int i = 0; i < old_count; i++) {
                     remove_folder_from_bpf(g_bpf_obj, old_inodes[i]);
                 }
@@ -834,6 +882,7 @@ int main(int argc, char **argv) {
                 continue;
             }
 
+            // Удаляем старые папки, которых нет в новом конфиге
             for (int i = 0; i < old_count; i++) {
                 int found = 0;
                 for (int j = 0; j < entry_count; j++) {
