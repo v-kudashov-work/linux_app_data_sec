@@ -1,0 +1,6 @@
+# Компиляция
+gcc -o mkdir_example mkdir_example.c
+
+# Запуск
+./mkdir_example /tmp/my_new_folder
+./mkdir_example ./test_dir
