@@ -8,11 +8,21 @@
 #include <ctype.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <dirent.h>
 
 #define TRACE_PIPE "/sys/kernel/debug/tracing/trace_pipe"
 #define BUFFER_SIZE 8192
 #define MAX_PID_LEN 16
 #define MAX_MSG_LEN 8192
+#define MAX_PROCESS_CHAIN 32
+
+// Структура для хранения информации о процессе
+typedef struct {
+    pid_t pid;
+    char exe_path[PATH_MAX];
+    char cmdline[PATH_MAX];
+    char comm[64];
+} process_info_t;
 
 // Функция для получения пути к исполняемому файлу по PID
 static char* get_process_path(pid_t pid) {
@@ -20,10 +30,8 @@ static char* get_process_path(pid_t pid) {
     char proc_path[64];
     ssize_t len;
 
-    // Формируем путь к /proc/PID/exe
     snprintf(proc_path, sizeof(proc_path), "/proc/%d/exe", pid);
 
-    // Читаем symbolic link
     len = readlink(proc_path, path, sizeof(path) - 1);
     if (len < 0) {
         snprintf(path, sizeof(path), "unknown");
@@ -32,7 +40,6 @@ static char* get_process_path(pid_t pid) {
 
     path[len] = '\0';
 
-    // Если путь содержит (deleted), обрезаем
     char *deleted = strstr(path, " (deleted)");
     if (deleted) {
         *deleted = '\0';
@@ -56,7 +63,6 @@ static char* get_process_cmdline(pid_t pid) {
         return cmdline;
     }
 
-    // Читаем cmdline (аргументы разделены '\0')
     len = fread(cmdline, 1, sizeof(cmdline) - 1, fp);
     fclose(fp);
 
@@ -65,7 +71,6 @@ static char* get_process_cmdline(pid_t pid) {
         return cmdline;
     }
 
-    // Заменяем нулевые байты на пробелы
     for (size_t i = 0; i < len; i++) {
         if (cmdline[i] == '\0') {
             cmdline[i] = ' ';
@@ -73,7 +78,6 @@ static char* get_process_cmdline(pid_t pid) {
     }
     cmdline[len] = '\0';
 
-    // Удаляем лишние пробелы в конце
     while (len > 0 && cmdline[len - 1] == ' ') {
         cmdline[len - 1] = '\0';
         len--;
@@ -82,12 +86,162 @@ static char* get_process_cmdline(pid_t pid) {
     return cmdline;
 }
 
+// Функция для получения имени процесса (comm)
+static char* get_process_comm(pid_t pid) {
+    static char comm[64];
+    char proc_path[64];
+    FILE *fp;
+
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/comm", pid);
+
+    fp = fopen(proc_path, "r");
+    if (!fp) {
+        snprintf(comm, sizeof(comm), "unknown");
+        return comm;
+    }
+
+    if (fgets(comm, sizeof(comm), fp) == NULL) {
+        snprintf(comm, sizeof(comm), "unknown");
+    } else {
+        // Удаляем перевод строки
+        size_t len = strlen(comm);
+        if (len > 0 && comm[len-1] == '\n') {
+            comm[len-1] = '\0';
+        }
+    }
+
+    fclose(fp);
+    return comm;
+}
+
+// Функция для получения родительского PID
+static pid_t get_parent_pid(pid_t pid) {
+    char proc_path[64];
+    FILE *fp;
+    pid_t ppid = -1;
+
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/stat", pid);
+
+    fp = fopen(proc_path, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    // Формат: pid (comm) state ppid ...
+    int p;
+    char state;
+    char comm[256];
+    if (fscanf(fp, "%d %s %c %d", &p, comm, &state, &ppid) == 4) {
+        // Успешно
+    }
+
+    fclose(fp);
+    return ppid;
+}
+
+// Функция для получения информации о процессе
+static bool get_process_info(pid_t pid, process_info_t *info) {
+    if (!info) {
+        return false;
+    }
+
+    info->pid = pid;
+    strncpy(info->exe_path, get_process_path(pid), PATH_MAX - 1);
+    info->exe_path[PATH_MAX - 1] = '\0';
+
+    strncpy(info->cmdline, get_process_cmdline(pid), PATH_MAX - 1);
+    info->cmdline[PATH_MAX - 1] = '\0';
+
+    strncpy(info->comm, get_process_comm(pid), sizeof(info->comm) - 1);
+    info->comm[sizeof(info->comm) - 1] = '\0';
+
+    return true;
+}
+
+// Рекурсивная функция для сбора цепочки процессов
+static int collect_process_chain(pid_t pid, process_info_t *chain, int max_depth) {
+    int depth = 0;
+    pid_t current_pid = pid;
+    pid_t prev_pid = 0;
+
+    while (current_pid > 0 && depth < max_depth) {
+        if (!get_process_info(current_pid, &chain[depth])) {
+            break;
+        }
+        depth++;
+
+        // Получаем родительский PID
+        prev_pid = current_pid;
+        current_pid = get_parent_pid(current_pid);
+
+        // Если родительский PID равен текущему (ошибка) или меньше 0
+        if (current_pid == prev_pid || current_pid < 0) {
+            break;
+        }
+
+        // Если достигли init (PID 1)
+        if (current_pid == 1) {
+            if (depth < max_depth) {
+                get_process_info(1, &chain[depth]);
+                depth++;
+            }
+            break;
+        }
+    }
+
+    return depth;
+}
+
+// Функция для форматирования цепочки процессов в строку
+static void format_process_chain(process_info_t *chain, int depth, char *output, size_t output_size) {
+    int pos = 0;
+
+    // Выводим от корня (глубокий) к листу (текущий процесс)
+    for (int i = depth - 1; i >= 0; i--) {
+        if (pos >= output_size - 1) {
+            break;
+        }
+
+        // Добавляем информацию о процессе
+        int written = snprintf(output + pos, output_size - pos,
+                               "[%d] %s (PID:%d)",
+                               depth - i,
+                               chain[i].comm[0] != '\0' ? chain[i].comm : chain[i].exe_path,
+                               chain[i].pid);
+
+        if (written < 0) {
+            break;
+        }
+
+        pos += written;
+
+        // Добавляем разделитель между процессами
+        if (i > 0 && pos < output_size - 1) {
+            output[pos++] = ' ';
+            output[pos++] = '>';
+            output[pos++] = ' ';
+        }
+    }
+
+    output[pos] = '\0';
+}
+
+// Функция для безопасного обрезания строки
+static void safe_truncate(char *str, size_t max_len) {
+    size_t len = strlen(str);
+    if (len >= max_len) {
+        str[max_len - 4] = '.';
+        str[max_len - 3] = '.';
+        str[max_len - 2] = '.';
+        str[max_len - 1] = '\0';
+    }
+}
+
 // Функция для парсинга PID из строки лога
 static pid_t extract_pid(const char *line) {
     const char *pid_str = NULL;
     const char *p = line;
 
-    // Ищем "PID="
     while (*p) {
         if (strncmp(p, "PID=", 4) == 0) {
             pid_str = p + 4;
@@ -100,7 +254,6 @@ static pid_t extract_pid(const char *line) {
         return -1;
     }
 
-    // Извлекаем число
     pid_t pid = 0;
     while (*pid_str && isdigit(*pid_str)) {
         pid = pid * 10 + (*pid_str - '0');
@@ -108,17 +261,6 @@ static pid_t extract_pid(const char *line) {
     }
 
     return pid;
-}
-
-// Функция для безопасного обрезания строки
-static void safe_truncate(char *str, size_t max_len) {
-    size_t len = strlen(str);
-    if (len >= max_len) {
-        str[max_len - 4] = '.';
-        str[max_len - 3] = '.';
-        str[max_len - 2] = '.';
-        str[max_len - 1] = '\0';
-    }
 }
 
 // Функция для обработки строки лога
@@ -144,33 +286,41 @@ static void process_log_line(char *line) {
 
     // Формируем сообщение для syslog
     char syslog_msg[MAX_MSG_LEN];
-    char *exe_path = NULL;
-    char *cmdline = NULL;
+    char chain_str[2048] = "";
 
     if (pid > 0) {
-        // Получаем путь к исполняемому файлу
-        exe_path = get_process_path(pid);
-        cmdline = get_process_cmdline(pid);
+        // Собираем цепочку процессов
+        process_info_t chain[MAX_PROCESS_CHAIN];
+        int depth = collect_process_chain(pid, chain, MAX_PROCESS_CHAIN);
 
-        // Обрезаем слишком длинные строки
-        if (strlen(exe_path) > 256) {
-            safe_truncate(exe_path, 256);
-        }
-        if (strlen(cmdline) > 512) {
-            safe_truncate(cmdline, 512);
-        }
+        // Форматируем цепочку
+        format_process_chain(chain, depth, chain_str, sizeof(chain_str));
 
-        // Формируем сообщение с информацией о процессе
-        int written = snprintf(syslog_msg, sizeof(syslog_msg),
-                               "%s | PROCESS: PID=%d EXE=%s CMDLINE=%s",
-                               line, pid, exe_path, cmdline);
+        // Получаем информацию о текущем процессе для дополнительных деталей
+        process_info_t current_info;
+        if (get_process_info(pid, &current_info)) {
+            // Обрезаем слишком длинные строки
+            if (strlen(current_info.exe_path) > 256) {
+                safe_truncate(current_info.exe_path, 256);
+            }
+            if (strlen(current_info.cmdline) > 512) {
+                safe_truncate(current_info.cmdline, 512);
+            }
 
-        // Если snprintf обрезал сообщение, добавляем многоточие
-        if (written >= (int)sizeof(syslog_msg) - 1) {
-            syslog_msg[sizeof(syslog_msg) - 4] = '.';
-            syslog_msg[sizeof(syslog_msg) - 3] = '.';
-            syslog_msg[sizeof(syslog_msg) - 2] = '.';
-            syslog_msg[sizeof(syslog_msg) - 1] = '\0';
+            // Формируем сообщение с полной информацией
+            int written = snprintf(syslog_msg, sizeof(syslog_msg),
+                                   "%s | CHAIN: %s | CURRENT: PID=%d EXE=%s CMDLINE=%s",
+                                   line, chain_str, pid, current_info.exe_path, current_info.cmdline);
+
+            if (written >= (int)sizeof(syslog_msg) - 1) {
+                syslog_msg[sizeof(syslog_msg) - 4] = '.';
+                syslog_msg[sizeof(syslog_msg) - 3] = '.';
+                syslog_msg[sizeof(syslog_msg) - 2] = '.';
+                syslog_msg[sizeof(syslog_msg) - 1] = '\0';
+            }
+        } else {
+            snprintf(syslog_msg, sizeof(syslog_msg), "%s | CHAIN: %s (PID=%d)",
+                     line, chain_str, pid);
         }
     } else {
         // Если PID не найден, выводим как есть
