@@ -149,9 +149,13 @@ static void safe_strcpy(char *dest, const char *src, size_t size) {
 // ============================================================================
 
 static __u64 get_inode_from_path(const char *path) {
+    SYSLOG_INFO_D("get_inode_from_path  Path: %s", path);
+
     if (!path) return 0;
     struct stat st;
     if (stat(path, &st) != 0) return 0;
+
+    SYSLOG_INFO_D("get_inode_from_path id: %i", st.st_ino);
     return st.st_ino;
 }
 
@@ -1034,7 +1038,7 @@ static int scan_all_entries(struct bpf_object *obj) {
             const char *program_path = entries[i].allowed_paths[j];
             __u64 current_inode = get_inode_from_path(program_path);
 
-            if (current_inode == 0) {
+            if (current_inode == 0 && entries[i].allowed_inodes[j] != 0) {
                 // Программа удалена
                 SYSLOG_INFO_D("  Program removed: %s", program_path);
                 remove_program_from_entry(obj, i, j);
