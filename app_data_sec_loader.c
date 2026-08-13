@@ -906,7 +906,7 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
 
                 const char *subpath = raw_path + 1;
 
-                if (!isHome) {
+                if (isHome) {
                     safe_strcpy(tmpl->subpath, subpath, sizeof(tmpl->subpath));
                 }
 
@@ -919,10 +919,10 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
                 tmpl->is_home = isHome;
 
                 if (isHome) {
-                    SYSLOG_INFO("Config: template ~%s (will scan all users)", tmpl->subpath);
+                    SYSLOG_INFO("Config: home template ~%s (will scan all users)", tmpl->subpath);
                 }
                 else {
-                    SYSLOG_INFO("Config: template %s (will scan this path)", tmpl->pattern);
+                    SYSLOG_INFO("Config: path template %s (will scan this path)", tmpl->pattern);
                 }
 
                 new_template_count++;
@@ -930,8 +930,8 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
                 char *found_paths[MAX_PATHS] = {NULL};  // Инициализируем нулями
                 int found_count = 0;
 
-                if (isHome) {
-                    // Для домашнего пути просто используем сам путь
+                if (!isHome) {
+                    // Для не домашнего пути просто используем сам путь
                     found_paths[0] = strdup(raw_path);  // или strdup(raw_path)
                     if (found_paths[0]) {
                         found_count = 1;
@@ -1025,18 +1025,19 @@ static int scan_templates_and_load(struct bpf_object *obj) {
     for (int t = 0; t < template_count; t++) {
         if (!templates[t].enabled) continue;
 
-        SYSLOG_INFO_D("Scanning template: ~%s", templates[t].subpath);
-
         char *found_paths[MAX_PATHS] = {NULL};  // Инициализируем нулями
         int found_count = 0;
 
-        if (templates[t].is_home) {
-            // Для домашнего пути - просто используем сам путь
+        if (!templates[t].is_home) {
+            // Для не домашнего пути - просто используем сам путь
+            SYSLOG_INFO_D("Scanning path template: %s", templates[t].pattern);
+
             found_paths[0] = strdup(templates[t].pattern);
             if (found_paths[0]) {
                 found_count = 1;
             }
         } else {
+            SYSLOG_INFO_D("Scanning home template: ~%s", templates[t].subpath);
             found_count = scan_home_for_template(templates[t].subpath, found_paths, MAX_PATHS);
         }
 
