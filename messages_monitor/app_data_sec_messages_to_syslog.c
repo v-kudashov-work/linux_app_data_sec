@@ -192,7 +192,7 @@ static int collect_process_chain(pid_t pid, process_info_t *chain, int max_depth
     return depth;
 }
 
-// Функция для форматирования цепочки процессов в строку
+// Функция для форматирования цепочки процессов в строку с путями
 static void format_process_chain(process_info_t *chain, int depth, char *output, size_t output_size) {
     int pos = 0;
 
@@ -202,12 +202,13 @@ static void format_process_chain(process_info_t *chain, int depth, char *output,
             break;
         }
 
-        // Добавляем информацию о процессе
+        // Добавляем информацию о процессе с PID и путем
         int written = snprintf(output + pos, output_size - pos,
-                               "[%d] %s (PID:%d)",
+                               "[%d] %s (PID:%d, EXE:%s)",
                                depth - i,
-                               chain[i].comm[0] != '\0' ? chain[i].comm : chain[i].exe_path,
-                               chain[i].pid);
+                               chain[i].comm[0] != '\0' ? chain[i].comm : "unknown",
+                               chain[i].pid,
+                               chain[i].exe_path);
 
         if (written < 0) {
             break;
@@ -286,15 +287,41 @@ static void process_log_line(char *line) {
 
     // Формируем сообщение для syslog
     char syslog_msg[MAX_MSG_LEN];
-    char chain_str[2048] = "";
+    char chain_str[4096] = "";
+    char process_tree[4096] = "";
 
     if (pid > 0) {
         // Собираем цепочку процессов
         process_info_t chain[MAX_PROCESS_CHAIN];
         int depth = collect_process_chain(pid, chain, MAX_PROCESS_CHAIN);
 
-        // Форматируем цепочку
+        // Форматируем цепочку с полными путями
         format_process_chain(chain, depth, chain_str, sizeof(chain_str));
+
+        // Формируем дополнительное дерево процессов для наглядности
+        int tree_pos = 0;
+        for (int i = depth - 1; i >= 0; i--) {
+            if (tree_pos >= sizeof(process_tree) - 1) {
+                break;
+            }
+
+            // Добавляем отступы для иерархии
+            for (int j = 0; j < (depth - 1 - i) * 2; j++) {
+                if (tree_pos >= sizeof(process_tree) - 1) break;
+                process_tree[tree_pos++] = ' ';
+            }
+
+            // Добавляем информацию о процессе
+            int written = snprintf(process_tree + tree_pos, sizeof(process_tree) - tree_pos,
+                                   "|-%s (PID:%d, EXE:%s)\n",
+                                   chain[i].comm[0] != '\0' ? chain[i].comm : "unknown",
+                                   chain[i].pid,
+                                   chain[i].exe_path);
+
+            if (written < 0) break;
+            tree_pos += written;
+        }
+        process_tree[tree_pos] = '\0';
 
         // Получаем информацию о текущем процессе для дополнительных деталей
         process_info_t current_info;
@@ -317,6 +344,11 @@ static void process_log_line(char *line) {
                 syslog_msg[sizeof(syslog_msg) - 3] = '.';
                 syslog_msg[sizeof(syslog_msg) - 2] = '.';
                 syslog_msg[sizeof(syslog_msg) - 1] = '\0';
+            }
+
+            // Дополнительно отправляем дерево процессов отдельным сообщением
+            if (depth > 1) {
+                syslog(LOG_INFO, "PROCESS TREE for PID %d:\n%s", pid, process_tree);
             }
         } else {
             snprintf(syslog_msg, sizeof(syslog_msg), "%s | CHAIN: %s (PID=%d)",
