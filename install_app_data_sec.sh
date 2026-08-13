@@ -75,10 +75,14 @@ if [ "$IS_UPDATE" -eq 1 ]; then
     if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
         cp "$INSTALL_PATH/app_data_sec_watchdog" "$BACKUP_DIR/app_data_sec_watchdog.backup"
     fi
+    if [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+        cp "$INSTALL_PATH/app_data_sec_messages_to_syslog" "$BACKUP_DIR/app_data_sec_messages_to_syslog.backup"
+    fi
 
     # Останавливаем сервисы
     systemctl stop app_data_sec_loader 2>/dev/null || true
     systemctl stop app_data_sec_watchdog 2>/dev/null || true
+    systemctl stop app_data_sec_messages 2>/dev/null || true
 
     # Ждем завершения
     sleep 2
@@ -86,6 +90,7 @@ if [ "$IS_UPDATE" -eq 1 ]; then
     # Убиваем процессы если остались
     pkill -f app_data_sec_loader 2>/dev/null || true
     pkill -f app_data_sec_watchdog 2>/dev/null || true
+    pkill -f app_data_sec_messages_to_syslog 2>/dev/null || true
 
     echo -e "${GREEN}[OK]${NC} Services stopped"
 fi
@@ -499,6 +504,63 @@ else
 fi
 
 # ============================================================================
+# КОМПИЛЯЦИЯ APP_DATA_SEC_MESSAGES_TO_SYSLOG (ОПЦИОНАЛЬНО)
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Checking for app_data_sec_messages_to_syslog..."
+
+# Поиск исходника messages_to_syslog
+MESSAGES_SRC=""
+if [ -f "app_data_sec_messages_to_syslog.c" ]; then
+    MESSAGES_SRC="app_data_sec_messages_to_syslog.c"
+elif [ -f "messages_monitor/app_data_sec_messages_to_syslog.c" ]; then
+    MESSAGES_SRC="messages_monitor/app_data_sec_messages_to_syslog.c"
+else
+    MESSAGES_SRC=$(find . -name "app_data_sec_messages_to_syslog.c" -type f 2>/dev/null | head -1)
+fi
+
+INSTALL_MESSAGES=0
+if [ -n "$MESSAGES_SRC" ] && [ -f "$MESSAGES_SRC" ]; then
+    echo -e "${BLUE}[INFO]${NC} Found: $MESSAGES_SRC"
+    echo ""
+    echo -e "${YELLOW}[INFO]${NC} app_data_sec_messages_to_syslog is a monitoring tool"
+    echo "that reads trace_pipe and forwards BPF logs to syslog."
+    echo ""
+    read -p "Compile and install app_data_sec_messages_to_syslog? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${BLUE}[INFO]${NC} Compiling messages_to_syslog..."
+        gcc -Wall -O2 -o app_data_sec_messages_to_syslog "$MESSAGES_SRC" 2>&1
+
+        if [ -f "app_data_sec_messages_to_syslog" ]; then
+            echo -e "${GREEN}[OK]${NC} messages_to_syslog compiled"
+            INSTALL_MESSAGES=1
+
+            echo ""
+            echo -e "${YELLOW}[INFO]${NC} The service will read from /sys/kernel/debug/tracing/trace_pipe"
+            echo "and forward BPF messages to syslog with process chain information."
+            echo ""
+            read -p "Enable app_data_sec_messages service to start automatically? (y/n) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                ENABLE_MESSAGES_SERVICE=1
+            else
+                ENABLE_MESSAGES_SERVICE=0
+                echo -e "${YELLOW}[INFO]${NC} Service will be installed but not enabled"
+                echo "To enable later: systemctl enable --now app_data_sec_messages"
+            fi
+        else
+            echo -e "${RED}[ERROR]${NC} messages_to_syslog compilation failed!"
+            INSTALL_MESSAGES=0
+        fi
+    else
+        echo -e "${YELLOW}[INFO]${NC} Skipping messages_to_syslog"
+    fi
+else
+    echo -e "${YELLOW}[INFO]${NC} app_data_sec_messages_to_syslog.c not found, skipping"
+fi
+
+# ============================================================================
 # УСТАНОВКА ФАЙЛОВ
 # ============================================================================
 
@@ -535,6 +597,13 @@ if [ -f "app_data_sec_watchdog" ]; then
     echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_watchdog"
 fi
 
+# Устанавливаем messages_to_syslog
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "app_data_sec_messages_to_syslog" ]; then
+    cp -f app_data_sec_messages_to_syslog "$INSTALL_PATH/"
+    chmod 755 "$INSTALL_PATH/app_data_sec_messages_to_syslog"
+    echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_messages_to_syslog"
+fi
+
 # Устанавливаем BPF объект
 cp -f app_data_sec.bpf.o "$BPF_OBJ_PATH/"
 chmod 644 "$BPF_OBJ_PATH/app_data_sec.bpf.o"
@@ -557,6 +626,11 @@ fi
 if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
     ln -sf "$INSTALL_PATH/app_data_sec_watchdog" /usr/bin/app_data_sec_watchdog 2>/dev/null || true
     echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_watchdog"
+fi
+
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    ln -sf "$INSTALL_PATH/app_data_sec_messages_to_syslog" /usr/bin/app_data_sec_messages_to_syslog 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_messages_to_syslog"
 fi
 
 # ============================================================================
@@ -595,7 +669,8 @@ fi
 echo -e "\n${BLUE}[INFO]${NC} Creating log files..."
 
 for logfile in app_data_sec_loader.log app_data_sec_loader_error.log \
-               app_data_sec_watchdog.log app_data_sec_watchdog_error.log; do
+               app_data_sec_watchdog.log app_data_sec_watchdog_error.log \
+               app_data_sec_messages.log app_data_sec_messages_error.log; do
     touch "$LOG_PATH/$logfile"
     chmod 644 "$LOG_PATH/$logfile"
 done
@@ -662,39 +737,6 @@ echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_loader.service"
 # ============================================================================
 # СЕРВИС APP_DATA_SEC_WATCHDOG
 # ============================================================================
-#cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << 'EOF'
-#[Unit]
-#Description=APP DATA SEC Watchdog Service
-#Documentation=https://github.com/your-repo/app_data_sec
-#After=network.target multi-user.target
-#Wants=app_data_sec_loader.service
-#
-#[Service]
-#Type=simple
-#User=root
-#Group=root
-#ExecStart=/usr/local/bin/app_data_sec_watchdog
-#ExecStop=/bin/kill -SIGTERM $MAINPID
-#ExecReload=/bin/kill -SIGHUP $MAINPID
-#Restart=always
-#RestartSec=10
-#StandardOutput=append:/var/log/app_data_sec_watchdog.log
-#StandardError=append:/var/log/app_data_sec_watchdog_error.log
-#SyslogIdentifier=app_data_sec_watchdog
-#PIDFile=/run/app_data_sec_watchdog.pid
-#
-## Права для работы с файлами на рабочих столах
-#PrivateTmp=false
-#ProtectSystem=false
-#ProtectHome=false
-#NoNewPrivileges=false
-#ReadWritePaths=/ /var/log /home /tmp /root
-#
-#CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID
-#
-#[Install]
-#WantedBy=multi-user.target
-#EOF
 
 cat > "$SERVICE_DIR/app_data_sec_watchdog.service" << 'EOF'
 [Unit]
@@ -759,6 +801,70 @@ EOF
 echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_watchdog.service"
 
 # ============================================================================
+# СЕРВИС APP_DATA_SEC_MESSAGES (опционально)
+# ============================================================================
+
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    echo -e "\n${BLUE}[INFO]${NC} Creating systemd service for messages_to_syslog..."
+
+    cat > "$SERVICE_DIR/app_data_sec_messages.service" << 'EOF'
+[Unit]
+Description=APP DATA SEC Messages to Syslog Service
+Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
+After=app_data_sec_loader.service
+Before=sysinit.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/app_data_sec_messages_to_syslog
+ExecStop=/bin/kill -SIGTERM $MAINPID
+Restart=always
+RestartSec=5
+
+# Логи
+StandardOutput=append:/var/log/app_data_sec_messages.log
+StandardError=append:/var/log/app_data_sec_messages_error.log
+SyslogIdentifier=app_data_sec_messages
+
+# Снимаем все ограничения для доступа к /proc и trace_pipe
+PrivateTmp=false
+ProtectSystem=false
+ProtectHome=false
+NoNewPrivileges=false
+PrivateDevices=false
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectControlGroups=false
+RestrictAddressFamilies=false
+RestrictNamespaces=false
+LockPersonality=false
+MemoryDenyWriteExecute=false
+RestrictRealtime=false
+RestrictSUIDSGID=false
+
+ReadWritePaths=/
+ReadOnlyPaths=
+
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_messages.service"
+
+    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
+        systemctl enable app_data_sec_messages 2>/dev/null || true
+        echo -e "${GREEN}[OK]${NC} Service enabled: app_data_sec_messages"
+    else
+        echo -e "${YELLOW}[INFO]${NC} Service installed but not enabled"
+        echo "To enable: sudo systemctl enable --now app_data_sec_messages"
+    fi
+fi
+
+# ============================================================================
 # ЗАПУСК СЕРВИСОВ
 # ============================================================================
 
@@ -774,6 +880,11 @@ systemctl restart app_data_sec_loader
 if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
     systemctl enable app_data_sec_watchdog 2>/dev/null || true
     systemctl restart app_data_sec_watchdog
+fi
+
+# Запускаем messages (если включен)
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    systemctl restart app_data_sec_messages
 fi
 
 sleep 3
@@ -792,6 +903,12 @@ echo ""
 echo -e "${BLUE}app_data_sec_watchdog:${NC}"
 systemctl status app_data_sec_watchdog --no-pager || true
 
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    echo ""
+    echo -e "${BLUE}app_data_sec_messages:${NC}"
+    systemctl status app_data_sec_messages --no-pager || true
+fi
+
 # ============================================================================
 # ПРОВЕРКА ЛОГОВ
 # ============================================================================
@@ -805,6 +922,12 @@ journalctl -u app_data_sec_loader -n 5 --no-pager 2>/dev/null || echo "  No logs
 echo ""
 echo -e "${BLUE}app_data_sec_watchdog logs:${NC}"
 journalctl -u app_data_sec_watchdog -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
+
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    echo ""
+    echo -e "${BLUE}app_data_sec_messages logs:${NC}"
+    journalctl -u app_data_sec_messages -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
+fi
 
 # ============================================================================
 # ПРОВЕРКА BPF
@@ -842,22 +965,58 @@ ${BLUE}Installed files:${NC}
   $INSTALL_PATH/app_data_sec_merge_config
   $INSTALL_PATH/app_data_sec_unprotect
   $INSTALL_PATH/app_data_sec_watchdog
+EOF
+
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    echo "  $INSTALL_PATH/app_data_sec_messages_to_syslog"
+fi
+
+cat << EOF
   $BPF_OBJ_PATH/app_data_sec.bpf.o
   $CONFIG_PATH
 
 ${BLUE}Services:${NC}
   app_data_sec_loader   - Main protection service
   app_data_sec_watchdog - Watchdog service (creates desktop file on errors)
+EOF
+
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
+        echo "  app_data_sec_messages - Monitoring service (active)"
+    else
+        echo "  app_data_sec_messages - Monitoring service (installed, disabled)"
+    fi
+fi
+
+cat << EOF
 
 ${BLUE}Watchdog:${NC}
   When app_data_sec_loader stops, watchdog creates:
   app_data_sec_errors.txt on each user's desktop
 
+EOF
+
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    echo -e "${BLUE}Messages to Syslog:${NC}"
+    echo "  Reads trace_pipe and forwards BPF logs to syslog"
+    echo "  Shows process chain for each blocked access"
+    echo ""
+fi
+
+cat << EOF
 ${BLUE}Commands:${NC}
   sudo systemctl status app_data_sec_loader
   sudo systemctl status app_data_sec_watchdog
   sudo journalctl -u app_data_sec_loader -f
   sudo journalctl -u app_data_sec_watchdog -f
+EOF
+
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    echo "  sudo systemctl status app_data_sec_messages"
+    echo "  sudo journalctl -u app_data_sec_messages -f"
+fi
+
+cat << EOF
 
 ${BLUE}Configuration:${NC}
   Edit: sudo nano $CONFIG_PATH
@@ -890,6 +1049,18 @@ echo ""
 echo -e "${BLUE}Watchdog desktop file:${NC}"
 echo "  If error occurs, file appears on desktop: app_data_sec_errors.txt"
 echo "  User can delete it after reading"
+
+if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+    echo ""
+    echo -e "${BLUE}Messages Monitor:${NC}"
+    echo "  To see BPF logs in syslog:"
+    echo "  sudo journalctl -u app_data_sec_messages -f"
+    echo "  Or: tail -f /var/log/syslog | grep APP_DATA_SEC"
+    echo ""
+    echo "  To stop messages service:"
+    echo "  sudo systemctl stop app_data_sec_messages"
+    echo "  sudo systemctl disable app_data_sec_messages"
+fi
 
 if [ "$IS_UPDATE" -eq 1 ]; then
     echo ""
