@@ -22,4 +22,7 @@
 
 
 Todo:
-remove_folder_from_entries - лог   Folder removed from entries, remaining улучшить, добавить путь к папке
+* remove_folder_from_entries - лог   Folder removed from entries, remaining улучшить, добавить путь к папке
+* Проверить код merge_config и unprotect утилит
+* Исправить ошибку в логе 13.08.2026 11:26	systemd	/etc/systemd/system/app_data_sec_watchdog.service:44: Failed to parse address family, ignoring: false
+* уменьшить доступы сервисов, если возможно
