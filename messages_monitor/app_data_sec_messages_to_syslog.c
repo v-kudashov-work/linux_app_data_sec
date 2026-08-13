@@ -115,6 +115,7 @@ static char* get_process_comm(pid_t pid) {
 }
 
 // Функция для получения родительского PID
+// Функция для получения родительского PID (улучшенная)
 static pid_t get_parent_pid(pid_t pid) {
     char proc_path[64];
     FILE *fp;
@@ -139,53 +140,204 @@ static pid_t get_parent_pid(pid_t pid) {
     return ppid;
 }
 
-// Функция для получения информации о процессе
+// Функция для получения информации о процессе (улучшенная)
 static bool get_process_info(pid_t pid, process_info_t *info) {
-    if (!info) {
+    if (!info || pid <= 0) {
         return false;
     }
 
     info->pid = pid;
-    strncpy(info->exe_path, get_process_path(pid), PATH_MAX - 1);
-    info->exe_path[PATH_MAX - 1] = '\0';
 
-    strncpy(info->cmdline, get_process_cmdline(pid), PATH_MAX - 1);
-    info->cmdline[PATH_MAX - 1] = '\0';
+    // Получаем путь к исполняемому файлу
+    char *exe_path = get_process_path(pid);
+    if (exe_path) {
+        strncpy(info->exe_path, exe_path, PATH_MAX - 1);
+        info->exe_path[PATH_MAX - 1] = '\0';
+    } else {
+        snprintf(info->exe_path, sizeof(info->exe_path), "unknown");
+    }
 
-    strncpy(info->comm, get_process_comm(pid), sizeof(info->comm) - 1);
-    info->comm[sizeof(info->comm) - 1] = '\0';
+    // Получаем командную строку
+    char *cmdline = get_process_cmdline(pid);
+    if (cmdline) {
+        strncpy(info->cmdline, cmdline, PATH_MAX - 1);
+        info->cmdline[PATH_MAX - 1] = '\0';
+    } else {
+        snprintf(info->cmdline, sizeof(info->cmdline), "unknown");
+    }
+
+    // Получаем имя процесса
+    char *comm = get_process_comm(pid);
+    if (comm) {
+        strncpy(info->comm, comm, sizeof(info->comm) - 1);
+        info->comm[sizeof(info->comm) - 1] = '\0';
+    } else {
+        snprintf(info->comm, sizeof(info->comm), "unknown");
+    }
 
     return true;
 }
 
-// Рекурсивная функция для сбора цепочки процессов
+// Функция для сбора полной цепочки процессов из системы
 static int collect_process_chain(pid_t pid, process_info_t *chain, int max_depth) {
+    if (!chain || max_depth <= 0 || pid <= 0) {
+        return 0;
+    }
+
     int depth = 0;
     pid_t current_pid = pid;
     pid_t prev_pid = 0;
+    int max_iterations = max_depth * 2; // Защита от бесконечного цикла
 
-    while (current_pid > 0 && depth < max_depth) {
+    // Собираем цепочку от текущего процесса до init
+    while (current_pid > 0 && depth < max_depth && max_iterations > 0) {
+        max_iterations--;
+
+        // Получаем информацию о текущем процессе
         if (!get_process_info(current_pid, &chain[depth])) {
+            // Если не удалось получить информацию, пробуем продолжить
+            pid_t next_pid = get_parent_pid(current_pid);
+            if (next_pid > 0 && next_pid != current_pid) {
+                current_pid = next_pid;
+                continue;
+            }
             break;
         }
+
         depth++;
 
         // Получаем родительский PID
         prev_pid = current_pid;
         current_pid = get_parent_pid(current_pid);
 
-        // Если родительский PID равен текущему (ошибка) или меньше 0
+        // Проверяем на ошибки
+        if (current_pid == prev_pid || current_pid < 0) {
+            break;
+        }
+
+        // Если достигли init (PID 1), добавляем его и завершаем
+        if (current_pid == 1) {
+            if (depth < max_depth) {
+                if (get_process_info(1, &chain[depth])) {
+                    depth++;
+                }
+            }
+            break;
+        }
+
+        // Если текущий PID стал меньше 1, завершаем
+        if (current_pid < 1) {
+            break;
+        }
+    }
+
+    // Если цепочка пустая, но есть информация о текущем процессе
+    if (depth == 0 && pid > 0) {
+        if (get_process_info(pid, &chain[0])) {
+            depth = 1;
+        }
+    }
+
+    return depth;
+}
+
+// Функция для получения PID родительского процесса из /proc (альтернативная)
+static pid_t get_parent_pid_from_proc(pid_t pid) {
+    char proc_path[64];
+    FILE *fp;
+    pid_t ppid = -1;
+    char buffer[1024];
+
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/status", pid);
+
+    fp = fopen(proc_path, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    while (fgets(buffer, sizeof(buffer), fp)) {
+        if (strncmp(buffer, "PPid:", 5) == 0) {
+            sscanf(buffer + 5, "%d", &ppid);
+            break;
+        }
+    }
+
+    fclose(fp);
+    return ppid;
+}
+
+// Функция для проверки существования процесса
+static bool process_exists(pid_t pid) {
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d", pid);
+    return access(proc_path, F_OK) == 0;
+}
+
+// Функция для сбора цепочки процессов с использованием /proc/status (более надежная)
+static int collect_process_chain_v2(pid_t pid, process_info_t *chain, int max_depth) {
+    if (!chain || max_depth <= 0 || pid <= 0) {
+        return 0;
+    }
+
+    int depth = 0;
+    pid_t current_pid = pid;
+    pid_t prev_pid = 0;
+    int max_iterations = max_depth * 2;
+
+    // Проверяем, существует ли процесс
+    if (!process_exists(pid)) {
+        return 0;
+    }
+
+    while (current_pid > 0 && depth < max_depth && max_iterations > 0) {
+        max_iterations--;
+
+        // Проверяем, существует ли процесс
+        if (!process_exists(current_pid)) {
+            break;
+        }
+
+        // Получаем информацию о процессе
+        if (!get_process_info(current_pid, &chain[depth])) {
+            pid_t next_pid = get_parent_pid_from_proc(current_pid);
+            if (next_pid > 0 && next_pid != current_pid) {
+                current_pid = next_pid;
+                continue;
+            }
+            break;
+        }
+
+        depth++;
+
+        // Получаем родительский PID
+        prev_pid = current_pid;
+        current_pid = get_parent_pid_from_proc(current_pid);
+
+        // Проверяем на ошибки
         if (current_pid == prev_pid || current_pid < 0) {
             break;
         }
 
         // Если достигли init (PID 1)
         if (current_pid == 1) {
-            if (depth < max_depth) {
-                get_process_info(1, &chain[depth]);
-                depth++;
+            if (depth < max_depth && process_exists(1)) {
+                if (get_process_info(1, &chain[depth])) {
+                    depth++;
+                }
             }
             break;
+        }
+
+        // Если текущий PID стал меньше 1
+        if (current_pid < 1) {
+            break;
+        }
+    }
+
+    // Если цепочка пустая, но процесс существует
+    if (depth == 0 && pid > 0 && process_exists(pid)) {
+        if (get_process_info(pid, &chain[0])) {
+            depth = 1;
         }
     }
 
@@ -282,6 +434,8 @@ static void process_log_line(char *line) {
         return;
     }
 
+    syslog(LOG_INFO, "%s", line);
+
     // Извлекаем PID
     pid_t pid = extract_pid(line);
 
@@ -293,7 +447,7 @@ static void process_log_line(char *line) {
     if (pid > 0) {
         // Собираем цепочку процессов
         process_info_t chain[MAX_PROCESS_CHAIN];
-        int depth = collect_process_chain(pid, chain, MAX_PROCESS_CHAIN);
+        int depth = collect_process_chain_v2(pid, chain, MAX_PROCESS_CHAIN);
 
         // Форматируем цепочку с полными путями
         format_process_chain(chain, depth, chain_str, sizeof(chain_str));
@@ -354,13 +508,14 @@ static void process_log_line(char *line) {
             snprintf(syslog_msg, sizeof(syslog_msg), "%s | CHAIN: %s (PID=%d)",
                      line, chain_str, pid);
         }
+
+        // Отправляем в syslog
+        syslog(LOG_INFO, "%s", syslog_msg);
+
     } else {
         // Если PID не найден, выводим как есть
-        snprintf(syslog_msg, sizeof(syslog_msg), "%s", line);
+        // snprintf(syslog_msg, sizeof(syslog_msg), "%s", line);
     }
-
-    // Отправляем в syslog
-    syslog(LOG_INFO, "%s", syslog_msg);
 }
 
 int main(int argc, char *argv[]) {
