@@ -94,6 +94,7 @@ struct protect_entry {
     int allowed_count;
     int is_active;
     time_t last_check;
+    int is_home;                    // 1 если путь начинается с ~, 0 если точный
 };
 
 struct protect_template {
@@ -103,6 +104,7 @@ struct protect_template {
     char allowed_paths[MAX_ALLOWED][MAX_PATH_LEN];
     int allowed_count;
     int enabled;
+    int is_home;
 };
 
 static struct protect_entry entries[MAX_PATHS];
@@ -148,6 +150,11 @@ static void safe_strcpy(char *dest, const char *src, size_t size) {
 // ============================================================================
 // ФУНКЦИИ РАБОТЫ С ФАЙЛОВОЙ СИСТЕМОЙ
 // ============================================================================
+
+static int is_home_path(const char *path) {
+    if (!path) return 0;
+    return (path[0] == '~');
+}
 
 static __u64 get_inode_from_path(const char *path) {
     SYSLOG_INFO_D("get_inode_from_path  Path: %s", path);
@@ -221,6 +228,7 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 
     return idx;
 }
+
 
 // ============================================================================
 // ОПЕРАЦИЯ 1: ДОБАВЛЕНИЕ ПАПКИ В ENTRIES И BPF
@@ -891,11 +899,16 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
                 ptr = arg_end;
             }
 
-            if (raw_path[0] == '~') {
+            // if (raw_path[0] == '~') {
                 struct protect_template *tmpl = &(*temp_templates)[new_template_count];
                 safe_strcpy(tmpl->pattern, raw_path, sizeof(tmpl->pattern));
+                int isHome = is_home_path(raw_path);
+
                 const char *subpath = raw_path + 1;
-                safe_strcpy(tmpl->subpath, subpath, sizeof(tmpl->subpath));
+
+                if (!isHome) {
+                    safe_strcpy(tmpl->subpath, subpath, sizeof(tmpl->subpath));
+                }
 
                 for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
                     tmpl->allowed_inodes[i] = allowed_inodes[i];
@@ -903,12 +916,29 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
                 }
                 tmpl->allowed_count = allowed_count;
                 tmpl->enabled = 1;
+                tmpl->is_home = isHome;
 
-                SYSLOG_INFO("Config: template ~%s (will scan all users)", tmpl->subpath);
+                if (isHome) {
+                    SYSLOG_INFO("Config: template ~%s (will scan all users)", tmpl->subpath);
+                }
+                else {
+                    SYSLOG_INFO("Config: template %s (will scan this path)", tmpl->pattern);
+                }
+
                 new_template_count++;
 
-                char *found_paths[MAX_PATHS];
-                int found_count = scan_home_for_template(tmpl->subpath, found_paths, MAX_PATHS);
+                char *found_paths[MAX_PATHS] = {NULL};  // Инициализируем нулями
+                int found_count = 0;
+
+                if (isHome) {
+                    // Для домашнего пути просто используем сам путь
+                    found_paths[0] = strdup(raw_path);  // или strdup(raw_path)
+                    if (found_paths[0]) {
+                        found_count = 1;
+                    }
+                } else {
+                    found_count = scan_home_for_template(tmpl->subpath, found_paths, MAX_PATHS);
+                }
 
                 for (int i = 0; i < found_count && new_entry_count < MAX_PATHS; i++) {
                     struct protect_entry *entry = &(*temp_entries)[new_entry_count];
@@ -918,6 +948,7 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
                     entry->is_active = (entry->inode != 0);
                     entry->allowed_count = 0;
                     entry->last_check = time(NULL);
+                    entry->is_home = isHome;
 
                     for (int j = 0; j < tmpl->allowed_count && j < MAX_ALLOWED; j++) {
                         entry->allowed_inodes[j] = tmpl->allowed_inodes[j];
@@ -934,29 +965,29 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
                     new_entry_count++;
                     free(found_paths[i]);
                 }
-            } else {
-                struct protect_entry *entry = &(*temp_entries)[new_entry_count];
-                safe_strcpy(entry->path, raw_path, sizeof(entry->path));
-
-                entry->inode = get_inode_from_path(entry->path);
-                entry->is_active = (entry->inode != 0);
-                entry->allowed_count = 0;
-                entry->last_check = time(NULL);
-
-                for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
-                    entry->allowed_inodes[i] = allowed_inodes[i];
-                    safe_strcpy(entry->allowed_paths[i], allowed_paths[i], MAX_PATH_LEN);
-                    entry->allowed_count++;
-                }
-
-                if (entry->inode != 0) {
-                    SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
-                } else {
-                    SYSLOG_WARN("Config: protect %s (NOT FOUND YET, will retry)", entry->path);
-                }
-
-                new_entry_count++;
-            }
+            // } else {
+            //     struct protect_entry *entry = &(*temp_entries)[new_entry_count];
+            //     safe_strcpy(entry->path, raw_path, sizeof(entry->path));
+            //
+            //     entry->inode = get_inode_from_path(entry->path);
+            //     entry->is_active = (entry->inode != 0);
+            //     entry->allowed_count = 0;
+            //     entry->last_check = time(NULL);
+            //
+            //     for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
+            //         entry->allowed_inodes[i] = allowed_inodes[i];
+            //         safe_strcpy(entry->allowed_paths[i], allowed_paths[i], MAX_PATH_LEN);
+            //         entry->allowed_count++;
+            //     }
+            //
+            //     if (entry->inode != 0) {
+            //         SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
+            //     } else {
+            //         SYSLOG_WARN("Config: protect %s (NOT FOUND YET, will retry)", entry->path);
+            //     }
+            //
+            //     new_entry_count++;
+            // }
         }
     }
 
@@ -996,8 +1027,18 @@ static int scan_templates_and_load(struct bpf_object *obj) {
 
         SYSLOG_INFO_D("Scanning template: ~%s", templates[t].subpath);
 
-        char *found_paths[MAX_PATHS];
-        int found_count = scan_home_for_template(templates[t].subpath, found_paths, MAX_PATHS);
+        char *found_paths[MAX_PATHS] = {NULL};  // Инициализируем нулями
+        int found_count = 0;
+
+        if (templates[t].is_home) {
+            // Для домашнего пути - просто используем сам путь
+            found_paths[0] = strdup(templates[t].pattern);
+            if (found_paths[0]) {
+                found_count = 1;
+            }
+        } else {
+            found_count = scan_home_for_template(templates[t].subpath, found_paths, MAX_PATHS);
+        }
 
         SYSLOG_INFO_D("Found %d folders for template", found_count);
 
@@ -1027,6 +1068,7 @@ static int scan_templates_and_load(struct bpf_object *obj) {
                 entry.is_active = (entry.inode != 0);
                 entry.last_check = time(NULL);
                 entry.allowed_count = 0;
+                entry.is_home = templates[t].is_home;
 
                 for (int j = 0; j < templates[t].allowed_count && j < MAX_ALLOWED; j++) {
                     entry.allowed_inodes[j] = templates[t].allowed_inodes[j];
