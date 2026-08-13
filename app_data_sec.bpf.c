@@ -19,7 +19,7 @@
 #define MAX_DEPTH_FOR_PATH 64
 #define MAX_NAME_LEN_FOR_LOG 10
 #define MAX_LOG_PATH_LEN 128
-#define MAX_DEPTH_FOR_APP_LOG 3
+#define MAX_DEPTH_FOR_APP_LOG 4
 
 // СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
 struct protected_folder_config {
@@ -332,11 +332,9 @@ static __always_inline void get_exe_full_path_for_log(struct task_struct *task, 
             if (exe_name[0] != '\0') {
                 // Добавляем в путь: name1 > name2 > name3
                 if (pos > 0 && pos < size - 1) {
-                    if (pos + 2 < size) {
-                        path_buf[pos] = ' ';
-                        path_buf[pos + 1] = '>';
-                        path_buf[pos + 2] = ' ';
-                        pos = pos + 3;
+                    if (pos < size) {
+                        path_buf[pos] = '>';
+                        pos = pos + 1;
                     }
                 }
 
