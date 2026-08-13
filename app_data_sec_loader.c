@@ -531,10 +531,10 @@ static int clear_all_entries(struct bpf_object *obj) {
     template_count = 0;
     config_enabled = 0;
 
-    struct stat st;
-    if (stat(CONFIG_PATH, &st) == 0) {
-        config_mtime = st.st_mtime;
-    }
+    // struct stat st;
+    // if (stat(CONFIG_PATH, &st) == 0) {
+    //     config_mtime = st.st_mtime;
+    // }
 
     SYSLOG_INFO("All entries cleared");
     return 0;
@@ -558,11 +558,6 @@ static int sync_config_to_entries(struct bpf_object *obj,
     if (!temp_config_enabled || temp_count == 0) {
         SYSLOG_INFO_D("Config disabled or empty, clearing all entries");
         int res = clear_all_entries(obj);
-
-        struct stat st;
-        if (stat(CONFIG_PATH, &st) == 0) {
-            config_mtime = st.st_mtime;
-        }
 
         SYSLOG_INFO_D("=== SYNC COMPLETE (cleared) ===");
         return res;
@@ -669,10 +664,10 @@ static int sync_config_to_entries(struct bpf_object *obj,
     // ============================================================
     config_enabled = temp_config_enabled;
 
-    struct stat st;
-    if (stat(CONFIG_PATH, &st) == 0) {
-        config_mtime = st.st_mtime;
-    }
+    // struct stat st;
+    // if (stat(CONFIG_PATH, &st) == 0) {
+    //     config_mtime = st.st_mtime;
+    // }
 
     SYSLOG_INFO("Sync complete: %d entries, %d templates", entry_count, template_count);
     SYSLOG_INFO_D("=== SYNC COMPLETE ===");
@@ -703,6 +698,13 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
         free(*temp_entries);
         *temp_entries = NULL;
         return -1;
+    }
+
+    time_t new_config_mtime = 0;
+
+    struct stat st;
+    if (stat(CONFIG_PATH, &st) == 0) {
+        new_config_mtime = st.st_mtime;
     }
 
     FILE *fp = fopen(CONFIG_PATH, "r");
@@ -899,6 +901,8 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
     *temp_count = new_entry_count;
     *temp_template_count = new_template_count;
     *temp_config_enabled = new_config_enabled;
+
+    config_mtime = new_config_mtime;
 
     SYSLOG_INFO("Config parsed to temp: %d entries, %d templates", new_entry_count, new_template_count);
     return 0;
@@ -1310,10 +1314,10 @@ int main(int argc, char **argv) {
     temp_entries = NULL;
     temp_templates = NULL;
 
-    struct stat st;
-    if (stat(CONFIG_PATH, &st) == 0) {
-        config_mtime = st.st_mtime;
-    }
+    // struct stat st;
+    // if (stat(CONFIG_PATH, &st) == 0) {
+    //     config_mtime = st.st_mtime;
+    // }
 
     // Прикрепляем LSM-программы
     DEBUG_PRINT("Attaching LSM programs...");
@@ -1388,10 +1392,10 @@ int main(int argc, char **argv) {
             new_temp_entries = NULL;
             new_temp_templates = NULL;
 
-            struct stat st;
-            if (stat(CONFIG_PATH, &st) == 0) {
-                config_mtime = st.st_mtime;
-            }
+            // struct stat st;
+            // if (stat(CONFIG_PATH, &st) == 0) {
+            //     config_mtime = st.st_mtime;
+            // }
 
             last_folder_check = now;
         }
