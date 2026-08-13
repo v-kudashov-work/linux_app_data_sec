@@ -520,6 +520,8 @@ else
 fi
 
 INSTALL_MESSAGES=0
+ENABLE_MESSAGES_SERVICE=0  # По умолчанию НЕ включаем сервис
+
 if [ -n "$MESSAGES_SRC" ] && [ -f "$MESSAGES_SRC" ]; then
     echo -e "${BLUE}[INFO]${NC} Found: $MESSAGES_SRC"
     echo -e "${BLUE}[INFO]${NC} Compiling messages_to_syslog..."
@@ -536,16 +538,16 @@ if [ -n "$MESSAGES_SRC" ] && [ -f "$MESSAGES_SRC" ]; then
         echo -e "${YELLOW}[INFO]${NC} The service will read from /sys/kernel/debug/tracing/trace_pipe"
         echo "and forward BPF messages to syslog with process chain information."
         echo ""
-        read -p "Enable app_data_sec_messages service to start automatically? (y/N) " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            ENABLE_MESSAGES_SERVICE=1
-            echo -e "${GREEN}[OK]${NC} Service will be enabled"
-        else
-            ENABLE_MESSAGES_SERVICE=0
-            echo -e "${YELLOW}[INFO]${NC} Service will be installed but NOT enabled"
-            echo "To enable later: sudo systemctl enable --now app_data_sec_messages"
-        fi
+#         read -p "Enable app_data_sec_messages service to start automatically? (y/N) " -n 1 -r
+#         echo
+#         if [[ $REPLY =~ ^[Yy]$ ]]; then
+#             ENABLE_MESSAGES_SERVICE=1
+#             echo -e "${GREEN}[OK]${NC} Service will be enabled"
+#         else
+#             ENABLE_MESSAGES_SERVICE=0
+#             echo -e "${YELLOW}[INFO]${NC} Service will be installed but NOT enabled"
+#             echo "To enable later: sudo systemctl enable --now app_data_sec_messages"
+#         fi
     else
         echo -e "${RED}[ERROR]${NC} messages_to_syslog compilation failed!"
         INSTALL_MESSAGES=0
@@ -809,9 +811,6 @@ if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to
 [Unit]
 Description=APP DATA SEC Messages to Syslog Service
 Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
-# Убираем стандартные зависимости
-DefaultDependencies=no
-# Запускаем после загрузчика
 After=app_data_sec_loader.service
 Before=sysinit.target
 
@@ -819,6 +818,7 @@ Before=sysinit.target
 Type=simple
 User=root
 Group=root
+# Используем полный путь
 ExecStart=/usr/local/bin/app_data_sec_messages_to_syslog
 ExecStop=/bin/kill -SIGTERM $MAINPID
 Restart=always
@@ -829,7 +829,7 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=app_data_sec_messages
 
-# Снимаем все ограничения для доступа к /proc и trace_pipe
+# Снимаем все ограничения
 PrivateTmp=false
 ProtectSystem=false
 ProtectHome=false
@@ -845,10 +845,15 @@ MemoryDenyWriteExecute=false
 RestrictRealtime=false
 RestrictSUIDSGID=false
 
+# Разрешаем доступ к /proc и /sys
 ReadWritePaths=/
 ReadOnlyPaths=
+ReadWritePaths=/sys/kernel/debug/tracing
+ReadWritePaths=/proc
 
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+# Даем необходимые capabilities
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SYSLOG CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SYSLOG CAP_DAC_OVERRIDE
 
 [Install]
 WantedBy=multi-user.target

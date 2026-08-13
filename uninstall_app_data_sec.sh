@@ -50,6 +50,10 @@ systemctl stop app_data_sec_watchdog 2>/dev/null || true
 systemctl disable app_data_sec_loader 2>/dev/null || true
 systemctl disable app_data_sec_watchdog 2>/dev/null || true
 
+systemctl stop app_data_sec_messages 2>/dev/null || true
+systemctl disable app_data_sec_messages 2>/dev/null || true
+pkill -f app_data_sec_messages_to_syslog 2>/dev/null || true
+
 # Убиваем процессы если остались
 pkill -f app_data_sec_loader 2>/dev/null || true
 pkill -f app_data_sec_watchdog 2>/dev/null || true
@@ -99,6 +103,13 @@ echo -e "${GREEN}[OK]${NC} Removed PID files"
 # Lock файлы
 rm -f /var/lock/app_data_sec_watchdog.lock
 echo -e "${GREEN}[OK]${NC} Removed lock files"
+
+# app_data_sec_messages_to_syslog
+rm -f /usr/local/bin/app_data_sec_messages_to_syslog
+rm -f /usr/bin/app_data_sec_messages_to_syslog 2>/dev/null || true
+rm -f /etc/systemd/system/app_data_sec_messages.service
+rm -f /var/log/app_data_sec_messages.log
+rm -f /var/log/app_data_sec_messages_error.log
 
 # ============================================================================
 # КОНФИГУРАЦИЯ (опционально)
