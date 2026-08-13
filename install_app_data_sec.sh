@@ -809,6 +809,9 @@ if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to
 [Unit]
 Description=APP DATA SEC Messages to Syslog Service
 Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
+# Убираем стандартные зависимости
+DefaultDependencies=no
+# Запускаем после загрузчика
 After=app_data_sec_loader.service
 Before=sysinit.target
 
@@ -822,8 +825,8 @@ Restart=always
 RestartSec=5
 
 # Логи
-StandardOutput=append:/var/log/app_data_sec_messages.log
-StandardError=append:/var/log/app_data_sec_messages_error.log
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=app_data_sec_messages
 
 # Снимаем все ограничения для доступа к /proc и trace_pipe
