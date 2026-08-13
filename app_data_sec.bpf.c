@@ -19,6 +19,7 @@
 #define MAX_DEPTH_FOR_PATH 64
 #define MAX_NAME_LEN 32
 #define MAX_LOG_PATH_LEN 128
+#define MAX_DEPTH_FOR_APP_LOG 4
 
 // СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
 struct protected_folder_config {
@@ -114,6 +115,74 @@ static __always_inline void get_parent_name(struct dentry *dentry, char *name, i
     }
 
     get_dentry_name(parent, name, size);
+}
+
+// Сбор пути: имя файла + родительская директория (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+static __always_inline void get_full_path(struct dentry *dentry, char *full_path, int size)
+{
+    if (!dentry || !full_path || size <= 0) {
+        if (full_path && size > 0) {
+            full_path[0] = '\0';
+        }
+        return;
+    }
+
+    char name[MAX_NAME_LEN] = {};
+    char parent_name[MAX_NAME_LEN] = {};
+    int pos = 0;
+
+    // Получаем имя файла
+    get_dentry_name(dentry, name, MAX_NAME_LEN);
+
+    // Получаем имя родителя
+    get_parent_name(dentry, parent_name, MAX_NAME_LEN);
+
+    // Собираем путь: /parent/name
+    if (parent_name[0] != '\0' && parent_name[0] != '/') {
+        if (pos < size - 1) {
+            full_path[pos] = '/';
+            pos++;
+        }
+
+        // Копируем имя родителя
+        #pragma unroll
+        for (int i = 0; i < MAX_NAME_LEN; i++) {
+            if (parent_name[i] == '\0' || pos >= size - 1) {
+                break;
+            }
+            full_path[pos] = parent_name[i];
+            pos++;
+        }
+    }
+
+    if (name[0] != '\0') {
+        if (pos < size - 1) {
+            full_path[pos] = '/';
+            pos++;
+        }
+
+        // Копируем имя файла
+        #pragma unroll
+        for (int i = 0; i < MAX_NAME_LEN; i++) {
+            if (name[i] == '\0' || pos >= size - 1) {
+                break;
+            }
+            full_path[pos] = name[i];
+            pos++;
+        }
+    }
+
+    // Гарантируем завершение строки
+    if (pos < size) {
+        full_path[pos] = '\0';
+    } else {
+        full_path[size - 1] = '\0';
+    }
+
+    // Если путь пустой или слишком короткий, используем имя файла
+    if (pos <= 1) {
+        get_dentry_name(dentry, full_path, size);
+    }
 }
 
 // Получение inode процесса
@@ -552,14 +621,18 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         if (log_level >= 1) {
             char name[MAX_NAME_LEN] = {};
             char parent_name[MAX_NAME_LEN] = {};
+            char full_path[MAX_LOG_PATH_LEN] = {};
             char comm[MAX_LOG_PATH_LEN] = {};
+
+            // Получаем полный путь
+            get_full_path(dentry, full_path, MAX_LOG_PATH_LEN);
 
             get_dentry_name(dentry, name, MAX_NAME_LEN);
             get_parent_name(dentry, parent_name, MAX_NAME_LEN);
             bpf_get_current_comm(&comm, sizeof(comm));
 
-            bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu PATH=%s PARENT=%s FOLDER_INODE=%llu REASON=%s COMM=%s\n",
-                       operation, pid, uid, name, parent_name, folder_inode, reason, comm);
+            bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu FULL_PATH=%s PARENT=%s FOLDER_INODE=%llu REASON=%s COMM=%s DEPTH=%d\n",
+                       operation, pid, uid, full_path, parent_name, folder_inode, reason, comm, MAX_DEPTH_FOR_APP_LOG);
         }
         return -EPERM;
     } else {
