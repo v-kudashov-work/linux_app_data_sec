@@ -354,10 +354,10 @@ static int remove_program_from_entry(struct bpf_object *obj, int entry_idx, int 
                 path, entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_inode);
 
     // Если программ не осталось - удаляем всю папку
-    if (entries[entry_idx].allowed_count == 0) {
-        SYSLOG_INFO_D("No programs left in %s, removing folder", path);
-        remove_folder_from_entries(obj, entry_idx);
-    }
+    // if (entries[entry_idx].allowed_count == 0) {
+    //     SYSLOG_INFO_D("No programs left in %s, removing folder", path);
+    //     remove_folder_from_entries(obj, entry_idx);
+    // }
 
     SYSLOG_INFO_D("=== REMOVE PROGRAM COMPLETE ===");
     return 0;
