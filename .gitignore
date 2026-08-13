@@ -2,3 +2,4 @@
 /app_data_sec.bpf.o
 /app_data_sec_merge_config
 /app_data_sec_watchdog
+/app_data_sec_unprotect
