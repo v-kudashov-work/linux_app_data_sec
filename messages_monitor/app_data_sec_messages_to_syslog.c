@@ -114,32 +114,6 @@ static char* get_process_comm(pid_t pid) {
     return comm;
 }
 
-// Функция для получения родительского PID
-// Функция для получения родительского PID (улучшенная)
-static pid_t get_parent_pid(pid_t pid) {
-    char proc_path[64];
-    FILE *fp;
-    pid_t ppid = -1;
-
-    snprintf(proc_path, sizeof(proc_path), "/proc/%d/stat", pid);
-
-    fp = fopen(proc_path, "r");
-    if (!fp) {
-        return -1;
-    }
-
-    // Формат: pid (comm) state ppid ...
-    int p;
-    char state;
-    char comm[256];
-    if (fscanf(fp, "%d %s %c %d", &p, comm, &state, &ppid) == 4) {
-        // Успешно
-    }
-
-    fclose(fp);
-    return ppid;
-}
-
 // Функция для получения информации о процессе (улучшенная)
 static bool get_process_info(pid_t pid, process_info_t *info) {
     if (!info || pid <= 0) {
@@ -176,69 +150,6 @@ static bool get_process_info(pid_t pid, process_info_t *info) {
     }
 
     return true;
-}
-
-// Функция для сбора полной цепочки процессов из системы
-static int collect_process_chain(pid_t pid, process_info_t *chain, int max_depth) {
-    if (!chain || max_depth <= 0 || pid <= 0) {
-        return 0;
-    }
-
-    int depth = 0;
-    pid_t current_pid = pid;
-    pid_t prev_pid = 0;
-    int max_iterations = max_depth * 2; // Защита от бесконечного цикла
-
-    // Собираем цепочку от текущего процесса до init
-    while (current_pid > 0 && depth < max_depth && max_iterations > 0) {
-        max_iterations--;
-
-        // Получаем информацию о текущем процессе
-        if (!get_process_info(current_pid, &chain[depth])) {
-            // Если не удалось получить информацию, пробуем продолжить
-            pid_t next_pid = get_parent_pid(current_pid);
-            if (next_pid > 0 && next_pid != current_pid) {
-                current_pid = next_pid;
-                continue;
-            }
-            break;
-        }
-
-        depth++;
-
-        // Получаем родительский PID
-        prev_pid = current_pid;
-        current_pid = get_parent_pid(current_pid);
-
-        // Проверяем на ошибки
-        if (current_pid == prev_pid || current_pid < 0) {
-            break;
-        }
-
-        // Если достигли init (PID 1), добавляем его и завершаем
-        if (current_pid == 1) {
-            if (depth < max_depth) {
-                if (get_process_info(1, &chain[depth])) {
-                    depth++;
-                }
-            }
-            break;
-        }
-
-        // Если текущий PID стал меньше 1, завершаем
-        if (current_pid < 1) {
-            break;
-        }
-    }
-
-    // Если цепочка пустая, но есть информация о текущем процессе
-    if (depth == 0 && pid > 0) {
-        if (get_process_info(pid, &chain[0])) {
-            depth = 1;
-        }
-    }
-
-    return depth;
 }
 
 // Функция для получения PID родительского процесса из /proc (альтернативная)
