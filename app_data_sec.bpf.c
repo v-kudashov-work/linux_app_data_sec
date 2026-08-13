@@ -784,7 +784,7 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
             // bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s COMM=%s\n",
             //            operation, pid, uid, exe_path, folder_inode, reason, comm);
 
-            bpf_printk("APP_DATA_SEC: %s BLOCKED_PID=%llu FOLDER_NAME=%s PARENT_NAME=%s, UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s",
+            bpf_printk("APP_DATA_SEC: %s BLOCKED_PID=%llu NAME=%s PARENT_NAME=%s, UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s",
                        operation, pid, uid, name, parent_name, exe_path, folder_inode, reason);
         }
         return -EPERM;
