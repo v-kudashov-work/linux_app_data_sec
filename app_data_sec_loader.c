@@ -120,6 +120,7 @@ static time_t config_mtime = 0;
 static int add_folder_to_entries(struct bpf_object *obj, struct protect_entry *new_entry);
 static int remove_folder_from_entries(struct bpf_object *obj, int entry_idx);
 static int remove_program_from_entry(struct bpf_object *obj, int entry_idx, int prog_idx);
+static int disable_program_from_ebpf(struct bpf_object *obj, int entry_idx, int prog_idx);
 static int clear_all_entries(struct bpf_object *obj);
 static int sync_config_to_entries(struct bpf_object *obj,
                                   struct protect_entry *temp_entries, int temp_count,
@@ -360,6 +361,51 @@ static int remove_program_from_entry(struct bpf_object *obj, int entry_idx, int 
     // }
 
     SYSLOG_INFO_D("=== REMOVE PROGRAM COMPLETE ===");
+    return 0;
+}
+
+static int disable_program_from_ebpf(struct bpf_object *obj, int entry_idx, int prog_idx) {
+    if (entry_idx < 0 || entry_idx >= entry_count) {
+        SYSLOG_ERR("Invalid entry index: %d", entry_idx);
+        return -1;
+    }
+
+    if (prog_idx < 0 || prog_idx >= entries[entry_idx].allowed_count) {
+        SYSLOG_ERR("Invalid program index: %d", prog_idx);
+        return -1;
+    }
+
+    __u64 folder_inode = entries[entry_idx].inode;
+    __u64 program_inode = entries[entry_idx].allowed_inodes[prog_idx];
+    char *path = entries[entry_idx].path;
+
+    SYSLOG_INFO_D("=== DISABLE PROGRAM ===");
+    SYSLOG_INFO_D("  Folder: %s (inode: %lu)", path, (unsigned long)folder_inode);
+    SYSLOG_INFO_D("  Program: %s (inode: %lu)",
+                  entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_inode);
+
+    // Удаляем из BPF
+    if (obj) {
+        struct bpf_map *map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
+        if (map) {
+            int fd = bpf_map__fd(map);
+            if (fd >= 0) {
+                __u64 key = (folder_inode << 32) | prog_idx;
+                if (bpf_map_delete_elem(fd, &key) < 0) {
+                    SYSLOG_ERR("  Failed to remove program from BPF");
+                } else {
+                    SYSLOG_INFO_D("  Program removed from BPF");
+                }
+            }
+        }
+    }
+
+    entries[entry_idx].allowed_inodes[prog_idx] = 0;
+
+    SYSLOG_INFO("Disble program from %s: %s (inode: %lu)",
+                path, entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_inode);
+
+    SYSLOG_INFO_D("=== DISABLE PROGRAM COMPLETE ===");
     return 0;
 }
 
@@ -611,6 +657,18 @@ static int sync_config_to_entries(struct bpf_object *obj,
                             break;
                         }
                     }
+
+                    if (!prog_found) {
+                        for (int m = 0; m < temp_entries[i].allowed_count; m++) {
+                            if (strcmp(entries[j].allowed_paths[k], temp_entries[i].allowed_paths[m]) == 0) {
+                                prog_found = 1;
+                                break;
+                            }
+                        }
+
+                        entries[j].allowed_inodes[k] = 0;
+                    }
+
                     if (!prog_found) {
                         SYSLOG_INFO_D("Removing program from %s: %s",
                                     entries[j].path, entries[j].allowed_paths[k]);
@@ -1040,8 +1098,9 @@ static int scan_all_entries(struct bpf_object *obj) {
 
             if (current_inode == 0 && entries[i].allowed_inodes[j] != 0) {
                 // Программа удалена
-                SYSLOG_INFO_D("  Program removed: %s", program_path);
-                remove_program_from_entry(obj, i, j);
+                SYSLOG_INFO_D("  Program disabling (not found): %s", program_path);
+                disable_program_from_ebpf(obj, i, j);
+
                 total_removed++;
             } else if (entries[i].allowed_inodes[j] != current_inode) {
                 // Программа пересоздана
