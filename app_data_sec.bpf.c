@@ -17,9 +17,9 @@
 // #define MAX_SCRIPTS_PER_FOLDER 3
 #define MAX_DEPTH_FOR_APP 8
 #define MAX_DEPTH_FOR_PATH 64
-#define MAX_NAME_LEN 32
+#define MAX_NAME_LEN_FOR_LOG 10
 #define MAX_LOG_PATH_LEN 128
-#define MAX_DEPTH_FOR_APP_LOG 4
+#define MAX_DEPTH_FOR_APP_LOG 3
 
 // СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
 struct protected_folder_config {
@@ -70,6 +70,7 @@ struct {
 
 // ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
+
 // Получение имени dentry (ИСПРАВЛЕНА - использует bpf_probe_read_kernel_str)
 static __always_inline void get_dentry_name(struct dentry *dentry, char *name, int size)
 {
@@ -118,72 +119,73 @@ static __always_inline void get_parent_name(struct dentry *dentry, char *name, i
 }
 
 // Сбор пути: имя файла + родительская директория (ИСПРАВЛЕННАЯ ВЕРСИЯ)
-static __always_inline void get_full_path(struct dentry *dentry, char *full_path, int size)
-{
-    if (!dentry || !full_path || size <= 0) {
-        if (full_path && size > 0) {
-            full_path[0] = '\0';
-        }
-        return;
-    }
+// static __always_inline void get_full_path(struct dentry *dentry, char *full_path, int size)
+// {
+//     if (!dentry || !full_path || size <= 0) {
+//         if (full_path && size > 0) {
+//             full_path[0] = '\0';
+//         }
+//         return;
+//     }
+//
+//     char name[MAX_NAME_LEN_FOR_LOG] = {};
+//     char parent_name[MAX_NAME_LEN_FOR_LOG] = {};
+//     int pos = 0;
+//
+//     // Получаем имя файла
+//     get_dentry_name(dentry, name, MAX_NAME_LEN_FOR_LOG);
+//
+//     // Получаем имя родителя
+//     get_parent_name(dentry, parent_name, MAX_NAME_LEN_FOR_LOG);
+//
+//     // Собираем путь: /parent/name
+//     if (parent_name[0] != '\0' && parent_name[0] != '/') {
+//         if (pos < size - 1) {
+//             full_path[pos] = '/';
+//             pos++;
+//         }
+//
+//         // Копируем имя родителя
+//         #pragma unroll
+//         for (int i = 0; i < MAX_NAME_LEN_FOR_LOG; i++) {
+//             if (parent_name[i] == '\0' || pos >= size - 1) {
+//                 break;
+//             }
+//             full_path[pos] = parent_name[i];
+//             pos++;
+//         }
+//     }
+//
+//     if (name[0] != '\0') {
+//         if (pos < size - 1) {
+//             full_path[pos] = '/';
+//             pos++;
+//         }
+//
+//         // Копируем имя файла
+//         #pragma unroll
+//         for (int i = 0; i < MAX_NAME_LEN_FOR_LOG; i++) {
+//             if (name[i] == '\0' || pos >= size - 1) {
+//                 break;
+//             }
+//             full_path[pos] = name[i];
+//             pos++;
+//         }
+//     }
+//
+//     // Гарантируем завершение строки
+//     if (pos < size) {
+//         full_path[pos] = '\0';
+//     } else {
+//         full_path[size - 1] = '\0';
+//     }
+//
+//     // Если путь пустой или слишком короткий, используем имя файла
+//     if (pos <= 1) {
+//         get_dentry_name(dentry, full_path, size);
+//     }
+// }
 
-    char name[MAX_NAME_LEN] = {};
-    char parent_name[MAX_NAME_LEN] = {};
-    int pos = 0;
-
-    // Получаем имя файла
-    get_dentry_name(dentry, name, MAX_NAME_LEN);
-
-    // Получаем имя родителя
-    get_parent_name(dentry, parent_name, MAX_NAME_LEN);
-
-    // Собираем путь: /parent/name
-    if (parent_name[0] != '\0' && parent_name[0] != '/') {
-        if (pos < size - 1) {
-            full_path[pos] = '/';
-            pos++;
-        }
-
-        // Копируем имя родителя
-        #pragma unroll
-        for (int i = 0; i < MAX_NAME_LEN; i++) {
-            if (parent_name[i] == '\0' || pos >= size - 1) {
-                break;
-            }
-            full_path[pos] = parent_name[i];
-            pos++;
-        }
-    }
-
-    if (name[0] != '\0') {
-        if (pos < size - 1) {
-            full_path[pos] = '/';
-            pos++;
-        }
-
-        // Копируем имя файла
-        #pragma unroll
-        for (int i = 0; i < MAX_NAME_LEN; i++) {
-            if (name[i] == '\0' || pos >= size - 1) {
-                break;
-            }
-            full_path[pos] = name[i];
-            pos++;
-        }
-    }
-
-    // Гарантируем завершение строки
-    if (pos < size) {
-        full_path[pos] = '\0';
-    } else {
-        full_path[size - 1] = '\0';
-    }
-
-    // Если путь пустой или слишком короткий, используем имя файла
-    if (pos <= 1) {
-        get_dentry_name(dentry, full_path, size);
-    }
-}
 
 // Получение inode процесса
 static __always_inline __u64 get_process_exe_inode(struct task_struct *task)
@@ -276,6 +278,146 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
 
     return 0;
 }
+
+// Получение пути к исполняемому файлу процесса для лога (с обходом дерева процессов)
+static __always_inline void get_exe_full_path_for_log(struct task_struct *task, char *path_buf, int size)
+{
+    if (!task || !path_buf || size <= 0) {
+        if (path_buf && size > 0) {
+            path_buf[0] = '\0';
+        }
+        return;
+    }
+
+    struct task_struct *current_task = task;
+    char exe_name[MAX_NAME_LEN_FOR_LOG] = {};
+    int pos = 0;
+
+    // Инициализируем буфер
+    if (size > 0) {
+        path_buf[0] = '\0';
+    }
+
+    #pragma unroll
+    for (int depth = 0; depth < MAX_DEPTH_FOR_APP_LOG; depth++) {
+        if (!current_task) {
+            break;
+        }
+
+        // Получаем mm_struct процесса
+        struct mm_struct *mm = NULL;
+        bpf_probe_read_kernel(&mm, sizeof(mm), &current_task->mm);
+        if (!mm) {
+            current_task = get_parent_task(current_task);
+            continue;
+        }
+
+        // Получаем exe_file из mm_struct
+        struct file *exe_file = NULL;
+        bpf_probe_read_kernel(&exe_file, sizeof(exe_file), &mm->exe_file);
+        if (!exe_file) {
+            current_task = get_parent_task(current_task);
+            continue;
+        }
+
+        // Получаем путь из exe_file
+        struct path exe_path = {};
+        bpf_probe_read_kernel(&exe_path, sizeof(exe_path), &exe_file->f_path);
+
+        struct dentry *dentry = exe_path.dentry;
+        if (dentry) {
+            // Получаем имя файла
+            get_dentry_name(dentry, exe_name, MAX_NAME_LEN_FOR_LOG);
+
+            if (exe_name[0] != '\0') {
+                // Добавляем в путь: name1 > name2 > name3
+                if (pos > 0 && pos < size - 1) {
+                    if (pos + 2 < size) {
+                        path_buf[pos] = ' ';
+                        path_buf[pos + 1] = '>';
+                        path_buf[pos + 2] = ' ';
+                        pos = pos + 3;
+                    }
+                }
+
+                // Копируем имя
+                for (int i = 0; i < MAX_NAME_LEN_FOR_LOG && exe_name[i] != '\0' && pos < size - 1; i++) {
+                    path_buf[pos] = exe_name[i];
+                    pos = pos + 1;
+                }
+            }
+        }
+
+        // Переходим к родительскому процессу
+        current_task = get_parent_task(current_task);
+    }
+
+    // Гарантируем завершение строки
+    if (pos < size) {
+        path_buf[pos] = '\0';
+    } else if (size > 0) {
+        path_buf[size - 1] = '\0';
+    }
+}
+
+// static __always_inline void get_exe_full_path_for_log(struct task_struct *task, char *path_buf, int size)
+// {
+//     if (!task || !path_buf || size <= 0) {
+//         if (path_buf && size > 0) {
+//             path_buf[0] = '\0';
+//         }
+//         return;
+//     }
+//
+//     struct task_struct *current_task = task;
+//
+//     #pragma unroll
+//     for (int depth = 0; depth < MAX_DEPTH_FOR_APP_LOG; depth++) {
+//         if (!current_task) {
+//             break;
+//         }
+//
+//         // Получаем mm_struct процесса
+//         struct mm_struct *mm = NULL;
+//         bpf_probe_read_kernel(&mm, sizeof(mm), &current_task->mm);
+//         if (!mm) {
+//             current_task = get_parent_task(current_task);
+//             continue;
+//         }
+//
+//         // Получаем exe_file из mm_struct
+//         struct file *exe_file = NULL;
+//         bpf_probe_read_kernel(&exe_file, sizeof(exe_file), &mm->exe_file);
+//         if (!exe_file) {
+//             current_task = get_parent_task(current_task);
+//             continue;
+//         }
+//
+//         // Получаем путь из exe_file
+//         struct path exe_path = {};
+//         bpf_probe_read_kernel(&exe_path, sizeof(exe_path), &exe_file->f_path);
+//
+//         struct dentry *dentry = exe_path.dentry;
+//         if (dentry) {
+//             // Получаем полный путь к исполняемому файлу
+//             get_full_path(dentry, path_buf, size);
+//
+//             // Проверяем, что путь не пустой
+//             if (path_buf[0] != '\0') {
+//                 return; // Нашли путь - выходим
+//             }
+//         }
+//
+//         // Переходим к родительскому процессу
+//         current_task = get_parent_task(current_task);
+//     }
+//
+//     // Если не удалось найти путь, оставляем пустую строку
+//     if (size > 0) {
+//         path_buf[0] = '\0';
+//     }
+// }
+
 
 // Проверка скрипта в командной строке (ИСПРАВЛЕНА)
 // static __always_inline int is_script_path_in_cmdline(const char *cmdline, const char *script_path)
@@ -558,8 +700,8 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
     if (uid == 0) {
         // if (log_level >= 2) {
         //     __u64 pid = bpf_get_current_pid_tgid() >> 32;
-        //     char name[MAX_NAME_LEN] = {};
-        //     get_dentry_name(dentry, name, MAX_NAME_LEN);
+        //     char name[MAX_NAME_LEN_FOR_LOG] = {};
+        //     get_dentry_name(dentry, name, MAX_NAME_LEN_FOR_LOG);
         //     bpf_printk("APP_DATA_SEC: %s ROOT_ALLOWED PID=%llu PATH=%s\n", operation, pid, name);
         // }
         return 0;
@@ -572,8 +714,8 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
 
     if (!is_protected) {
         // if (log_level >= 2) {
-        //     char name[MAX_NAME_LEN] = {};
-        //     get_dentry_name(dentry, name, MAX_NAME_LEN);
+        //     char name[MAX_NAME_LEN_FOR_LOG] = {};
+        //     get_dentry_name(dentry, name, MAX_NAME_LEN_FOR_LOG);
         //     bpf_printk("APP_DATA_SEC: %s PID=%llu UID=%llu PATH=%s NOT_PROTECTED - ALLOWED\n",
         //                operation, pid, uid, name);
         // }
@@ -584,8 +726,8 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
 
     if (allowed) {
         if (log_level >= 2) {
-            char name[MAX_NAME_LEN] = {};
-            get_dentry_name(dentry, name, MAX_NAME_LEN);
+            char name[MAX_NAME_LEN_FOR_LOG] = {};
+            get_dentry_name(dentry, name, MAX_NAME_LEN_FOR_LOG);
             bpf_printk("APP_DATA_SEC: %s ALLOWED PID=%llu UID=%llu PATH=%s REASON=allowed_process\n",
                        operation, pid, uid, name);
         }
@@ -619,26 +761,39 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
 
     if (blocked) {
         if (log_level >= 1) {
-            char name[MAX_NAME_LEN] = {};
-            char parent_name[MAX_NAME_LEN] = {};
-            char full_path[MAX_LOG_PATH_LEN] = {};
-            char comm[MAX_LOG_PATH_LEN] = {};
+            char name[MAX_NAME_LEN_FOR_LOG] = {};
+            char parent_name[MAX_NAME_LEN_FOR_LOG] = {};
+            // char full_path[MAX_LOG_PATH_LEN] = {};
+            // char comm[MAX_LOG_PATH_LEN] = {};
+            char exe_path[MAX_LOG_PATH_LEN] = {};
 
-            // Получаем полный путь
-            get_full_path(dentry, full_path, MAX_LOG_PATH_LEN);
+            // // Получаем полный путь
+            // get_full_path(dentry, full_path, MAX_LOG_PATH_LEN);
 
-            get_dentry_name(dentry, name, MAX_NAME_LEN);
-            get_parent_name(dentry, parent_name, MAX_NAME_LEN);
-            bpf_get_current_comm(&comm, sizeof(comm));
+            struct task_struct *current_task = (struct task_struct *)bpf_get_current_task();
+            if (current_task) {
+                // Получаем путь к исполняемому файлу процесса
+                get_exe_full_path_for_log(current_task, exe_path, MAX_LOG_PATH_LEN);
+            }
 
-            bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu FULL_PATH=%s PARENT=%s FOLDER_INODE=%llu REASON=%s COMM=%s DEPTH=%d\n",
-                       operation, pid, uid, full_path, parent_name, folder_inode, reason, comm, MAX_DEPTH_FOR_APP_LOG);
+            get_dentry_name(dentry, name, MAX_NAME_LEN_FOR_LOG);
+            get_parent_name(dentry, parent_name, MAX_NAME_LEN_FOR_LOG);
+            // bpf_get_current_comm(&comm, sizeof(comm));
+
+            // bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu TARGET=%s EXE=%s FOLDER_INODE=%llu REASON=%s COMM=%s\n",
+            //            operation, pid, uid, full_path, exe_path, folder_inode, reason, comm);
+
+            // bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s COMM=%s\n",
+            //            operation, pid, uid, exe_path, folder_inode, reason, comm);
+
+            bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s",
+                       operation, pid, uid, exe_path, folder_inode, reason);
         }
         return -EPERM;
     } else {
         if (log_level >= 2) {
-            char name[MAX_NAME_LEN] = {};
-            get_dentry_name(dentry, name, MAX_NAME_LEN);
+            char name[MAX_NAME_LEN_FOR_LOG] = {};
+            get_dentry_name(dentry, name, MAX_NAME_LEN_FOR_LOG);
             bpf_printk("APP_DATA_SEC: %s ALLOWED PID=%llu UID=%llu PATH=%s REASON=%s\n",
                        operation, pid, uid, name, reason);
         }
