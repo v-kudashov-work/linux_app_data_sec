@@ -105,8 +105,6 @@ struct protect_template {
 
 static struct protect_entry entries[MAX_PATHS];
 static struct protect_template templates[MAX_PATHS];
-static struct protect_entry temp_entries[MAX_PATHS];
-static struct protect_template temp_templates[MAX_PATHS];
 
 static int entry_count = 0;
 static int template_count = 0;
@@ -125,8 +123,8 @@ static int sync_config_to_entries(struct bpf_object *obj,
                                   struct protect_entry *temp_entries, int temp_count,
                                   struct protect_template *temp_templates, int temp_template_count,
                                   int temp_config_enabled);
-static int parse_config_to_temp(struct protect_entry *temp_entries, int *temp_count,
-                                struct protect_template *temp_templates, int *temp_template_count,
+static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_count,
+                                struct protect_template **temp_templates, int *temp_template_count,
                                 int *temp_config_enabled);
 static int load_single_entry(struct bpf_object *obj, struct protect_entry *entry);
 static int scan_templates_and_load(struct bpf_object *obj);
@@ -685,14 +683,35 @@ static int sync_config_to_entries(struct bpf_object *obj,
 // ПАРСИНГ КОНФИГА ВО ВРЕМЕННЫЙ МАССИВ
 // ============================================================================
 
-static int parse_config_to_temp(struct protect_entry *temp_entries, int *temp_count,
-                                struct protect_template *temp_templates, int *temp_template_count,
+static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_count,
+                                struct protect_template **temp_templates, int *temp_template_count,
                                 int *temp_config_enabled) {
+
+
     DEBUG_PRINT("parse_config_to_temp: start");
+
+    // Выделяем память
+    *temp_entries = calloc(MAX_PATHS, sizeof(struct protect_entry));
+    if (!*temp_entries) {
+        SYSLOG_ERR("Failed to allocate memory for temp_entries");
+        return -1;
+    }
+
+    *temp_templates = calloc(MAX_PATHS, sizeof(struct protect_template));
+    if (!*temp_templates) {
+        SYSLOG_ERR("Failed to allocate memory for temp_templates");
+        free(*temp_entries);
+        *temp_entries = NULL;
+        return -1;
+    }
 
     FILE *fp = fopen(CONFIG_PATH, "r");
     if (!fp) {
         SYSLOG_WARN("Config file %s not found", CONFIG_PATH);
+        free(*temp_entries);
+        free(*temp_templates);
+        *temp_entries = NULL;
+        *temp_templates = NULL;
         return -1;
     }
 
@@ -807,7 +826,7 @@ static int parse_config_to_temp(struct protect_entry *temp_entries, int *temp_co
             }
 
             if (raw_path[0] == '~') {
-                struct protect_template *tmpl = &temp_templates[new_template_count];
+                struct protect_template *tmpl = &(*temp_templates)[new_template_count];
                 safe_strcpy(tmpl->pattern, raw_path, sizeof(tmpl->pattern));
                 const char *subpath = raw_path + 1;
                 safe_strcpy(tmpl->subpath, subpath, sizeof(tmpl->subpath));
@@ -826,7 +845,7 @@ static int parse_config_to_temp(struct protect_entry *temp_entries, int *temp_co
                 int found_count = scan_home_for_template(tmpl->subpath, found_paths, MAX_PATHS);
 
                 for (int i = 0; i < found_count && new_entry_count < MAX_PATHS; i++) {
-                    struct protect_entry *entry = &temp_entries[new_entry_count];
+                    struct protect_entry *entry = &(*temp_entries)[new_entry_count];
                     safe_strcpy(entry->path, found_paths[i], sizeof(entry->path));
 
                     entry->inode = get_inode_from_path(entry->path);
@@ -850,7 +869,7 @@ static int parse_config_to_temp(struct protect_entry *temp_entries, int *temp_co
                     free(found_paths[i]);
                 }
             } else {
-                struct protect_entry *entry = &temp_entries[new_entry_count];
+                struct protect_entry *entry = &(*temp_entries)[new_entry_count];
                 safe_strcpy(entry->path, raw_path, sizeof(entry->path));
 
                 entry->inode = get_inode_from_path(entry->path);
@@ -1212,14 +1231,14 @@ int main(int argc, char **argv) {
 
     // Загружаем конфиг во временный массив
     DEBUG_PRINT("Loading config to temp...");
+    struct protect_entry *temp_entries = NULL;
+    struct protect_template *temp_templates = NULL;
+
     int temp_count = 0;
     int temp_template_count = 0;
     int temp_config_enabled = 0;
 
-    memset(temp_entries, 0, sizeof(temp_entries));
-    memset(temp_templates, 0, sizeof(temp_templates));
-
-    if (parse_config_to_temp(temp_entries, &temp_count, temp_templates, &temp_template_count, &temp_config_enabled) != 0) {
+    if (parse_config_to_temp(&temp_entries, &temp_count, &temp_templates, &temp_template_count, &temp_config_enabled) != 0) {
         SYSLOG_ERR("Failed to parse config");
         closelog();
         return 1;
@@ -1285,6 +1304,12 @@ int main(int argc, char **argv) {
     );
     DEBUG_PRINT("Sync complete");
 
+    // Освобождаем временную память
+    free(temp_entries);
+    free(temp_templates);
+    temp_entries = NULL;
+    temp_templates = NULL;
+
     struct stat st;
     if (stat(CONFIG_PATH, &st) == 0) {
         config_mtime = st.st_mtime;
@@ -1335,12 +1360,39 @@ int main(int argc, char **argv) {
         if (config_changed()) {
             SYSLOG_INFO("Config changed! Reloading...");
 
-            if (parse_config_to_temp(temp_entries, &temp_count, temp_templates, &temp_template_count, &temp_config_enabled) != 0) {
+            struct protect_entry *new_temp_entries = NULL;
+            struct protect_template *new_temp_templates = NULL;
+            int new_temp_count = 0;
+            int new_temp_template_count = 0;
+            int new_temp_config_enabled = 0;
+
+            if (parse_config_to_temp(&new_temp_entries, &new_temp_count,
+                &new_temp_templates, &new_temp_template_count,
+                &new_temp_config_enabled) != 0) {
                 SYSLOG_ERR("Failed to parse config after change");
                 continue;
             }
 
-            sync_config_to_entries(bpf_obj, temp_entries, temp_count, temp_templates, temp_template_count, temp_config_enabled);
+            sync_config_to_entries(
+                bpf_obj,
+                new_temp_entries,
+                new_temp_count,
+                new_temp_templates,
+                new_temp_template_count,
+                new_temp_config_enabled
+            );
+
+            // Освобождаем временную память
+            free(new_temp_entries);
+            free(new_temp_templates);
+            new_temp_entries = NULL;
+            new_temp_templates = NULL;
+
+            struct stat st;
+            if (stat(CONFIG_PATH, &st) == 0) {
+                config_mtime = st.st_mtime;
+            }
+
             last_folder_check = now;
         }
 
