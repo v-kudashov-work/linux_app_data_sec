@@ -504,10 +504,10 @@ else
 fi
 
 # ============================================================================
-# КОМПИЛЯЦИЯ APP_DATA_SEC_MESSAGES_TO_SYSLOG (ОПЦИОНАЛЬНО)
+# КОМПИЛЯЦИЯ APP_DATA_SEC_MESSAGES_TO_SYSLOG (ВСЕГДА)
 # ============================================================================
 
-echo -e "\n${BLUE}[INFO]${NC} Checking for app_data_sec_messages_to_syslog..."
+echo -e "\n${BLUE}[INFO]${NC} Building app_data_sec_messages_to_syslog..."
 
 # Поиск исходника messages_to_syslog
 MESSAGES_SRC=""
@@ -522,42 +522,36 @@ fi
 INSTALL_MESSAGES=0
 if [ -n "$MESSAGES_SRC" ] && [ -f "$MESSAGES_SRC" ]; then
     echo -e "${BLUE}[INFO]${NC} Found: $MESSAGES_SRC"
-    echo ""
-    echo -e "${YELLOW}[INFO]${NC} app_data_sec_messages_to_syslog is a monitoring tool"
-    echo "that reads trace_pipe and forwards BPF logs to syslog."
-    echo ""
-    read -p "Compile and install app_data_sec_messages_to_syslog? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${BLUE}[INFO]${NC} Compiling messages_to_syslog..."
-        gcc -Wall -O2 -o app_data_sec_messages_to_syslog "$MESSAGES_SRC" 2>&1
+    echo -e "${BLUE}[INFO]${NC} Compiling messages_to_syslog..."
+    gcc -Wall -O2 -o app_data_sec_messages_to_syslog "$MESSAGES_SRC" 2>&1
 
-        if [ -f "app_data_sec_messages_to_syslog" ]; then
-            echo -e "${GREEN}[OK]${NC} messages_to_syslog compiled"
-            INSTALL_MESSAGES=1
+    if [ -f "app_data_sec_messages_to_syslog" ]; then
+        echo -e "${GREEN}[OK]${NC} messages_to_syslog compiled"
+        INSTALL_MESSAGES=1
 
-            echo ""
-            echo -e "${YELLOW}[INFO]${NC} The service will read from /sys/kernel/debug/tracing/trace_pipe"
-            echo "and forward BPF messages to syslog with process chain information."
-            echo ""
-            read -p "Enable app_data_sec_messages service to start automatically? (y/n) " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                ENABLE_MESSAGES_SERVICE=1
-            else
-                ENABLE_MESSAGES_SERVICE=0
-                echo -e "${YELLOW}[INFO]${NC} Service will be installed but not enabled"
-                echo "To enable later: systemctl enable --now app_data_sec_messages"
-            fi
+        echo ""
+        echo -e "${YELLOW}[INFO]${NC} app_data_sec_messages_to_syslog is a monitoring tool"
+        echo "that reads trace_pipe and forwards BPF logs to syslog."
+        echo ""
+        echo -e "${YELLOW}[INFO]${NC} The service will read from /sys/kernel/debug/tracing/trace_pipe"
+        echo "and forward BPF messages to syslog with process chain information."
+        echo ""
+        read -p "Enable app_data_sec_messages service to start automatically? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            ENABLE_MESSAGES_SERVICE=1
+            echo -e "${GREEN}[OK]${NC} Service will be enabled"
         else
-            echo -e "${RED}[ERROR]${NC} messages_to_syslog compilation failed!"
-            INSTALL_MESSAGES=0
+            ENABLE_MESSAGES_SERVICE=0
+            echo -e "${YELLOW}[INFO]${NC} Service will be installed but NOT enabled"
+            echo "To enable later: sudo systemctl enable --now app_data_sec_messages"
         fi
     else
-        echo -e "${YELLOW}[INFO]${NC} Skipping messages_to_syslog"
+        echo -e "${RED}[ERROR]${NC} messages_to_syslog compilation failed!"
+        INSTALL_MESSAGES=0
     fi
 else
-    echo -e "${YELLOW}[INFO]${NC} app_data_sec_messages_to_syslog.c not found, skipping"
+    echo -e "${YELLOW}[WARNING]${NC} app_data_sec_messages_to_syslog.c not found, skipping"
 fi
 
 # ============================================================================
@@ -597,11 +591,15 @@ if [ -f "app_data_sec_watchdog" ]; then
     echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_watchdog"
 fi
 
-# Устанавливаем messages_to_syslog
+# Устанавливаем messages_to_syslog (ВСЕГДА, если скомпилирован)
 if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "app_data_sec_messages_to_syslog" ]; then
     cp -f app_data_sec_messages_to_syslog "$INSTALL_PATH/"
     chmod 755 "$INSTALL_PATH/app_data_sec_messages_to_syslog"
     echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_messages_to_syslog"
+
+    # Создаём символическую ссылку
+    ln -sf "$INSTALL_PATH/app_data_sec_messages_to_syslog" /usr/bin/app_data_sec_messages_to_syslog 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_messages_to_syslog"
 fi
 
 # Устанавливаем BPF объект
@@ -859,7 +857,7 @@ EOF
         systemctl enable app_data_sec_messages 2>/dev/null || true
         echo -e "${GREEN}[OK]${NC} Service enabled: app_data_sec_messages"
     else
-        echo -e "${YELLOW}[INFO]${NC} Service installed but not enabled"
+        echo -e "${YELLOW}[INFO]${NC} Service installed but NOT enabled"
         echo "To enable: sudo systemctl enable --now app_data_sec_messages"
     fi
 fi
@@ -906,7 +904,12 @@ systemctl status app_data_sec_watchdog --no-pager || true
 if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
     echo ""
     echo -e "${BLUE}app_data_sec_messages:${NC}"
-    systemctl status app_data_sec_messages --no-pager || true
+    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
+        systemctl status app_data_sec_messages --no-pager || true
+    else
+        echo -e "  ${YELLOW}Service installed but not enabled${NC}"
+        echo "  To enable: sudo systemctl enable --now app_data_sec_messages"
+    fi
 fi
 
 # ============================================================================
