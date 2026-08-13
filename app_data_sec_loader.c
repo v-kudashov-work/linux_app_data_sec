@@ -19,6 +19,8 @@
 // ============================================================================
 // НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ
 // ============================================================================
+#define VERSION "0.2.0"
+#define VERSION_DATE "2026-08-13"
 
 #define CONFIG_PATH "/etc/app_data_sec.conf"
 #define MAX_LINE_LEN 1024
@@ -1199,6 +1201,7 @@ int main(int argc, char **argv) {
 
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
     SYSLOG_INFO("APP DATA SEC LOADER STARTING (PID: %d)", getpid());
+    SYSLOG_INFO("APP DATA SEC LOADER v%s (built: %s)", VERSION, VERSION_DATE);
 
     DEBUG_PRINT("Parsing command line arguments...");
 
@@ -1223,7 +1226,10 @@ int main(int argc, char **argv) {
             print_usage(argv[0]);
             closelog();
             return 0;
-        } else {
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+            return 0;
+        }
+        else {
             SYSLOG_ERR("Unknown option: %s", argv[i]);
             print_usage(argv[0]);
             closelog();
