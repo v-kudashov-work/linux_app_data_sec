@@ -1,123 +1,170 @@
-# linux_app_data_sec
+# app_data_sec — Защита пользовательских данных в Linux с помощью eBPF
 
-v 0.2.0
+**app_data_sec** — это система защиты пользовательских данных от несанкционированного доступа с использованием технологии eBPF (Extended Berkeley Packet Filter) и LSM (Linux Security Module). Решение обеспечивает контроль доступа к защищённым папкам на уровне ядра, блокируя операции чтения, записи, удаления и переименования для процессов, не входящих в список разрешённых.
 
-Ограничения
-Для модуля eBPF
-#define MAX_PROTECTED_PATHS 5000   - максимальное количество защищаемых папок
-#define MAX_ALLOWED_PROGRAMS 20  - сколько исполняемых файлов возможно для каждой папки из MAX_PROTECTED_PATHS
-#define MAX_DEPTH_FOR_APP 8 - максимальный уровень вложенности путей исполняемых файлов
-#define MAX_DEPTH_FOR_PATH 64 - максимальный уровень вложенности путей защищаемых папко
-#define MAX_NAME_LEN 32 - только для логирования, максимальная длинна имени файла
-#define MAX_LOG_PATH_LEN 128 - максимальная длинна пути для логирования команды запуска исполняемого файла
+# Версия 0.2.0
 
-Для loader
-#define MAX_LINE_LEN 1024 - максимальная длина строки в файле конфигурации
-#define MAX_PATHS 5000  - максимальное количество защищаемых папок
-#define MAX_ALLOWED 20 - сколько исполняемых файлов возможно для каждой папки из MAX_PROTECTED_PATHS
-#define MAX_PATH_LEN 256 - максимальная длинна пути к файлу или папке
-#define CHECK_INTERVAL 5 - период проверки конфига на наличие изменений
-#define RETRY_INTERVAL 15 - период проверки файлов на доступность или удаление
+## Основные возможности
 
-Каждые 2 секунды:
-  └── Проверяем, не изменился ли конфиг
-      └── Если изменился → перезагружаем всё
+- 🔒 **Защита папок** — блокировка доступа к указанным директориям для всех процессов, кроме разрешённых
+- 📋 **Белый список приложений** — возможность указать программы, которым разрешён доступ к защищённым папкам
+- 👤 **Поддержка домашних директорий пользователей** — автоматическое применение правил ко всем пользователям (`~/.folder`)
+- 🔄 **Динамическая перезагрузка** — автоматическое применение изменений в конфигурации без перезапуска системы
+- 📊 **Детальное логирование** — запись всех попыток доступа с указанием PID, пути, inode и дерева процессов
+- 🛡️ **Watchdog** — мониторинг состояния сервиса и уведомление пользователей при сбоях
+- 🏃 **Высокая производительность** — работа на уровне ядра с минимальными накладными расходами
 
-Каждые 15 секунд:
-  └── Проверяем новые папки
-      └── Если появилась → загружаем в BPF
-      └── Если удалена → удаляем из BPF
-      └── Если пересоздана → обновляем inode
+## Архитектура
+┌─────────────────────────────────────────────────────────────┐
+│ Пользовательское пространство │
+├─────────────────────────────────────────────────────────────┤
+│ app_data_sec_loader │ app_data_sec_watchdog │
+│ (управление BPF) │ (мониторинг сервиса) │
+├─────────────────────────┼─────────────────────────────────┤
+│ app_data_sec_merge │ app_data_sec_unprotect │
+│ (слияние конфигов) │ (удаление защиты) │
+├─────────────────────────┼─────────────────────────────────┤
+│ app_data_sec_messages │ /etc/app_data_sec.conf │
+│ (логирование в syslog) │ (конфигурация) │
+└─────────────────────────┴─────────────────────────────────┘
+│
+▼
+┌─────────────────────────────────────────────────────────────┐
+│ Ядро Linux (eBPF) │
+├─────────────────────────────────────────────────────────────┤
+│ LSM хуки: │
+│ - inode_getattr - file_open │
+│ - path_unlink - path_rmdir │
+│ - path_mkdir - path_rename │
+│ - inode_create - inode_mkdir │
+├─────────────────────────────────────────────────────────────┤
+│ eBPF карты: │
+│ - folder_config_map - конфигурация папок │
+│ - folder_allowed_programs_map - разрешённые программы │
+│ - log_level_map - уровень логирования │
+└─────────────────────────────────────────────────────────────┘
+
+## Требования к системе
+
+- **Ядро Linux**: версия 5.8+ с поддержкой BPF LSM и BTF (CO-RE)
+- **Архитектура**: x86_64
+- **Дистрибутивы**: ALT Linux (Проверялось на версии К), В разработке: Debian, Ubuntu, RHEL/CentOS/Fedora
+- **Зависимости**: libbpf, libelf, zlib, clang, bpftool
+
+## Быстрая установка
+
+```bash
+# Клонирование репозитория
+git clone https://gitlab.com/v.kudashov.work/linux_app_data_sec.git
+cd linux_app_data_sec
+
+# Запуск установки
+sudo ./install_app_data_sec.sh
+
+Установщик автоматически:
+
+    Проверит и установит необходимые зависимости
+
+    Скомпилирует BPF-программу и все утилиты
+
+    Настроит systemd-сервисы
+
+    Создаст конфигурационный файл
+    
+Конфигурация
+  В папке /configs/ содержатся конфигурации для некоторых популярных программ. Импортировать всё можно командой:
+  su -
+  app_data_sec_merge_config ./configs/
+
+Формат конфигурации:
+Конфигурационный файл: /etc/app_data_sec.conf
+
+# enable = yes|no — включает или отключает защиту
+enable = yes
+
+# Защита папки и список разрешённых программ
+protect /home/user/.secret_folder /bin/konsole /usr/bin/bash
+protect ~/.test_app /bin/my_app
+  
+Формат записи protect
+protect <путь> [разрешённая_программа1] [разрешённая_программа2] ..
+
+    <путь> — абсолютный путь к защищаемой папке или ~ для домашней директории
+
+    разрешённая_программа — абсолютный путь к программе, которая может обходить защиту
+    
+Управление сервисами
+# Статус сервисов
+sudo systemctl status app_data_sec_loader
+sudo systemctl status app_data_sec_watchdog
+
+# Запуск/остановка
+sudo systemctl start app_data_sec_loader
+sudo systemctl stop app_data_sec_loader
+
+# Просмотр логов
+sudo journalctl -u app_data_sec_loader -f
+sudo journalctl -u app_data_sec_watchdog -f
+
+# Перезагрузка конфигурации (в основном не нужно, перезагрузка производится автоматически)
+sudo systemctl restart app_data_sec_loader
+  
+Дополнительные утилиты
+Слияние конфигураций
+# Слияние одного файла
+sudo app_data_sec_merge_config /tmp/new.conf
+
+# Слияние всех .conf файлов из директории
+sudo app_data_sec_merge_config /etc/app_data_sec.d/
+
+Удаление защиты
+# Создание файла со списком для удаления
+echo "protect /home/user/.secret_folder" > /tmp/remove.conf
+
+# Удаление
+sudo app_data_sec_unprotect /tmp/remove.conf
+
+# Просмотр всех защищённых папок
+sudo app_data_sec_unprotect -l
+
+Логирование
+Уровни логирования (параметр -l при запуске app_data_sec_loader):
+
+    0 — логирование отключено
+
+    1 — только заблокированные попытки доступа (по умолчанию)
+
+    2 — все попытки доступа (разрешённые и заблокированные)
+
+Для просмотра логов в syslog используется сервис app_data_sec_messages
+sudo journalctl -u app_data_sec_messages -f
+
+Чтобы перенаправить вывод ePbf модуля в системный лог, можно запустить app_data_sec_messages_to_syslog из суперпользователя:
+su -
+app_data_sec_messages_to_syslog
+
+Watchdog
+Watchdog (app_data_sec_watchdog) отслеживает состояние основного сервиса. При его остановке на рабочем столе пользователей создаётся файл app_data_sec_errors.txt с инструкцией по восстановлению.
+
+Удаление
+sudo ./uninstall_app_data_sec.sh
+
+Безопасность
+    Работа на уровне ядра — защита от обхода на пользовательском уровне
+
+    Проверка дерева процессов — блокировка доступа через родительские процессы
+
+    Поддержка root — доступ root не ограничивается (UID=0)
+
+    Защита от подмены — использование inode для идентификации файлов
+    
+Статус
+Альфа-версия. Написано с использованием средств автоматической генерации кода и последующим рефакторингом. Могут быть ошибки, основное внимание уделено самому модулю eBpf и его загрузчику. 
+    
+Лицензия
+GNU General Public License v2.0
+
+Автор
+Владимир Кудашов
 
 
-
-
-## Getting started
-
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://gitlab.com/v.kudashov.work/linux_app_data_sec.git
-git branch -M main
-git push -uf origin main
-```
-
-## Integrate with your tools
-
-* [Set up project integrations](https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/settings/integrations)
-
-## Collaborate with your team
-
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
