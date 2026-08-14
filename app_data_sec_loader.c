@@ -29,7 +29,6 @@
 #define MAX_PATH_LEN 256
 #define CHECK_INTERVAL 5
 #define RETRY_INTERVAL 15
-#define MAX_DEPTH 64
 
 // ============================================================================
 // ОТЛАДКА
