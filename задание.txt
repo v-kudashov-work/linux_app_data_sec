@@ -27,3 +27,5 @@ Todo:
 * Исправить ошибку в логе 13.08.2026 11:26	systemd	/etc/systemd/system/app_data_sec_watchdog.service:44: Failed to parse address family, ignoring: false
 * уменьшить доступы сервисов, если возможно
 * после перезапуска папки пользователя не монтируются сразу и если нет шаблона ~/ в пути к папке, она не пересканируется и не добавляется в защищённые.
+* добавить проверку на запуск из питон скрипта - не получится, нет сведений о пути к скрипту внутре eBpf. Как вариант оборачивать запуск скриптов в исполняемый файл, нужно попробовать
+         python3-83005   [000] ...11 50719.499938: bpf_trace_printk: APP_DATA_SEC: GETATTR BLOCKED PID=83005 UID=1000 PATH=data PARENT=waydroid FOLDER_INODE=5256004 REASON=content_blocked COMM=python3 | CHAIN: [1] systemd (PID:1, EXE:/usr/lib/systemd/systemd) > [2] systemd (PID:4448, EXE:/usr/lib/systemd/systemd) > [3] python3 (PID:83005, EXE:/usr/bin/python3.12) | CURRENT: PID=83005 EXE=/usr/bin/python3.12 CMDLINE=python3 /usr/bin/waydroid
