@@ -57,6 +57,7 @@
 # Клонирование репозитория
 git clone https://gitlab.com/v.kudashov.work/linux_app_data_sec.git
 cd linux_app_data_sec
+```
 
 # Запуск установки
 sudo ./install_app_data_sec.sh
