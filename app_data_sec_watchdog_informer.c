@@ -1,4 +1,4 @@
-// app_data_sec_watchdog_zenity.c - Создает файл на рабочем столе при ошибках
+// app_data_sec_watchdog_informer.c - Создает файл на рабочем столе при ошибках
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
