@@ -159,10 +159,8 @@ select_app_configs() {
     echo "  (Configuration files from ./configs/ directory)"
     echo ""
     echo "  This will add protection rules for common applications like:"
-    echo "  - SSH keys (~/.ssh)"
     echo "  - Browser profiles (Firefox, Chrome, etc.)"
     echo "  - Email clients (Thunderbird, etc.)"
-    echo "  - Development tools (Git, etc.)"
     echo "  - And more..."
     echo ""
     read -p "Install application configurations? (y/N) " -n 1 -r
