@@ -14,7 +14,9 @@ WATCHDOG_SRC = app_data_sec_watchdog_informer.c
 
 # BPF компиляция
 CLANG = clang
-BPF_CFLAGS = -g -O2 -target bpf -D__TARGET_ARCH_x86
+BPF_CFLAGS = -g -O2 -target bpf -D__TARGET_ARCH_x86 \
+             -mllvm -bpf-stack-size=1024
+#              -fno-unroll-loops
 BPF_SRC = app_data_sec.bpf.c
 BPF_OBJ = app_data_sec.bpf.o
 
