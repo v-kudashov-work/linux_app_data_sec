@@ -28,13 +28,13 @@ fi
 echo -e "${BLUE}[INFO]${NC} Compiling watchdog..."
 
 # Проверяем наличие исходника
-if [ ! -f "app_data_sec_watchdog_zenity.c" ]; then
-    echo -e "${RED}[ERROR]${NC} Source file app_data_sec_watchdog_zenity.c not found!"
+if [ ! -f "app_data_sec_watchdog_informer.c" ]; then
+    echo -e "${RED}[ERROR]${NC} Source file app_data_sec_watchdog_informer.c not found!"
     exit 1
 fi
 
 # Компилируем
-gcc -Wall -O2 -o app_data_sec_watchdog app_data_sec_watchdog_zenity.c -lm 2>&1
+gcc -Wall -O2 -o app_data_sec_watchdog app_data_sec_watchdog_informer.c -lm 2>&1
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}[ERROR]${NC} Compilation failed!"
