@@ -13,7 +13,7 @@ NC='\033[0m'
 # Конфигурация
 INSTALL_PATH="/usr/local/bin"
 CONFIG_PATH="/etc/app_data_sec.conf"
-CONFIGS_DIR="/etc/app_data_sec.d"
+CONFIGS_DIR="/etc/app_data_sec.d/configs"
 BPF_OBJ_PATH="/usr/local/lib/app_data_sec"
 LOG_PATH="/var/log"
 SERVICE_DIR="/etc/systemd/system"
