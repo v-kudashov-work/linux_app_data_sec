@@ -29,6 +29,9 @@
 #define MAX_USERS 100
 #define MAX_PATH_LEN 4096
 
+#define MAX_LOG_SIZE (25 * 1024 * 1024)  // 25 МБ
+#define KEEP_FRACTION 2                   // Оставляем 1/2 файла
+
 // ============================================================================
 // ЛОГИРОВАНИЕ
 // ============================================================================
@@ -225,8 +228,57 @@ static int find_desktop_directory(const char *home, char *desktop_path, size_t s
     return 0;
 }
 
+
 // ============================================================================
-// ЗАПИСЬ В ФАЙЛ НА РАБОЧЕМ СТОЛЕ (без смены владельца)
+// РОТАЦИЯ ЛОГ-ФАЙЛА (ОБРЕЗКА ДО 25МБ)
+// ============================================================================
+
+static void rotate_log_file(const char *file_path) {
+    struct stat st;
+    if (stat(file_path, &st) != 0) return;
+    if (st.st_size < MAX_LOG_SIZE) return;
+
+    log_message(LOG_INFO, "Rotating log file (size: %ld bytes)", st.st_size);
+
+    // Безопасное формирование пути с проверкой длины
+    char temp_path[PATH_MAX];
+    int len = snprintf(temp_path, sizeof(temp_path), "%s.tmp", file_path);
+
+    // Проверяем, что путь поместился в буфер
+    if (len < 0 || (size_t)len >= sizeof(temp_path)) {
+        log_message(LOG_WARNING, "Temp path too long for: %s", file_path);
+        return;
+    }
+
+    // Используем tail для сохранения последних 50% строк
+    char cmd[PATH_MAX + 100];
+    // Используем более безопасный подход: читаем файл построчно
+    // или используем приблизительное количество строк
+    long approx_lines = st.st_size / 80;  // Приблизительно строк в файле
+    long keep_lines = approx_lines / 2;    // Оставляем половину
+
+    if (keep_lines < 1) keep_lines = 1;
+
+    // Формируем команду с проверкой длины
+    len = snprintf(cmd, sizeof(cmd),
+                   "tail -n +%ld \"%s\" > \"%s\" 2>/dev/null && mv \"%s\" \"%s\"",
+                   keep_lines, file_path, temp_path, temp_path, file_path);
+
+    if (len < 0 || (size_t)len >= sizeof(cmd)) {
+        log_message(LOG_WARNING, "Command too long for: %s", file_path);
+        return;
+    }
+
+    int result = system(cmd);
+    if (result == 0) {
+        log_message(LOG_INFO, "Log file rotated successfully");
+    } else {
+        log_message(LOG_WARNING, "Log file rotation failed (exit code: %d)", result);
+    }
+}
+
+// ============================================================================
+// ЗАПИСЬ В ФАЙЛ НА РАБОЧЕМ СТОЛЕ (С ДОБАВЛЕНИЕМ В КОНЕЦ)
 // ============================================================================
 
 static void write_error_to_desktop(const char *message) {
@@ -260,45 +312,49 @@ static void write_error_to_desktop(const char *message) {
             continue;
         }
 
+        // Проверяем размер файла и ротируем при необходимости
+        rotate_log_file(file_path);
+
         // Проверяем, существует ли уже файл
         struct stat st;
-        if (stat(file_path, &st) == 0) {
-            log_message(LOG_DEBUG, "Error file already exists: %s", file_path);
-            continue;
-        }
+        int file_exists = (stat(file_path, &st) == 0);
 
-        // Получаем владельца домашней директории (только для информации)
-        if (stat(homes[i], &st) != 0) {
-            log_message(LOG_WARNING, "Cannot stat home directory: %s", homes[i]);
-            continue;
-        }
-
-        // Создаем файл напрямую от root (без смены владельца)
-        FILE *fp = fopen(file_path, "w");
+        // Открываем файл для добавления (a = append)
+        FILE *fp = fopen(file_path, "a");
         if (!fp) {
-            log_message(LOG_ERR, "Failed to create error file: %s", file_path);
+            log_message(LOG_ERR, "Failed to open error file: %s", file_path);
             continue;
         }
 
-        fprintf(fp, "⚠️ APP DATA SEC ERROR\n");
-        fprintf(fp, "========================================\n");
+        // Если файл только что создан, добавляем заголовок
+        if (!file_exists) {
+            fprintf(fp, "⚠️ APP DATA SEC ERROR LOG\n");
+            fprintf(fp, "========================================\n");
+            fprintf(fp, "Файл создан: %s\n", time_str);
+            fprintf(fp, "========================================\n");
+            fprintf(fp, "\n");
+        }
+
+        // Добавляем новую запись
+        fprintf(fp, "\n");
+        fprintf(fp, "--- НОВАЯ ОШИБКА: %s ---\n", time_str);
         fprintf(fp, "%s\n", message);
-        fprintf(fp, "========================================\n");
-        fprintf(fp, "\n");
-        fprintf(fp, "Файл создан: %s\n", time_str);
-        fprintf(fp, "\n");
-        fprintf(fp, "Файл создан от root, удалить можно только через sudo.\n");
+        fprintf(fp, "----------------------------------------\n");
 
         // Закрываем файл и проверяем результат
         int close_result = fclose(fp);
         if (close_result != 0) {
             log_message(LOG_ERR, "Failed to close error file: %s", file_path);
-            unlink(file_path);
             continue;
+        }
+
+        if (!file_exists) {
+            log_message(LOG_INFO, "Created error log: %s", file_path);
+        } else {
+            log_message(LOG_INFO, "Appended to error log: %s", file_path);
         }
     }
 }
-
 // ============================================================================
 // ОСНОВНАЯ ФУНКЦИЯ
 // ============================================================================
