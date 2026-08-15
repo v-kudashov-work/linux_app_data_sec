@@ -13,10 +13,12 @@ NC='\033[0m'
 # Конфигурация
 INSTALL_PATH="/usr/local/bin"
 CONFIG_PATH="/etc/app_data_sec.conf"
+CONFIGS_DIR="/etc/app_data_sec.d"
 BPF_OBJ_PATH="/usr/local/lib/app_data_sec"
 LOG_PATH="/var/log"
 SERVICE_DIR="/etc/systemd/system"
 BACKUP_DIR="/root/app_data_sec_backup"
+CONFIG_SOURCE_DIR="./configs"  # Папка с предустановленными конфигами
 
 # Флаг обновления
 IS_UPDATE=0
@@ -60,7 +62,7 @@ fi
 if [ "$IS_UPDATE" -eq 1 ]; then
     echo -e "\n${BLUE}[INFO]${NC} Stopping services for update..."
 
-    # Создаем бэкап
+    # Создаём бэкап
     mkdir -p "$BACKUP_DIR"
     if [ -f "$CONFIG_PATH" ]; then
         cp "$CONFIG_PATH" "$BACKUP_DIR/app_data_sec.conf.backup"
@@ -84,7 +86,7 @@ if [ "$IS_UPDATE" -eq 1 ]; then
     systemctl stop app_data_sec_watchdog 2>/dev/null || true
     systemctl stop app_data_sec_messages 2>/dev/null || true
 
-    # Ждем завершения
+    # Ждём завершения
     sleep 2
 
     # Убиваем процессы если остались
@@ -94,6 +96,220 @@ if [ "$IS_UPDATE" -eq 1 ]; then
 
     echo -e "${GREEN}[OK]${NC} Services stopped"
 fi
+
+# ============================================================================
+# ФУНКЦИЯ ПОИСКА КОНФИГОВ ПРИЛОЖЕНИЙ
+# ============================================================================
+
+find_app_configs() {
+    local configs_found=()
+    local configs_desc=()
+
+    if [ ! -d "$CONFIG_SOURCE_DIR" ]; then
+        return 1
+    fi
+
+    # Ищем все .conf файлы в папке configs
+    local idx=0
+    for config_file in "$CONFIG_SOURCE_DIR"/*.conf; do
+        if [ -f "$config_file" ]; then
+            local basename=$(basename "$config_file" .conf)
+
+            # Пытаемся прочитать описание из комментария в файле
+            local description=""
+            if head -20 "$config_file" 2>/dev/null | grep -q "^#.*Description:"; then
+                description=$(head -20 "$config_file" | grep "^#.*Description:" | sed 's/^#.*Description:[[:space:]]*//' | head -1)
+            else
+                # Если описания нет, используем имя файла
+                description="$basename"
+            fi
+
+            configs_found[$idx]="$config_file"
+            configs_desc[$idx]="$description"
+            ((idx++))
+        fi
+    done
+
+    if [ $idx -eq 0 ]; then
+        return 1
+    fi
+
+    # Выводим найденные конфиги
+    echo -e "\n${BLUE}[INFO]${NC} Found application configurations in $CONFIG_SOURCE_DIR/:"
+    for ((i=0; i<idx; i++)); do
+        local filename=$(basename "${configs_found[$i]}")
+        printf "  %2d) %-30s - %s\n" $((i+1)) "$filename" "${configs_desc[$i]}"
+    done
+    echo ""
+
+    # Возвращаем массивы через глобальные переменные
+    CONFIGS_FOUND=("${configs_found[@]}")
+    CONFIGS_DESC=("${configs_desc[@]}")
+    CONFIGS_COUNT=$idx
+
+    return 0
+}
+
+# ============================================================================
+# ФУНКЦИЯ ВЫБОРА КОНФИГОВ
+# ============================================================================
+
+select_app_configs() {
+    local selected_configs=()
+    local config_files=()
+
+    echo -e "${YELLOW}[QUESTION]${NC} Install pre-configured protections for known applications?"
+    echo "  (Configuration files from ./configs/ directory)"
+    echo ""
+    echo "  This will add protection rules for common applications like:"
+    echo "  - Browser profiles (Firefox, Chrome, etc.)"
+    echo "  - Email clients (Thunderbird, etc.)"
+    echo "  - And more..."
+    echo ""
+    read -p "Install application configurations? (y/N) " -n 1 -r
+    echo
+
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${BLUE}[INFO]${NC} Skipping application configurations"
+        return 1
+    fi
+
+    echo -e "\n${BLUE}[INFO]${NC} Available configurations:"
+    echo "  0) Install ALL configurations"
+    echo ""
+
+    # Получаем список конфигов
+    local configs_found=()
+    local configs_desc=()
+    local idx=0
+
+    for config_file in "$CONFIG_SOURCE_DIR"/*.conf; do
+        if [ -f "$config_file" ]; then
+            local basename=$(basename "$config_file" .conf)
+            local description=""
+
+            if head -20 "$config_file" 2>/dev/null | grep -q "^#.*Description:"; then
+                description=$(head -20 "$config_file" | grep "^#.*Description:" | sed 's/^#.*Description:[[:space:]]*//' | head -1)
+            else
+                description="$basename"
+            fi
+
+            configs_found[$idx]="$config_file"
+            configs_desc[$idx]="$description"
+            printf "  %2d) %-30s - %s\n" $((idx+1)) "$basename" "$description"
+            ((idx++))
+        fi
+    done
+
+    if [ $idx -eq 0 ]; then
+        echo -e "${YELLOW}[WARNING]${NC} No configuration files found in $CONFIG_SOURCE_DIR/"
+        return 1
+    fi
+
+    echo ""
+    echo -e "${YELLOW}[INFO]${NC} Enter numbers separated by spaces (e.g., '1 3 5')"
+    echo "  Or press Enter to skip all"
+    echo ""
+    read -p "Select configurations to install: " selection
+
+    # Если пользователь ничего не ввёл
+    if [ -z "$selection" ]; then
+        echo -e "${BLUE}[INFO]${NC} No configurations selected"
+        return 1
+    fi
+
+    # Обрабатываем выбор
+    SELECTED_CONFIGS=()
+    for num in $selection; do
+        # Удаляем ведущие нули
+        num=$(echo "$num" | sed 's/^0*//')
+
+        if [ "$num" = "0" ]; then
+            # Выбраны все конфиги
+            SELECTED_CONFIGS=("${configs_found[@]}")
+            echo -e "${GREEN}[OK]${NC} All configurations selected (${#SELECTED_CONFIGS[@]} files)"
+            return 0
+        elif [ "$num" -ge 1 ] && [ "$num" -le "$idx" ]; then
+            local idx_num=$((num-1))
+            SELECTED_CONFIGS+=("${configs_found[$idx_num]}")
+        else
+            echo -e "${YELLOW}[WARNING]${NC} Invalid selection: $num (skipped)"
+        fi
+    done
+
+    if [ ${#SELECTED_CONFIGS[@]} -eq 0 ]; then
+        echo -e "${BLUE}[INFO]${NC} No configurations selected"
+        return 1
+    fi
+
+    echo -e "\n${GREEN}[OK]${NC} Selected configurations (${#SELECTED_CONFIGS[@]} files):"
+    for config in "${SELECTED_CONFIGS[@]}"; do
+        echo "  - $(basename "$config")"
+    done
+
+    return 0
+}
+
+# ============================================================================
+# ФУНКЦИЯ ИМПОРТА КОНФИГОВ
+# ============================================================================
+
+import_selected_configs() {
+    local merge_cmd="$INSTALL_PATH/app_data_sec_merge_config"
+
+    if [ ! -f "$merge_cmd" ]; then
+        echo -e "${YELLOW}[WARNING]${NC} merge_config not found, skipping import"
+        return 1
+    fi
+
+    if [ ${#SELECTED_CONFIGS[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    echo -e "\n${BLUE}[INFO]${NC} Importing selected configurations..."
+
+    # Создаём временную директорию для всех выбранных конфигов
+    local temp_dir=$(mktemp -d)
+
+    # Копируем выбранные конфиги во временную папку
+    for config in "${SELECTED_CONFIGS[@]}"; do
+        cp "$config" "$temp_dir/"
+        echo -e "  - Copied: $(basename "$config")"
+    done
+
+    # Запускаем merge_config с временной папкой
+    echo -e "\n${BLUE}[INFO]${NC} Running merge_config to import configurations..."
+
+    if "$merge_cmd" -m "$CONFIG_PATH" "$temp_dir/"; then
+        echo -e "${GREEN}[OK]${NC} Configurations imported successfully"
+
+        # Если merge_config создал бэкап основного конфига, показываем
+        if [ -f "${CONFIG_PATH}.bak" ]; then
+            echo -e "${YELLOW}[INFO]${NC} Backup created: ${CONFIG_PATH}.bak"
+        fi
+
+        # Создаём папку для конфигов, если её нет
+        mkdir -p "$CONFIGS_DIR"
+
+        # Копируем выбранные конфиги в /etc/app_data_sec.d/ для справки
+        for config in "${SELECTED_CONFIGS[@]}"; do
+            local basename=$(basename "$config")
+            cp "$config" "$CONFIGS_DIR/$basename"
+            echo -e "  - Saved: $CONFIGS_DIR/$basename"
+        done
+
+        # Удаляем временную папку
+        rm -rf "$temp_dir"
+
+        echo -e "${GREEN}[OK]${NC} Configuration import completed"
+        echo -e "${YELLOW}[INFO]${NC} To apply changes: sudo systemctl restart app_data_sec_loader"
+        return 0
+    else
+        echo -e "${RED}[ERROR]${NC} Failed to import configurations"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+}
 
 # ============================================================================
 # ОПРЕДЕЛЕНИЕ ДИСТРИБУТИВА
@@ -566,6 +782,7 @@ echo -e "\n${BLUE}[INFO]${NC} Installing files..."
 mkdir -p "$INSTALL_PATH"
 mkdir -p "$BPF_OBJ_PATH"
 mkdir -p "$LOG_PATH"
+mkdir -p "$CONFIGS_DIR"
 
 # Устанавливаем app_data_sec_loader
 cp -f app_data_sec_loader "$INSTALL_PATH/"
@@ -638,7 +855,7 @@ fi
 # ============================================================================
 
 if [ ! -f "$CONFIG_PATH" ]; then
-    echo -e "\n${BLUE}[INFO]${NC} Creating configuration..."
+    echo -e "\n${BLUE}[INFO]${NC} Creating default configuration..."
     cat > "$CONFIG_PATH" << 'EOF'
 # /etc/app_data_sec.conf
 # Конфигурация для eBPF блокировщика доступа к папкам
@@ -660,6 +877,34 @@ else
     if [ "$IS_UPDATE" -eq 1 ]; then
         echo -e "${YELLOW}[INFO]${NC} To merge new entries, use: app_data_sec_merge_config <new.conf>"
     fi
+fi
+
+# ============================================================================
+# ИМПОРТ КОНФИГУРАЦИЙ ПРИЛОЖЕНИЙ (НОВЫЙ БЛОК)
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Checking for application configurations..."
+
+# Проверяем наличие папки с конфигами
+if [ -d "$CONFIG_SOURCE_DIR" ] && [ "$(ls -A "$CONFIG_SOURCE_DIR" 2>/dev/null)" ]; then
+    echo -e "${GREEN}[OK]${NC} Found configuration directory: $CONFIG_SOURCE_DIR"
+
+    # Проверяем, есть ли .conf файлы
+    local conf_count=$(find "$CONFIG_SOURCE_DIR" -maxdepth 1 -name "*.conf" 2>/dev/null | wc -l)
+    if [ "$conf_count" -gt 0 ]; then
+        echo -e "${BLUE}[INFO]${NC} Found $conf_count configuration files"
+
+        # Предлагаем пользователю выбрать конфиги
+        if select_app_configs; then
+            # Импортируем выбранные конфиги
+            import_selected_configs
+        fi
+    else
+        echo -e "${YELLOW}[INFO]${NC} No .conf files found in $CONFIG_SOURCE_DIR/"
+    fi
+else
+    echo -e "${YELLOW}[INFO]${NC} No configuration directory found: $CONFIG_SOURCE_DIR"
+    echo -e "${YELLOW}[INFO]${NC} To add application configurations, create this directory and add .conf files"
 fi
 
 # ============================================================================
@@ -985,6 +1230,13 @@ fi
 cat << EOF
   $BPF_OBJ_PATH/app_data_sec.bpf.o
   $CONFIG_PATH
+EOF
+
+if [ -d "$CONFIGS_DIR" ] && [ "$(ls -A "$CONFIGS_DIR" 2>/dev/null)" ]; then
+    echo "  $CONFIGS_DIR/ (application configurations)"
+fi
+
+cat << EOF
 
 ${BLUE}Services:${NC}
   app_data_sec_loader   - Main protection service
