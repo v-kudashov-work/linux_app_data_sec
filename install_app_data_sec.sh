@@ -482,8 +482,8 @@ echo -e "\n${BLUE}[INFO]${NC} Building watchdog..."
 
 # Поиск исходника watchdog
 WATCHDOG_SRC=""
-if [ -f "app_data_sec_watchdog_zenity.c" ]; then
-    WATCHDOG_SRC="app_data_sec_watchdog_zenity.c"
+if [ -f "app_data_sec_watchdog_informer.c" ]; then
+    WATCHDOG_SRC="app_data_sec_watchdog_informer.c"
 elif [ -f "app_data_sec_watchdog.c" ]; then
     WATCHDOG_SRC="app_data_sec_watchdog.c"
 else

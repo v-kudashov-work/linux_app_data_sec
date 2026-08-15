@@ -10,7 +10,7 @@ TARGETS = app_data_sec_loader app_data_sec_merge_config app_data_sec_watchdog
 # Исходники
 LOADER_SRC = app_data_sec_loader.c
 MERGE_SRC = ./merge_config/app_data_sec_merge_config.c
-WATCHDOG_SRC = app_data_sec_watchdog_zenity.c
+WATCHDOG_SRC = app_data_sec_watchdog_informer.c
 
 # BPF компиляция
 CLANG = clang

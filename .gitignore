@@ -4,3 +4,4 @@
 /app_data_sec_watchdog
 /app_data_sec_unprotect
 /messages_monitor/app_data_sec_messages_to_syslog
+/app_data_sec_messages_to_syslog
