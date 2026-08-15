@@ -181,6 +181,11 @@ sudo journalctl -u app_data_sec_messages -f
 sudo app_data_sec_messages_to_syslog
 ```
 
+или запустить в консоли:
+```bash
+sudo cat /sys/kernel/debug/tracing/trace_pipe
+```
+
 # Watchdog
 Watchdog (app_data_sec_watchdog) отслеживает состояние основного сервиса. При его остановке на рабочем столе пользователей создаётся файл app_data_sec_errors.txt с инструкцией по восстановлению.
 

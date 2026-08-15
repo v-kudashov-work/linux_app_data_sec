@@ -64,6 +64,65 @@ ls -l /proc/12345/exe
 
 
 
+
+Для Ubunutu:
+Добавить bpf в LSM
+bash
+
+# Редактируем GRUB
+sudo nano /etc/default/grub
+
+Найдите строку GRUB_CMDLINE_LINUX_DEFAULT и добавьте lsm=lockdown,capability,landlock,yama,apparmor,bpf,ima,evm:
+bash
+
+# Было:
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
+
+# Стало (пример, сохраните свои параметры):
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash lsm=lockdown,capability,landlock,yama,apparmor,bpf,ima,evm"
+
+
+# Обновить GRUB
+sudo update-grub
+
+# Перезагрузиться
+sudo reboot
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 //Устаревшее:
 # 2. Создайте тестовую папку
 mkdir -p /home/user/.test_app
