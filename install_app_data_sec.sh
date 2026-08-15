@@ -1075,71 +1075,71 @@ echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_watchdog.service"
 # СЕРВИС APP_DATA_SEC_MESSAGES (опционально)
 # ============================================================================
 
-if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
-    echo -e "\n${BLUE}[INFO]${NC} Creating systemd service for messages_to_syslog..."
-
-    cat > "$SERVICE_DIR/app_data_sec_messages.service" << 'EOF'
-[Unit]
-Description=APP DATA SEC Messages to Syslog Service
-Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
-After=app_data_sec_loader.service
-Before=sysinit.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-# Используем полный путь
-ExecStart=/usr/local/bin/app_data_sec_messages_to_syslog
-ExecStop=/bin/kill -SIGTERM $MAINPID
-Restart=always
-RestartSec=5
-
-# Логи
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=app_data_sec_messages
-
-# Снимаем все ограничения
-PrivateTmp=false
-ProtectSystem=false
-ProtectHome=false
-NoNewPrivileges=false
-PrivateDevices=false
-ProtectKernelTunables=false
-ProtectKernelModules=false
-ProtectControlGroups=false
-RestrictAddressFamilies=false
-RestrictNamespaces=false
-LockPersonality=false
-MemoryDenyWriteExecute=false
-RestrictRealtime=false
-RestrictSUIDSGID=false
-
-# Разрешаем доступ к /proc и /sys
-ReadWritePaths=/
-ReadOnlyPaths=
-ReadWritePaths=/sys/kernel/debug/tracing
-ReadWritePaths=/proc
-
-# Даем необходимые capabilities
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SYSLOG CAP_DAC_OVERRIDE
-AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SYSLOG CAP_DAC_OVERRIDE
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_messages.service"
-
-    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
-        systemctl enable app_data_sec_messages 2>/dev/null || true
-        echo -e "${GREEN}[OK]${NC} Service enabled: app_data_sec_messages"
-    else
-        echo -e "${YELLOW}[INFO]${NC} Service installed but NOT enabled"
-        echo "To enable: sudo systemctl enable --now app_data_sec_messages"
-    fi
-fi
+#if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+#    echo -e "\n${BLUE}[INFO]${NC} Creating systemd service for messages_to_syslog..."
+#
+#    cat > "$SERVICE_DIR/app_data_sec_messages.service" << 'EOF'
+#[Unit]
+#Description=APP DATA SEC Messages to Syslog Service
+#Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
+#After=app_data_sec_loader.service
+#Before=sysinit.target
+#
+#[Service]
+#Type=simple
+#User=root
+#Group=root
+## Используем полный путь
+#ExecStart=/usr/local/bin/app_data_sec_messages_to_syslog
+#ExecStop=/bin/kill -SIGTERM $MAINPID
+#Restart=always
+#RestartSec=5
+#
+## Логи
+#StandardOutput=journal
+#StandardError=journal
+#SyslogIdentifier=app_data_sec_messages
+#
+## Снимаем все ограничения
+#PrivateTmp=false
+#ProtectSystem=false
+#ProtectHome=false
+#NoNewPrivileges=false
+#PrivateDevices=false
+#ProtectKernelTunables=false
+#ProtectKernelModules=false
+#ProtectControlGroups=false
+#RestrictAddressFamilies=false
+#RestrictNamespaces=false
+#LockPersonality=false
+#MemoryDenyWriteExecute=false
+#RestrictRealtime=false
+#RestrictSUIDSGID=false
+#
+## Разрешаем доступ к /proc и /sys
+#ReadWritePaths=/
+#ReadOnlyPaths=
+#ReadWritePaths=/sys/kernel/debug/tracing
+#ReadWritePaths=/proc
+#
+## Даем необходимые capabilities
+#CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SYSLOG CAP_DAC_OVERRIDE
+#AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SYSLOG CAP_DAC_OVERRIDE
+#
+#[Install]
+#WantedBy=multi-user.target
+#EOF
+#
+#    echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_messages.service"
+#
+#    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
+#        systemctl enable app_data_sec_messages 2>/dev/null || true
+#        echo -e "${GREEN}[OK]${NC} Service enabled: app_data_sec_messages"
+#    else
+#        echo -e "${YELLOW}[INFO]${NC} Service installed but NOT enabled"
+#        echo "To enable: sudo systemctl enable --now app_data_sec_messages"
+#    fi
+#fi
 
 # ============================================================================
 # ЗАПУСК СЕРВИСОВ
