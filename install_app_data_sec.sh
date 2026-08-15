@@ -440,6 +440,7 @@ configure_bpf_lsm() {
     echo ""
     echo -e "${BLUE}To enable BPF LSM, add 'bpf' to the lsm= parameter.${NC}"
     echo -e "${BLUE}This requires editing GRUB and rebooting.${NC}"
+    echo -e "${BLUE}Please restart the installation after the reboot.${NC}"
     echo ""
 
     read -p "Configure BPF LSM now? (y/N) " -n 1 -r
@@ -541,7 +542,7 @@ configure_bpf_lsm() {
     echo -e "${YELLOW}[INFO]${NC} Reboot required for changes to take effect"
     echo ""
 
-    read -p "Reboot now? (y/N) " -n 1 -r
+    read -p "Please restart the installation after the reboot. Reboot now? (y/N) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}[INFO]${NC} Rebooting in 5 seconds..."
