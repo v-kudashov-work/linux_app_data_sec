@@ -40,7 +40,7 @@ $(UNPROTECT): $(UNPROTECT_SRC)
 	$(CC) $(CFLAGS) -o $@ $<
 
 $(BPF_OBJ): $(BPF_SRC) vmlinux.h
-	$(CLANG) $(BPF_CFLAGS) -I. -c $< -o $@
+	$(CLANG) $(BPF_CFLAGS) -I. -Wno-missing-declarations -c $< -o $@
 
 # ==== Watchdog только ====
 

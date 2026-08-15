@@ -415,6 +415,187 @@ fi
 echo -e "${GREEN}[OK]${NC} Dependencies OK"
 
 # ============================================================================
+# НАСТРОЙКА BPF LSM В GRUB
+# ============================================================================
+
+configure_bpf_lsm() {
+    echo -e "\n${BLUE}[INFO]${NC} Checking BPF LSM configuration..."
+
+    # Проверяем текущий LSM
+    if [ ! -f "/sys/kernel/security/lsm" ]; then
+        echo -e "${YELLOW}[WARNING]${NC} /sys/kernel/security/lsm not found"
+        return 1
+    fi
+
+    CURRENT_LSM=$(cat /sys/kernel/security/lsm)
+
+    # Проверяем, есть ли уже bpf
+    if echo "$CURRENT_LSM" | grep -q "bpf"; then
+        echo -e "${GREEN}[OK]${NC} BPF LSM already enabled: $CURRENT_LSM"
+        return 0
+    fi
+
+    echo -e "${YELLOW}[WARNING]${NC} BPF LSM not enabled"
+    echo -e "${YELLOW}[INFO]${NC} Current LSM: $CURRENT_LSM"
+    echo ""
+    echo -e "${BLUE}To enable BPF LSM, add 'bpf' to the lsm= parameter.${NC}"
+    echo -e "${BLUE}This requires editing GRUB and rebooting.${NC}"
+    echo ""
+
+    read -p "Configure BPF LSM now? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}[INFO]${NC} Skipping GRUB configuration"
+        echo -e "${YELLOW}[INFO]${NC} Manual steps:"
+        echo "  1. sudo nano /etc/default/grub"
+        echo "  2. Add 'bpf' to lsm= (preserve existing modules)"
+        echo "  3. sudo update-grub && sudo reboot"
+        return 0
+    fi
+
+    # Проверяем GRUB
+    if [ ! -f "/etc/default/grub" ]; then
+        echo -e "${RED}[ERROR]${NC} /etc/default/grub not found"
+        return 1
+    fi
+
+    # Создаём бэкап
+    BACKUP_DIR="/root/app_data_sec_backup"
+    mkdir -p "$BACKUP_DIR"
+    BACKUP_FILE="$BACKUP_DIR/grub_default.$(date +%Y%m%d_%H%M%S).backup"
+
+    echo -e "${BLUE}[INFO]${NC} Creating backup: $BACKUP_FILE"
+    cp /etc/default/grub "$BACKUP_FILE" || {
+        echo -e "${RED}[ERROR]${NC} Failed to create backup"
+        return 1
+    }
+    echo -e "${GREEN}[OK]${NC} Backup created"
+
+    # Находим строку с GRUB_CMDLINE_LINUX_DEFAULT
+    if grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub; then
+        CURRENT_CMDLINE=$(grep "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub | sed 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/\1/')
+
+        # Проверяем, есть ли lsm=
+        if echo "$CURRENT_CMDLINE" | grep -q "lsm="; then
+            # lsm= есть, добавляем bpf если его нет
+            if echo "$CURRENT_CMDLINE" | grep -q "lsm=.*bpf"; then
+                echo -e "${GREEN}[OK]${NC} bpf already in lsm= (should not happen)"
+                return 0
+            fi
+
+            # Добавляем bpf в конец существующего списка lsm=
+            echo -e "${BLUE}[INFO]${NC} Adding bpf to existing lsm=..."
+
+            # Проверяем, что lsm= не заканчивается на запятую
+            if echo "$CURRENT_CMDLINE" | grep -q "lsm=.*,$"; then
+                # Уже есть запятая в конце
+                NEW_CMDLINE=$(echo "$CURRENT_CMDLINE" | sed 's/lsm=\([^ ]*\)/lsm=\1bpf/')
+            else
+                # Добавляем запятую и bpf
+                NEW_CMDLINE=$(echo "$CURRENT_CMDLINE" | sed 's/lsm=\([^ ]*\)/lsm=\1,bpf/')
+            fi
+        else
+            # lsm= нет, добавляем только bpf (без других модулей)
+            echo -e "${BLUE}[INFO]${NC} Adding lsm=bpf..."
+            NEW_CMDLINE="$CURRENT_CMDLINE lsm=bpf"
+        fi
+
+        # Обновляем GRUB
+        sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"$NEW_CMDLINE\"/" /etc/default/grub
+
+    else
+        # GRUB_CMDLINE_LINUX_DEFAULT нет, создаём с lsm=bpf
+        echo -e "${BLUE}[INFO]${NC} Creating GRUB_CMDLINE_LINUX_DEFAULT with lsm=bpf..."
+        echo 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash lsm=bpf"' >> /etc/default/grub
+    fi
+
+    # Показываем изменения
+    echo -e "\n${BLUE}[INFO]${NC} New GRUB configuration:"
+    grep "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub
+    echo ""
+
+    # Обновляем GRUB
+    echo -e "${BLUE}[INFO]${NC} Updating GRUB..."
+    if command -v update-grub &> /dev/null; then
+        if update-grub; then
+            echo -e "${GREEN}[OK]${NC} GRUB updated"
+        else
+            echo -e "${RED}[ERROR]${NC} Failed to update GRUB"
+            echo -e "${YELLOW}[INFO]${NC} Restoring backup..."
+            cp "$BACKUP_FILE" /etc/default/grub
+            return 1
+        fi
+    elif command -v grub2-mkconfig &> /dev/null; then
+        if grub2-mkconfig -o /boot/grub2/grub.cfg; then
+            echo -e "${GREEN}[OK]${NC} GRUB updated"
+        else
+            echo -e "${RED}[ERROR]${NC} Failed to update GRUB"
+            cp "$BACKUP_FILE" /etc/default/grub
+            return 1
+        fi
+    else
+        echo -e "${YELLOW}[WARNING]${NC} update-grub not found, please update manually"
+    fi
+
+    echo -e "\n${GREEN}[OK]${NC} BPF LSM configured"
+    echo -e "${YELLOW}[INFO]${NC} Reboot required for changes to take effect"
+    echo ""
+
+    read -p "Reboot now? (y/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${BLUE}[INFO]${NC} Rebooting in 5 seconds..."
+        sleep 5
+        reboot
+    else
+        echo -e "${YELLOW}[INFO]${NC} Please reboot manually when ready"
+    fi
+
+    return 0
+}
+
+
+# ============================================================================
+# ПРОВЕРКА И НАСТРОЙКА BPF LSM
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Checking BPF LSM configuration..."
+
+# Проверяем, нужно ли настраивать
+if ! cat /sys/kernel/security/lsm 2>/dev/null | grep -q "bpf"; then
+    echo -e "${YELLOW}[WARNING]${NC} BPF LSM not enabled"
+    echo -e "${YELLOW}[INFO]${NC} This is REQUIRED for eBPF programs to work"
+    echo ""
+
+    # Спрашиваем пользователя
+    read -p "Configure BPF LSM in GRUB now? (y/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        configure_bpf_lsm
+        # Если была настроена и требуется перезагрузка, инсталляция продолжится после reboot
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}[OK]${NC} BPF LSM configured"
+        fi
+    else
+        echo -e "${YELLOW}[INFO]${NC} Skipping BPF LSM configuration"
+        echo -e "${YELLOW}[WARNING]${NC} app_data_sec will NOT work without BPF LSM!"
+        echo -e "${YELLOW}[INFO]${NC} You can configure manually later:"
+        echo "  sudo nano /etc/default/grub"
+        echo "  Add: lsm=bpf"
+        echo "  Then: sudo update-grub && sudo reboot"
+        echo ""
+        read -p "Continue with installation anyway? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "${BLUE}[INFO]${NC} Installation cancelled"
+            exit 0
+        fi
+    fi
+else
+    echo -e "${GREEN}[OK]${NC} BPF LSM already enabled"
+fi
+
+# ============================================================================
 # ПРОВЕРКА КОНФИГУРАЦИИ ЯДРА
 # ============================================================================
 
@@ -614,6 +795,7 @@ clang -g -O2 -target bpf \
     $BPF_INCLUDE_DIRS \
     $BPF_EXTRA_FLAGS \
     -I. \
+    -Wno-missing-declarations \
     -c app_data_sec.bpf.c -o app_data_sec.bpf.o 2>&1
 
 if [ ! -f "app_data_sec.bpf.o" ]; then
