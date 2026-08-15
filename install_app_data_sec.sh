@@ -1180,16 +1180,16 @@ echo ""
 echo -e "${BLUE}app_data_sec_watchdog:${NC}"
 systemctl status app_data_sec_watchdog --no-pager || true
 
-if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
-    echo ""
-    echo -e "${BLUE}app_data_sec_messages:${NC}"
-    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
-        systemctl status app_data_sec_messages --no-pager || true
-    else
-        echo -e "  ${YELLOW}Service installed but not enabled${NC}"
-        echo "  To enable: sudo systemctl enable --now app_data_sec_messages"
-    fi
-fi
+#if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+#    echo ""
+#    echo -e "${BLUE}app_data_sec_messages:${NC}"
+#    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
+#        systemctl status app_data_sec_messages --no-pager || true
+#    else
+#        echo -e "  ${YELLOW}Service installed but not enabled${NC}"
+#        echo "  To enable: sudo systemctl enable --now app_data_sec_messages"
+#    fi
+#fi
 
 # ============================================================================
 # ПРОВЕРКА ЛОГОВ
