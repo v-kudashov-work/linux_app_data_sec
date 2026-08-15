@@ -155,15 +155,14 @@ find_app_configs() {
 # ============================================================================
 
 select_app_configs() {
-    local selected_configs=()
-    local config_files=()
-
     echo -e "${YELLOW}[QUESTION]${NC} Install pre-configured protections for known applications?"
     echo "  (Configuration files from ./configs/ directory)"
     echo ""
     echo "  This will add protection rules for common applications like:"
+    echo "  - SSH keys (~/.ssh)"
     echo "  - Browser profiles (Firefox, Chrome, etc.)"
     echo "  - Email clients (Thunderbird, etc.)"
+    echo "  - Development tools (Git, etc.)"
     echo "  - And more..."
     echo ""
     read -p "Install application configurations? (y/N) " -n 1 -r
@@ -171,6 +170,7 @@ select_app_configs() {
 
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}[INFO]${NC} Skipping application configurations"
+        SELECTED_CONFIGS=()
         return 1
     fi
 
@@ -203,6 +203,7 @@ select_app_configs() {
 
     if [ $idx -eq 0 ]; then
         echo -e "${YELLOW}[WARNING]${NC} No configuration files found in $CONFIG_SOURCE_DIR/"
+        SELECTED_CONFIGS=()
         return 1
     fi
 
@@ -215,30 +216,51 @@ select_app_configs() {
     # Если пользователь ничего не ввёл
     if [ -z "$selection" ]; then
         echo -e "${BLUE}[INFO]${NC} No configurations selected"
+        SELECTED_CONFIGS=()
         return 1
     fi
 
-    # Обрабатываем выбор
-    SELECTED_CONFIGS=()
-    for num in $selection; do
-        # Удаляем ведущие нули
-        num=$(echo "$num" | sed 's/^0*//')
+    # Очищаем ввод от пробелов
+    local clean_selection=$(echo "$selection" | tr -d '[:space:]')
 
-        if [ "$num" = "0" ]; then
-            # Выбраны все конфиги
-            SELECTED_CONFIGS=("${configs_found[@]}")
-            echo -e "${GREEN}[OK]${NC} All configurations selected (${#SELECTED_CONFIGS[@]} files)"
-            return 0
-        elif [ "$num" -ge 1 ] && [ "$num" -le "$idx" ]; then
+    # Проверяем, не выбрал ли пользователь "0" (все конфиги)
+    if [ "$clean_selection" = "0" ]; then
+        SELECTED_CONFIGS=("${configs_found[@]}")
+        echo -e "${GREEN}[OK]${NC} All configurations selected (${#SELECTED_CONFIGS[@]} files)"
+        return 0
+    fi
+
+    # Обрабатываем выбор (уже без "0")
+    SELECTED_CONFIGS=()
+
+    for num in $selection; do
+        # Убираем пробелы и ведущие нули
+        num=$(echo "$num" | tr -d '[:space:]' | sed 's/^0*//')
+
+        # Пропускаем пустые значения
+        [ -z "$num" ] && continue
+
+        # Пропускаем "0" (уже обработано выше)
+        [ "$num" = "0" ] && continue
+
+        # Проверяем, что это число
+        if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+            echo -e "${YELLOW}[WARNING]${NC} Invalid input: $num (not a number, skipped)"
+            continue
+        fi
+
+        if [ "$num" -ge 1 ] 2>/dev/null && [ "$num" -le "$idx" ] 2>/dev/null; then
             local idx_num=$((num-1))
             SELECTED_CONFIGS+=("${configs_found[$idx_num]}")
         else
-            echo -e "${YELLOW}[WARNING]${NC} Invalid selection: $num (skipped)"
+            echo -e "${YELLOW}[WARNING]${NC} Invalid selection: $num (must be between 1 and $idx, skipped)"
         fi
     done
 
+    # Проверяем, есть ли выбранные конфиги
     if [ ${#SELECTED_CONFIGS[@]} -eq 0 ]; then
         echo -e "${BLUE}[INFO]${NC} No configurations selected"
+        SELECTED_CONFIGS=()
         return 1
     fi
 
@@ -880,7 +902,7 @@ else
 fi
 
 # ============================================================================
-# ИМПОРТ КОНФИГУРАЦИЙ ПРИЛОЖЕНИЙ (НОВЫЙ БЛОК)
+# ИМПОРТ КОНФИГУРАЦИЙ ПРИЛОЖЕНИЙ (НОВЫЙ БЛОК - ИСПРАВЛЕННЫЙ)
 # ============================================================================
 
 echo -e "\n${BLUE}[INFO]${NC} Checking for application configurations..."
@@ -890,14 +912,20 @@ if [ -d "$CONFIG_SOURCE_DIR" ] && [ "$(ls -A "$CONFIG_SOURCE_DIR" 2>/dev/null)" 
     echo -e "${GREEN}[OK]${NC} Found configuration directory: $CONFIG_SOURCE_DIR"
 
     # Проверяем, есть ли .conf файлы
-    local conf_count=$(find "$CONFIG_SOURCE_DIR" -maxdepth 1 -name "*.conf" 2>/dev/null | wc -l)
-    if [ "$conf_count" -gt 0 ]; then
+    conf_count=$(find "$CONFIG_SOURCE_DIR" -maxdepth 1 -name "*.conf" 2>/dev/null | wc -l)
+    # Удаляем пробелы из результата
+    conf_count=$(echo "$conf_count" | tr -d ' ')
+
+    # Проверяем, что переменная не пустая и является числом
+    if [ -n "$conf_count" ] && [ "$conf_count" -gt 0 ] 2>/dev/null; then
         echo -e "${BLUE}[INFO]${NC} Found $conf_count configuration files"
 
         # Предлагаем пользователю выбрать конфиги
         if select_app_configs; then
             # Импортируем выбранные конфиги
             import_selected_configs
+        else
+            echo -e "${YELLOW}[INFO]${NC} No configurations were selected or import was cancelled"
         fi
     else
         echo -e "${YELLOW}[INFO]${NC} No .conf files found in $CONFIG_SOURCE_DIR/"
