@@ -668,10 +668,15 @@ static void process_log_line(char *line) {
             }
 
             // Формируем сообщение с полной информацией
+//            int written = snprintf(syslog_msg, sizeof(syslog_msg),
+//                                   "%s | CHAIN: %s | CURRENT: PID=%d EXE=%s CMDLINE=%s | %s",
+//                                   line, chain_str, pid, current_info.exe_path,
+//                                   current_info.cmdline, dir_info_str);
+
+            // Формируем сообщение с полной информацией
             int written = snprintf(syslog_msg, sizeof(syslog_msg),
-                                   "%s | CHAIN: %s | CURRENT: PID=%d EXE=%s CMDLINE=%s | %s",
-                                   line, chain_str, pid, current_info.exe_path,
-                                   current_info.cmdline, dir_info_str);
+                                   "%s | CHAIN: %s | CURRENT: PID=%d EXE=%s | %s",
+                                   line, chain_str, pid, current_info.exe_path, dir_info_str);
 
             if (written >= (int)sizeof(syslog_msg) - 1) {
                 syslog_msg[sizeof(syslog_msg) - 4] = '.';
