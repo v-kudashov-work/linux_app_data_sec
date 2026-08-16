@@ -446,12 +446,12 @@ static int remove_folder_from_entries(struct bpf_object *obj, int entry_idx) {
 
 #ifdef DEBUG_ENABLED
     char *path = entries[entry_idx].path;
-#endif
 
     SYSLOG_INFO_D("=== REMOVE FOLDER ===");
     SYSLOG_INFO_D("  Path: %s", path);
     SYSLOG_INFO_D("  Inode: %lu", (unsigned long)folder_inode);
     SYSLOG_INFO_D("  Programs: %d", entries[entry_idx].allowed_count);
+#endif
 
     // Удаляем из BPF
     if (obj) {
