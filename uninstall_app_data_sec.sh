@@ -26,6 +26,7 @@ echo "  - app_data_sec_loader"
 echo "  - app_data_sec_merge_config"
 echo "  - app_data_sec_unprotect"
 echo "  - app_data_sec_watchdog"
+echo "  - app_data_sec_messages_to_syslog"
 echo "  - BPF objects (app_data_sec.bpf.o)"
 echo "  - Systemd services"
 echo "  - Log files"
@@ -110,6 +111,7 @@ rm -f /usr/bin/app_data_sec_messages_to_syslog 2>/dev/null || true
 rm -f /etc/systemd/system/app_data_sec_messages.service
 rm -f /var/log/app_data_sec_messages.log
 rm -f /var/log/app_data_sec_messages_error.log
+echo -e "${GREEN}[OK]${NC} Removed app_data_sec_messages_to_syslog files"
 
 # ============================================================================
 # КОНФИГУРАЦИЯ (опционально)
@@ -223,6 +225,7 @@ ${BLUE}Removed:${NC}
   - app_data_sec_merge_config binary
   - app_data_sec_unprotect binary
   - app_data_sec_watchdog binary
+  - app_data_sec_messages_to_syslog binary
   - BPF objects (app_data_sec.bpf.o)
   - Systemd services
   - Log files
