@@ -795,6 +795,7 @@ echo -e "${BLUE}[INFO]${NC} Include paths: $BPF_INCLUDE_DIRS"
 clang -g -O2 -target bpf \
     $BPF_INCLUDE_DIRS \
     $BPF_EXTRA_FLAGS \
+    -mllvm -bpf-stack-size=1024 \
     -I. \
     -Wno-missing-declarations \
     -c app_data_sec.bpf.c -o app_data_sec.bpf.o 2>&1
@@ -1018,10 +1019,6 @@ if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "app_data_sec_messages_to_syslog" ]; th
     cp -f app_data_sec_messages_to_syslog "$INSTALL_PATH/"
     chmod 755 "$INSTALL_PATH/app_data_sec_messages_to_syslog"
     echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_messages_to_syslog"
-
-    # Создаём символическую ссылку
-    ln -sf "$INSTALL_PATH/app_data_sec_messages_to_syslog" /usr/bin/app_data_sec_messages_to_syslog 2>/dev/null || true
-    echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_messages_to_syslog"
 fi
 
 # Устанавливаем BPF объект
@@ -1343,9 +1340,9 @@ if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
 fi
 
 # Запускаем messages (если включен)
-if [ "$INSTALL_MESSAGES" -eq 1 ] && [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
-    systemctl restart app_data_sec_messages
-fi
+#if [ "$INSTALL_MESSAGES" -eq 1 ] && [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+#    systemctl restart app_data_sec_messages
+#fi
 
 sleep 3
 
@@ -1406,7 +1403,7 @@ if command -v bpftool &> /dev/null; then
 
     # Проверяем карты
     echo -e "\n${BLUE}[INFO]${NC} BPF maps:"
-    bpftool map list 2>/dev/null | grep -E "(folder_config|folder_allowed|folder_scripts)" || echo "  No maps found"
+    bpftool map list 2>/dev/null | grep -E "(folder_config|folder_allowed)" || echo "  No maps found"
 else
     echo -e "  ${YELLOW}bpftool not available${NC}"
 fi
@@ -1452,13 +1449,13 @@ ${BLUE}Services:${NC}
   app_data_sec_watchdog - Watchdog service (creates desktop file on errors)
 EOF
 
-if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
-    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
-        echo "  app_data_sec_messages - Monitoring service (active)"
-    else
-        echo "  app_data_sec_messages - Monitoring service (installed, disabled)"
-    fi
-fi
+#if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
+#    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
+#        echo "  app_data_sec_messages - Monitoring service (active)"
+#    else
+#        echo "  app_data_sec_messages - Monitoring service (installed, disabled)"
+#    fi
+#fi
 
 cat << EOF
 
