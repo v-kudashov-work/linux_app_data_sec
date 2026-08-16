@@ -20,7 +20,7 @@
 // НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ
 // ============================================================================
 #define VERSION "0.4.0"
-#define VERSION_DATE "2026-08-13"
+#define VERSION_DATE "2026-08-17"
 
 #define CONFIG_PATH "/etc/app_data_sec.conf"
 #define MAX_LINE_LEN 1024
