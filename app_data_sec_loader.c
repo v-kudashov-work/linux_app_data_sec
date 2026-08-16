@@ -83,7 +83,7 @@ static void log_to_syslog(int priority, const char *format, ...) {
 struct folder_program_key {
     __u64 folder_inode;
     __u32 prog_idx;
-};
+} __attribute__((packed));
 
 struct protected_folder_config {
     __u64 folder_inode;
@@ -649,9 +649,11 @@ static int sync_config_to_entries(struct bpf_object *obj,
     // ============================================================
     SYSLOG_INFO_D("Step 1: Removing folders not in config...");
     for (i = entry_count - 1; i >= 0; i--) {
+//        if (entries[i].inode == 0) continue;
         found = 0;
         for (j = 0; j < temp_count; j++) {
             if (temp_entries[j].inode == entries[i].inode && entries[i].inode != 0) {
+//            if (temp_entries[j].inode == entries[i].inode) {
                 found = 1;
                 break;
             }
@@ -1565,6 +1567,7 @@ int main(int argc, char **argv) {
                     SYSLOG_INFO_D("New folder found: %s (inode: %lu)",
                                 entries[i].path, (unsigned long)current_inode);
                     add_folder_to_entries(bpf_obj, &entries[i]);
+                    remove_folder_from_entries(bpf_obj, i);
                     changed = 1;
                 } else if (entries[i].inode != current_inode) {
                     struct protect_entry *new_entry = &entries[i];

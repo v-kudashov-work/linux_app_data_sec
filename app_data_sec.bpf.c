@@ -24,7 +24,7 @@
 struct folder_program_key {
     __u64 folder_inode;
     __u32 prog_idx;
-};
+} __attribute__((packed));
 
 // СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
 struct protected_folder_config {
