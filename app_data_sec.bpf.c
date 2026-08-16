@@ -21,6 +21,11 @@
 #define MAX_LOG_PATH_LEN 128
 #define MAX_DEPTH_FOR_APP_LOG 4
 
+struct folder_program_key {
+    __u64 folder_inode;
+    __u32 prog_idx;
+};
+
 // СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
 struct protected_folder_config {
     __u64 folder_inode;
@@ -40,7 +45,7 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PROTECTED_PATHS * MAX_ALLOWED_PROGRAMS);
-    __type(key, __u64);
+    __type(key, struct folder_program_key);
     __type(value, __u64);
 } folder_allowed_programs_map SEC(".maps");
 
@@ -261,7 +266,10 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
             if (i >= config->allowed_program_count) {
                 break;
             }
-            __u64 key = (folder_inode << 32) | i;
+            struct folder_program_key key = {
+                    .folder_inode = folder_inode,
+                    .prog_idx = i
+            };
             __u64 *allowed_inode = bpf_map_lookup_elem(&folder_allowed_programs_map, &key);
             if (allowed_inode && *allowed_inode == exe_inode) {
                 found = 1;

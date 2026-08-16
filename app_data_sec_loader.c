@@ -80,6 +80,11 @@ static void log_to_syslog(int priority, const char *format, ...) {
 // ОПТИМИЗИРОВАННЫЕ СТРУКТУРЫ
 // ============================================================================
 
+struct folder_program_key {
+    __u64 folder_inode;
+    __u32 prog_idx;
+};
+
 struct protected_folder_config {
     __u64 folder_inode;
     __u32 allowed_program_count;
@@ -182,6 +187,7 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 
     if (!subpath || !found_paths || max_paths == 0) return 0;
 
+    //Добавление папок в home для существующих пользователей
     setpwent();
     while ((pw = getpwent()) != NULL && idx < max_paths) {
         if (!pw->pw_dir || pw->pw_dir[0] != '/') continue;
@@ -199,6 +205,7 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
     }
     endpwent();
 
+    //Добавление остальных папок в home
     DIR *dir = opendir("/home/");
     if (dir) {
         struct dirent *entry;
@@ -294,7 +301,10 @@ static int add_folder_to_entries(struct bpf_object *obj, struct protect_entry *n
             fd = bpf_map__fd(map);
             if (fd >= 0) {
                 for (int j = 0; j < new_entry->allowed_count && j < MAX_ALLOWED; j++) {
-                    __u64 key = (new_entry->inode << 32) | j;
+                    struct folder_program_key key = {
+                            .folder_inode = new_entry->inode,
+                            .prog_idx = j
+                    };
                     __u64 value = new_entry->allowed_inodes[j];
                     if (bpf_map_update_elem(fd, &key, &value, BPF_ANY) < 0) {
                         SYSLOG_ERR("  Failed to add program %d to BPF", j);
@@ -341,7 +351,10 @@ static int remove_program_from_entry(struct bpf_object *obj, int entry_idx, int 
         if (map) {
             int fd = bpf_map__fd(map);
             if (fd >= 0) {
-                __u64 key = (folder_inode << 32) | prog_idx;
+                struct folder_program_key key = {
+                        .folder_inode = folder_inode,
+                        .prog_idx = prog_idx
+                };
                 if (bpf_map_delete_elem(fd, &key) < 0) {
                     SYSLOG_ERR("  Failed to remove program from BPF");
                 } else {
@@ -397,7 +410,10 @@ static int disable_program_from_ebpf(struct bpf_object *obj, int entry_idx, int 
         if (map) {
             int fd = bpf_map__fd(map);
             if (fd >= 0) {
-                __u64 key = (folder_inode << 32) | prog_idx;
+                struct folder_program_key key = {
+                        .folder_inode = folder_inode,
+                        .prog_idx = prog_idx
+                };
                 if (bpf_map_delete_elem(fd, &key) < 0) {
                     SYSLOG_ERR("  Failed to remove program from BPF");
                 } else {
@@ -458,7 +474,10 @@ static int remove_folder_from_entries(struct bpf_object *obj, int entry_idx) {
             int fd = bpf_map__fd(map);
             if (fd >= 0) {
                 for (int i = 0; i < MAX_ALLOWED; i++) {
-                    __u64 key = (folder_inode << 32) | i;
+                    struct folder_program_key key = {
+                            .folder_inode = folder_inode,
+                            .prog_idx = i
+                    };
                     bpf_map_delete_elem(fd, &key);
                 }
                 SYSLOG_INFO_D("  All programs removed from BPF");
@@ -523,7 +542,10 @@ static int add_program_to_folder(struct bpf_object *obj, struct protect_entry *e
         if (map) {
             int fd = bpf_map__fd(map);
             if (fd >= 0) {
-                __u64 key = (folder_inode << 32) | new_idx;
+                struct folder_program_key key = {
+                        .folder_inode = folder_inode,
+                        .prog_idx = new_idx
+                };
                 int err = bpf_map_update_elem(fd, &key, &program_inode, BPF_ANY);
                 if (err < 0) {
                     SYSLOG_ERR("  Failed to add program to BPF: %d", err);
@@ -1157,7 +1179,10 @@ static int scan_all_entries(struct bpf_object *obj) {
                     if (map) {
                         int fd = bpf_map__fd(map);
                         if (fd >= 0) {
-                            __u64 key = (entries[i].inode << 32) | j;
+                            struct folder_program_key key = {
+                                    .folder_inode = entries[i].inode,
+                                    .prog_idx = j
+                            };
                             __u64 value = current_inode;
                             bpf_map_update_elem(fd, &key, &value, BPF_ANY);
                             SYSLOG_INFO("Updated program: %s (new inode: %lu)",
@@ -1214,7 +1239,11 @@ static int scan_missing_programs(struct bpf_object *obj) {
                     if (map) {
                         int fd = bpf_map__fd(map);
                         if (fd >= 0) {
-                            __u64 key = (entries[i].inode << 32) | j;
+                            struct folder_program_key key = {
+                                    .folder_inode = entries[i].inode,
+                                    .prog_idx = j
+                            };
+
                             bpf_map_update_elem(fd, &key, &current_inode, BPF_ANY);
                             SYSLOG_INFO("Program appeared: %s (inode: %lu)",
                                         program_path, (unsigned long)current_inode);

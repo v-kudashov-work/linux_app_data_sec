@@ -18,14 +18,40 @@
 12. Нужно добавить тестовую утилиту, которая после запуска системы будет тестировать что защита эта если включена, то работает (блокирование и не блокирование доступа в тестовой папке .|app_data_sec|). Если не работает, то сообщать пользователю и писать в журнал.
 13. Нужно добавить утилиту, которая добавляет запись с ограничением, просматривает по имени папки ограничения или удаляет запись конфигурации п.6. Только из root.
 
+Уточнение постановки:
+Невыполнимые пункты для реализации через модуль ядра eBPF (возможно только через патч ядра):
+3, 4, 4.1, 5
+А так же нет технической возможности добавить защиту для python и sh скриптов.
 
-
+Реализовываться будет только решение с применением конфигурационного файла, потому как патчить ядро пока не решились.
 
 Todo:
 * remove_folder_from_entries - лог   Folder removed from entries, remaining улучшить, добавить путь к папке
-* Проверить код merge_config и unprotect утилит
-* Исправить ошибку в логе 13.08.2026 11:26	systemd	/etc/systemd/system/app_data_sec_watchdog.service:44: Failed to parse address family, ignoring: false
++ Проверить код merge_config и unprotect утилит
++ Исправить ошибку в логе 13.08.2026 11:26	systemd	/etc/systemd/system/app_data_sec_watchdog.service:44: Failed to parse address family, ignoring: false
 * уменьшить доступы сервисов, если возможно
-* после перезапуска папки пользователя не монтируются сразу и если нет шаблона ~/ в пути к папке, она не пересканируется и не добавляется в защищённые.
-* добавить проверку на запуск из питон скрипта - не получится, нет сведений о пути к скрипту внутре eBpf. Как вариант оборачивать запуск скриптов в исполняемый файл, нужно попробовать
++ после перезапуска папки пользователя не монтируются сразу и если нет шаблона ~/ в пути к папке, она не пересканируется и не добавляется в защищённые.
+- добавить проверку на запуск из питон скрипта - не получится, нет сведений о пути к скрипту внутре eBpf. Как вариант оборачивать запуск скриптов в исполняемый файл, нужно попробовать
          python3-83005   [000] ...11 50719.499938: bpf_trace_printk: APP_DATA_SEC: GETATTR BLOCKED PID=83005 UID=1000 PATH=data PARENT=waydroid FOLDER_INODE=5256004 REASON=content_blocked COMM=python3 | CHAIN: [1] systemd (PID:1, EXE:/usr/lib/systemd/systemd) > [2] systemd (PID:4448, EXE:/usr/lib/systemd/systemd) > [3] python3 (PID:83005, EXE:/usr/bin/python3.12) | CURRENT: PID=83005 EXE=/usr/bin/python3.12 CMDLINE=python3 /usr/bin/waydroid
+
+* Оптимизировать код в модуле, вероятно можно сделать одну проверку на is_self в сканировании папок:
+if (block_self == 1) {
+        blocked = 1;
+        reason = "block_all";
+    } else {
+        __u64 current_inode = 0;
+        struct inode *inode = NULL;
+        bpf_probe_read_kernel(&inode, sizeof(inode), &dentry->d_inode);
+        if (inode) {
+            bpf_probe_read_kernel(&current_inode, sizeof(current_inode), &inode->i_ino);
+        }
+
+        int is_folder_itself = (current_inode == folder_inode);
+
+        if (is_folder_itself) {
+            blocked = 0;
+            reason = "folder_itself_allowed";
+        } else {
+            blocked = 1;
+            reason = "content_blocked";
+        }
