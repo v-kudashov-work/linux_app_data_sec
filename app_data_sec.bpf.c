@@ -114,8 +114,8 @@ static __always_inline void get_parent_name(struct dentry *dentry, char *name, i
     }
 
     struct dentry *parent = NULL;
-    bpf_probe_read_kernel(&parent, sizeof(parent), &dentry->d_parent);
-    if (!parent) {
+    long ret = bpf_probe_read_kernel(&parent, sizeof(parent), &dentry->d_parent);
+    if (ret < 0 || !parent) {
         name[0] = '\0';
         return;
     }
@@ -523,7 +523,7 @@ static __always_inline void get_exe_full_path_for_log(struct task_struct *task, 
 //             break;
 //         }
 //
-//         __u64 key = (folder_inode << 32) | i;
+//         __u64 key = (folder_inode << 32) | i; //может переполниться, если использовать, то нужно заменить на структуру
 //         char *script_path = bpf_map_lookup_elem(&folder_scripts_map, &key);
 //         if (!script_path) {
 //             continue;
