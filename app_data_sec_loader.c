@@ -107,7 +107,7 @@ struct protect_template {
     __u64 allowed_inodes[MAX_ALLOWED];
     char allowed_paths[MAX_ALLOWED][MAX_PATH_LEN];
     int allowed_count;
-    int enabled;
+//    int enabled;
     int is_home;
 };
 
@@ -242,7 +242,7 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 
 static int add_folder_to_entries(struct bpf_object *obj, struct protect_entry *new_entry) {
     if (!new_entry || new_entry->inode == 0) {
-        SYSLOG_ERR("Invalid entry for add_folder_to_entries");
+        SYSLOG_ERR("Empty entry for add_folder_to_entries");
         return -1;
     }
 
@@ -649,10 +649,9 @@ static int sync_config_to_entries(struct bpf_object *obj,
     // ============================================================
     SYSLOG_INFO_D("Step 1: Removing folders not in config...");
     for (i = entry_count - 1; i >= 0; i--) {
-        if (entries[i].inode == 0) continue;
         found = 0;
         for (j = 0; j < temp_count; j++) {
-            if (temp_entries[j].inode == entries[i].inode) {
+            if (temp_entries[j].inode == entries[i].inode && entries[i].inode != 0) {
                 found = 1;
                 break;
             }
@@ -936,7 +935,7 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
                     safe_strcpy(tmpl->allowed_paths[i], allowed_paths[i], MAX_PATH_LEN);
                 }
                 tmpl->allowed_count = allowed_count;
-                tmpl->enabled = 1;
+//                tmpl->enabled = 1;
                 tmpl->is_home = isHome;
 
                 if (isHome) {
@@ -1044,7 +1043,7 @@ static int scan_templates_and_load(struct bpf_object *obj) {
     SYSLOG_INFO_D("Templates count: %d", template_count);
 
     for (int t = 0; t < template_count; t++) {
-        if (!templates[t].enabled) continue;
+//        if (!templates[t].enabled) continue;
 
         char *found_paths[MAX_PATHS] = {NULL};  // Инициализируем нулями
         int found_count = 0;
@@ -1128,7 +1127,7 @@ static int config_changed(void) {
     if (stat(CONFIG_PATH, &st) != 0) return 0;
 
     if (st.st_mtime != config_mtime) {
-        config_mtime = st.st_mtime;
+//        config_mtime = st.st_mtime;
         return 1;
     }
     return 0;
@@ -1285,7 +1284,7 @@ static const char* find_bpf_object(void) {
     const char *paths[] = {
         "/usr/local/lib/app_data_sec/app_data_sec.bpf.o",
         "./app_data_sec.bpf.o",
-        "../app_data_sec.bpf.o",
+//        "../app_data_sec.bpf.o",
         "/opt/app_data_sec/app_data_sec.bpf.o",
         "/usr/lib/app_data_sec/app_data_sec.bpf.o",
         "/usr/local/app_data_sec.bpf.o",
@@ -1568,14 +1567,15 @@ int main(int argc, char **argv) {
                     add_folder_to_entries(bpf_obj, &entries[i]);
                     changed = 1;
                 } else if (entries[i].inode != current_inode) {
+                    struct protect_entry *new_entry = &entries[i];
                     SYSLOG_INFO_D("Folder recreated: %s (old: %lu, new: %lu)",
                                 entries[i].path,
                                 (unsigned long)entries[i].inode,
                                 (unsigned long)current_inode);
                     remove_folder_from_entries(bpf_obj, i);
-                    entries[i].inode = current_inode;
-                    entries[i].is_active = 1;
-                    add_folder_to_entries(bpf_obj, &entries[i]);
+                    new_entry->inode = current_inode;
+                    new_entry->is_active = 1;
+                    add_folder_to_entries(bpf_obj, new_entry);
                     changed = 1;
                 }
             }
