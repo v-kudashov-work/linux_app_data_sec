@@ -370,6 +370,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (geteuid() != 0) {
+        fprintf(stderr, "ERROR: This program must be run as root (UID 0)\n");
+        fprintf(stderr, "Please use: sudo %s\n", argv[0]);
+        return 1;
+    }
+
     // Определяем, файл это или директория
     int is_dir_mode = is_dir(source);
 

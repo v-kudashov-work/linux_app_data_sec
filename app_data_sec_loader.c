@@ -1342,6 +1342,12 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (geteuid() != 0) {
+        fprintf(stderr, "ERROR: This program must be run as root (UID 0)\n");
+        fprintf(stderr, "Please use: sudo %s\n", argv[0]);
+        return 1;
+    }
+
     int requested_log_level = log_level;
 
     // Загружаем конфиг во временный массив

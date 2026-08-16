@@ -430,6 +430,13 @@ static void process_log_line(char *line) {
 }
 
 int main(int argc, char *argv[]) {
+
+    if (geteuid() != 0) {
+        fprintf(stderr, "ERROR: This program must be run as root (UID 0)\n");
+        fprintf(stderr, "Please use: sudo %s\n", argv[0]);
+        return 1;
+    }
+
     int fd;
     char buffer[BUFFER_SIZE];
     ssize_t bytes_read;

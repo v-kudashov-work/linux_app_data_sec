@@ -406,6 +406,12 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (geteuid() != 0) {
+        fprintf(stderr, "ERROR: This program must be run as root (UID 0)\n");
+        fprintf(stderr, "Please use: sudo %s\n", argv[0]);
+        return 1;
+    }
+
     if (run_daemon) {
         pid_t pid = fork();
         if (pid < 0) {
