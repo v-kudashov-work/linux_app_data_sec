@@ -1,3 +1,4 @@
+// app_data_sec_messages_to_syslog.c - с полной информацией о директории (исправленная версия)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,12 +10,18 @@
 #include <limits.h>
 #include <stdbool.h>
 #include <dirent.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <pwd.h>
+#include <grp.h>
+#include <time.h>
 
 #define TRACE_PIPE "/sys/kernel/debug/tracing/trace_pipe"
 #define BUFFER_SIZE 8192
 #define MAX_PID_LEN 16
 #define MAX_MSG_LEN 8192
 #define MAX_PROCESS_CHAIN 32
+#define MAX_PATH_LEN 4096
 
 // Структура для хранения информации о процессе
 typedef struct {
@@ -23,6 +30,204 @@ typedef struct {
     char cmdline[PATH_MAX];
     char comm[64];
 } process_info_t;
+
+// Структура для хранения информации о директории
+typedef struct {
+    unsigned long long inode;
+    char path[PATH_MAX];
+    char name[PATH_MAX];
+    char parent_path[PATH_MAX];
+    uid_t uid;
+    gid_t gid;
+    char owner[256];
+    char group[256];
+    mode_t mode;
+    char permissions[11];
+    off_t size;
+    time_t mtime;
+    char mtime_str[64];
+    int is_directory;
+    int is_protected;
+    unsigned long long protected_inode;
+    char protected_path[PATH_MAX];
+} dir_info_t;
+
+// Безопасная функция копирования строки
+static void safe_strncpy(char *dest, const char *src, size_t size) {
+    if (!dest || !src || size == 0) return;
+    size_t src_len = strnlen(src, size - 1);
+    memcpy(dest, src, src_len);
+    dest[src_len] = '\0';
+}
+
+// Функция для получения пути по inode (рекурсивный поиск)
+static int find_path_by_inode_recursive(const char *base_path, unsigned long long target_inode, char *found_path, int depth) {
+    if (depth > 20) return 0;
+
+    DIR *dir;
+    struct dirent *entry;
+    struct stat st;
+    char full_path[MAX_PATH_LEN];
+
+    dir = opendir(base_path);
+    if (!dir) {
+        return 0;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        snprintf(full_path, sizeof(full_path), "%s/%s", base_path, entry->d_name);
+
+        if (lstat(full_path, &st) == 0) {
+            if (st.st_ino == target_inode) {
+                safe_strncpy(found_path, full_path, MAX_PATH_LEN);
+                closedir(dir);
+                return 1;
+            }
+
+            if (S_ISDIR(st.st_mode)) {
+                if (find_path_by_inode_recursive(full_path, target_inode, found_path, depth + 1)) {
+                    closedir(dir);
+                    return 1;
+                }
+            }
+        }
+    }
+
+    closedir(dir);
+    return 0;
+}
+
+// Функция для получения пути по inode
+static char* get_path_by_inode(unsigned long long inode) {
+    static char path[MAX_PATH_LEN];
+    path[0] = '\0';
+
+    if (find_path_by_inode_recursive("/", inode, path, 0)) {
+        return path;
+    }
+
+    if (find_path_by_inode_recursive("/home", inode, path, 0)) {
+        return path;
+    }
+
+    if (find_path_by_inode_recursive("/opt", inode, path, 0)) {
+        return path;
+    }
+
+    if (find_path_by_inode_recursive("/var", inode, path, 0)) {
+        return path;
+    }
+
+    snprintf(path, sizeof(path), "unknown (inode: %llu)", inode);
+    return path;
+}
+
+// Функция для получения имени владельца по UID
+static char* get_owner_name(uid_t uid) {
+    static char name[256];
+    struct passwd *pw = getpwuid(uid);
+    if (pw) {
+        snprintf(name, sizeof(name), "%s (UID:%d)", pw->pw_name, uid);
+    } else {
+        snprintf(name, sizeof(name), "UID:%d", uid);
+    }
+    return name;
+}
+
+// Функция для получения имени группы по GID
+static char* get_group_name(gid_t gid) {
+    static char name[256];
+    struct group *gr = getgrgid(gid);
+    if (gr) {
+        snprintf(name, sizeof(name), "%s (GID:%d)", gr->gr_name, gid);
+    } else {
+        snprintf(name, sizeof(name), "GID:%d", gid);
+    }
+    return name;
+}
+
+// Функция для получения прав доступа
+static void get_permissions(mode_t mode, char *perm) {
+    perm[0] = S_ISDIR(mode) ? 'd' : '-';
+    perm[1] = (mode & S_IRUSR) ? 'r' : '-';
+    perm[2] = (mode & S_IWUSR) ? 'w' : '-';
+    perm[3] = (mode & S_IXUSR) ? 'x' : '-';
+    perm[4] = (mode & S_IRGRP) ? 'r' : '-';
+    perm[5] = (mode & S_IWGRP) ? 'w' : '-';
+    perm[6] = (mode & S_IXGRP) ? 'x' : '-';
+    perm[7] = (mode & S_IROTH) ? 'r' : '-';
+    perm[8] = (mode & S_IWOTH) ? 'w' : '-';
+    perm[9] = (mode & S_IXOTH) ? 'x' : '-';
+    perm[10] = '\0';
+}
+
+// Функция для форматирования времени
+static void format_time(time_t t, char *buf, size_t size) {
+    struct tm *tm_info = localtime(&t);
+    strftime(buf, size, "%Y-%m-%d %H:%M:%S", tm_info);
+}
+
+// Функция для получения информации о директории по inode
+static dir_info_t get_directory_info(unsigned long long inode) {
+    dir_info_t info;
+    memset(&info, 0, sizeof(info));
+
+    info.inode = inode;
+    info.uid = -1;
+    info.gid = -1;
+
+    if (inode == 0) {
+        safe_strncpy(info.path, "unknown", sizeof(info.path));
+        return info;
+    }
+
+    char *path = get_path_by_inode(inode);
+    if (path) {
+        safe_strncpy(info.path, path, sizeof(info.path));
+    }
+
+    struct stat st;
+    if (stat(info.path, &st) == 0) {
+        info.uid = st.st_uid;
+        info.gid = st.st_gid;
+        info.mode = st.st_mode;
+        info.size = st.st_size;
+        info.mtime = st.st_mtime;
+        info.is_directory = S_ISDIR(st.st_mode);
+
+        safe_strncpy(info.owner, get_owner_name(st.st_uid), sizeof(info.owner));
+        safe_strncpy(info.group, get_group_name(st.st_gid), sizeof(info.group));
+        get_permissions(st.st_mode, info.permissions);
+        format_time(st.st_mtime, info.mtime_str, sizeof(info.mtime_str));
+
+        char *last_slash = strrchr(info.path, '/');
+        if (last_slash) {
+            safe_strncpy(info.name, last_slash + 1, sizeof(info.name));
+        } else {
+            safe_strncpy(info.name, info.path, sizeof(info.name));
+        }
+
+        if (last_slash && last_slash > info.path) {
+            size_t parent_len = last_slash - info.path;
+            if (parent_len > 0 && parent_len < sizeof(info.parent_path)) {
+                safe_strncpy(info.parent_path, info.path, parent_len + 1);
+            } else {
+                safe_strncpy(info.parent_path, "/", sizeof(info.parent_path));
+            }
+        } else {
+            safe_strncpy(info.parent_path, "/", sizeof(info.parent_path));
+        }
+    } else {
+        snprintf(info.path, sizeof(info.path), "not_found (inode: %llu)", inode);
+        safe_strncpy(info.name, "not_found", sizeof(info.name));
+    }
+
+    return info;
+}
 
 // Функция для получения пути к исполняемому файлу по PID
 static char* get_process_path(pid_t pid) {
@@ -34,7 +239,7 @@ static char* get_process_path(pid_t pid) {
 
     len = readlink(proc_path, path, sizeof(path) - 1);
     if (len < 0) {
-        snprintf(path, sizeof(path), "unknown");
+        safe_strncpy(path, "unknown", sizeof(path));
         return path;
     }
 
@@ -59,7 +264,7 @@ static char* get_process_cmdline(pid_t pid) {
 
     fp = fopen(proc_path, "r");
     if (!fp) {
-        snprintf(cmdline, sizeof(cmdline), "unknown");
+        safe_strncpy(cmdline, "unknown", sizeof(cmdline));
         return cmdline;
     }
 
@@ -67,7 +272,7 @@ static char* get_process_cmdline(pid_t pid) {
     fclose(fp);
 
     if (len == 0) {
-        snprintf(cmdline, sizeof(cmdline), "empty");
+        safe_strncpy(cmdline, "empty", sizeof(cmdline));
         return cmdline;
     }
 
@@ -96,14 +301,13 @@ static char* get_process_comm(pid_t pid) {
 
     fp = fopen(proc_path, "r");
     if (!fp) {
-        snprintf(comm, sizeof(comm), "unknown");
+        safe_strncpy(comm, "unknown", sizeof(comm));
         return comm;
     }
 
     if (fgets(comm, sizeof(comm), fp) == NULL) {
-        snprintf(comm, sizeof(comm), "unknown");
+        safe_strncpy(comm, "unknown", sizeof(comm));
     } else {
-        // Удаляем перевод строки
         size_t len = strlen(comm);
         if (len > 0 && comm[len-1] == '\n') {
             comm[len-1] = '\0';
@@ -114,7 +318,7 @@ static char* get_process_comm(pid_t pid) {
     return comm;
 }
 
-// Функция для получения информации о процессе (улучшенная)
+// Функция для получения информации о процессе
 static bool get_process_info(pid_t pid, process_info_t *info) {
     if (!info || pid <= 0) {
         return false;
@@ -152,7 +356,7 @@ static bool get_process_info(pid_t pid, process_info_t *info) {
     return true;
 }
 
-// Функция для получения PID родительского процесса из /proc (альтернативная)
+// Функция для получения PID родительского процесса из /proc
 static pid_t get_parent_pid_from_proc(pid_t pid) {
     char proc_path[64];
     FILE *fp;
@@ -184,7 +388,7 @@ static bool process_exists(pid_t pid) {
     return access(proc_path, F_OK) == 0;
 }
 
-// Функция для сбора цепочки процессов с использованием /proc/status (более надежная)
+// Функция для сбора цепочки процессов
 static int collect_process_chain_v2(pid_t pid, process_info_t *chain, int max_depth) {
     if (!chain || max_depth <= 0 || pid <= 0) {
         return 0;
@@ -327,6 +531,66 @@ static pid_t extract_pid(const char *line) {
     return pid;
 }
 
+// Функция для извлечения inode директории из строки лога
+static unsigned long long extract_folder_inode(const char *line) {
+    const char *inode_str = NULL;
+    const char *p = line;
+
+    while (*p) {
+        if (strncmp(p, "FOLDER_INODE=", 13) == 0) {
+            inode_str = p + 13;
+            break;
+        }
+        p++;
+    }
+
+    if (!inode_str) {
+        return 0;
+    }
+
+    unsigned long long inode = 0;
+    while (*inode_str && isdigit(*inode_str)) {
+        inode = inode * 10 + (*inode_str - '0');
+        inode_str++;
+    }
+
+    return inode;
+}
+
+// Функция для форматирования информации о директории (переработанная)
+static void format_directory_info(unsigned long long inode, char *output, size_t output_size) {
+    if (inode == 0) {
+        snprintf(output, output_size, "DIR: unknown");
+        return;
+    }
+
+    dir_info_t info = get_directory_info(inode);
+
+    // Используем фиксированный размер для каждого поля
+    char path_short[128];
+    char name_short[64];
+    char parent_short[128];
+
+    // Обрезаем длинные строки
+    safe_strncpy(path_short, info.path, sizeof(path_short));
+    safe_strncpy(name_short, info.name, sizeof(name_short));
+    safe_strncpy(parent_short, info.parent_path, sizeof(parent_short));
+
+    // Форматируем с использованием фиксированных размеров
+    snprintf(output, output_size,
+             "DIR: INODE=%llu PATH=%.120s NAME=%.60s PARENT=%.120s OWNER=%.60s GROUP=%.60s PERMS=%.10s SIZE=%ld MTIME=%.30s IS_DIR=%d",
+             info.inode,
+             path_short[0] ? path_short : "unknown",
+             name_short[0] ? name_short : "unknown",
+             parent_short[0] ? parent_short : "unknown",
+             info.owner[0] ? info.owner : "unknown",
+             info.group[0] ? info.group : "unknown",
+             info.permissions[0] ? info.permissions : "unknown",
+             (long)info.size,
+             info.mtime_str[0] ? info.mtime_str : "unknown",
+             info.is_directory);
+}
+
 // Функция для обработки строки лога
 static void process_log_line(char *line) {
     // Удаляем перевод строки
@@ -349,11 +613,15 @@ static void process_log_line(char *line) {
 
     // Извлекаем PID
     pid_t pid = extract_pid(line);
+    unsigned long long folder_inode = extract_folder_inode(line);
 
     // Формируем сообщение для syslog
     char syslog_msg[MAX_MSG_LEN];
     char chain_str[4096] = "";
     char process_tree[4096] = "";
+    char dir_info_str[2048] = "";
+
+    format_directory_info(folder_inode, dir_info_str, sizeof(dir_info_str));
 
     if (pid > 0) {
         // Собираем цепочку процессов
@@ -401,8 +669,9 @@ static void process_log_line(char *line) {
 
             // Формируем сообщение с полной информацией
             int written = snprintf(syslog_msg, sizeof(syslog_msg),
-                                   "%s | CHAIN: %s | CURRENT: PID=%d EXE=%s CMDLINE=%s",
-                                   line, chain_str, pid, current_info.exe_path, current_info.cmdline);
+                                   "%s | CHAIN: %s | CURRENT: PID=%d EXE=%s CMDLINE=%s | %s",
+                                   line, chain_str, pid, current_info.exe_path,
+                                   current_info.cmdline, dir_info_str);
 
             if (written >= (int)sizeof(syslog_msg) - 1) {
                 syslog_msg[sizeof(syslog_msg) - 4] = '.';
@@ -416,16 +685,15 @@ static void process_log_line(char *line) {
                 syslog(LOG_INFO, "PROCESS TREE for PID %d:\n%s", pid, process_tree);
             }
         } else {
-            snprintf(syslog_msg, sizeof(syslog_msg), "%s | CHAIN: %s (PID=%d)",
-                     line, chain_str, pid);
+            snprintf(syslog_msg, sizeof(syslog_msg), "%s | CHAIN: %s (PID=%d) | %s",
+                     line, chain_str, pid, dir_info_str);
         }
 
-        // Отправляем в syslog
         syslog(LOG_INFO, "%s", syslog_msg);
 
     } else {
-        // Если PID не найден, выводим как есть
-        // snprintf(syslog_msg, sizeof(syslog_msg), "%s", line);
+        snprintf(syslog_msg, sizeof(syslog_msg), "%s | %s", line, dir_info_str);
+        syslog(LOG_INFO, "%s", syslog_msg);
     }
 }
 
