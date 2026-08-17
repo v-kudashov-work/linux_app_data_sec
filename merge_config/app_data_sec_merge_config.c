@@ -330,27 +330,44 @@ static int is_allowed_exists(protect_entry_t *entry, const char *allowed_path) {
 }
 
 // ============================================================================
-// УДАЛЕНИЕ ПРОГРАММ ИЗ СПИСКА РАЗРЕШЕННЫХ
+// УДАЛЕНИЕ ПРОГРАММ ИЗ СПИСКА РАЗРЕШЕННЫХ ИЛИ УДАЛЕНИЕ ВСЕЙ ЗАПИСИ
 // ============================================================================
 
-static int remove_allowed_programs(protect_entry_t *entries, int *count,
+static int remove_allowed_programs(protect_entry_t **entries_ptr, int *count,
                                    unprotect_entry_t *unprotect_entries, int unprotect_count,
-                                   int *total_removed) {
-    if (!entries || !count || !unprotect_entries || !total_removed) return -1;
+                                   int *total_removed, int *total_entries_deleted) {
+    if (!entries_ptr || !*entries_ptr || !count || !unprotect_entries || !total_removed || !total_entries_deleted)
+        return -1;
 
     *total_removed = 0;
+    *total_entries_deleted = 0;
     int entries_modified = 0;
 
     for (int u = 0; u < unprotect_count; u++) {
         unprotect_entry_t *unprotect = &unprotect_entries[u];
-        int idx = find_entry(entries, *count, unprotect->path);
+        int idx = find_entry(*entries_ptr, *count, unprotect->path);
 
         if (idx < 0) {
             printf("  Warning: Path '%s' not found in configuration, skipping\n", unprotect->path);
             continue;
         }
 
-        protect_entry_t *entry = &entries[idx];
+        // Если нет программ для удаления - удаляем всю запись о папке
+        if (unprotect->allowed_count == 0) {
+            printf("  Deleting entire entry for '%s' (no programs specified)\n", unprotect->path);
+
+            // Сдвигаем все записи после удаляемой
+            for (int i = idx; i < *count - 1; i++) {
+                memcpy(&(*entries_ptr)[i], &(*entries_ptr)[i + 1], sizeof(protect_entry_t));
+            }
+            (*count)--;
+            (*total_entries_deleted)++;
+            entries_modified++;
+            continue;
+        }
+
+        // Если есть программы для удаления - удаляем только их
+        protect_entry_t *entry = &(*entries_ptr)[idx];
         int removed_count = 0;
 
         // Создаем новый список разрешенных программ без удаляемых
@@ -373,13 +390,14 @@ static int remove_allowed_programs(protect_entry_t *entries, int *count,
         }
 
         if (removed_count > 0) {
-            // Обновляем список разрешенных программ
+            // Обновляем список разрешенных программ (даже если он стал пустым)
             memcpy(entry->allowed, new_allowed, sizeof(new_allowed));
             entry->allowed_count = new_count;
             entries_modified++;
             *total_removed += removed_count;
 
-            printf("  Removed %d program(s) from '%s'\n", removed_count, entry->path);
+            printf("  Removed %d program(s) from '%s' (remaining: %d)\n",
+                   removed_count, entry->path, entry->allowed_count);
         } else {
             printf("  No programs to remove from '%s'\n", entry->path);
         }
@@ -644,6 +662,7 @@ int main(int argc, char **argv) {
     int total_updated = 0;
     int total_skipped = 0;
     int total_unprotect_removed = 0;
+    int total_entries_deleted = 0;
 
     for (int f = 0; f < file_count; f++) {
         printf("--- Processing: %s ---\n", config_files[f]);
@@ -668,13 +687,21 @@ int main(int argc, char **argv) {
                        unprotect_entries[i].path, unprotect_entries[i].allowed_count);
             }
             int removed = 0;
-            int modified = remove_allowed_programs(main_entries, &main_count,
-                                                   unprotect_entries, unprotect_count, &removed);
+            int entries_deleted = 0;
+            int modified = remove_allowed_programs(&main_entries, &main_count,
+                                                   unprotect_entries, unprotect_count,
+                                                   &removed, &entries_deleted);
             if (modified > 0) {
                 total_unprotect_removed += removed;
-                printf("  Removed %d program(s) total\n", removed);
+                total_entries_deleted += entries_deleted;
+                if (removed > 0) {
+                    printf("  Removed %d program(s) total\n", removed);
+                }
+                if (entries_deleted > 0) {
+                    printf("  Deleted %d entry(ies) total\n", entries_deleted);
+                }
             } else {
-                printf("  No programs were removed\n");
+                printf("  No changes were made\n");
             }
         }
 
