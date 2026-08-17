@@ -31,7 +31,7 @@
 #define RETRY_INTERVAL 15
 #define AUTOCONFIG_DIR "/etc/app_data_sec.autoconfig"
 #define AUTOCONFIG_TIMESTAMP "/etc/app_data_sec.autoconfig.timestamp"
-#define AUTOCONFIG_CHECK_INTERVAL 3600  // 1 час
+#define AUTOCONFIG_CHECK_INTERVAL 900  // 15 минут
 
 // ============================================================================
 // ОТЛАДКА
@@ -1615,10 +1615,9 @@ int main(int argc, char **argv) {
 
     time_t last_folder_check = time(NULL);
     time_t last_autoconfig_check = time(NULL) - AUTOCONFIG_CHECK_INTERVAL - 100;
-    DEBUG_PRINT("Entering main loop...");
+    SYSLOG_INFO("Entering main loop...");
 
     while (1) {
-        sleep(CHECK_INTERVAL);
         time_t now = time(NULL);
 
         // Проверка автоконфигурации (раз в час)
@@ -1634,6 +1633,9 @@ int main(int argc, char **argv) {
             }
             last_autoconfig_check = now;
         }
+
+        sleep(CHECK_INTERVAL);
+        now = time(NULL);
 
         if (config_changed()) {
             SYSLOG_INFO("Config changed! Reloading...");
