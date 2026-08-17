@@ -1323,6 +1323,9 @@ static int autoconfig_changed(void) {
         return 0;
     }
 
+    // Получаем текущее время изменения директории
+    current_mtime = st.st_mtime;
+
     // Проверяем, есть ли .conf файлы в директории
     DIR *dir = opendir(AUTOCONFIG_DIR);
     if (!dir) {
@@ -1346,9 +1349,6 @@ static int autoconfig_changed(void) {
         SYSLOG_INFO_D("No .conf files in auto-config directory");
         return 0;
     }
-
-    // Получаем текущее время изменения директории
-    current_mtime = st.st_mtime;
 
     // Читаем сохранённое время
     FILE *fp = fopen(AUTOCONFIG_TIMESTAMP, "r");
@@ -1381,6 +1381,7 @@ static int apply_autoconfig(void) {
     const char *merge_config_paths[] = {
             "/usr/local/bin/app_data_sec_merge_config",
             "/usr/bin/app_data_sec_merge_config",
+            "./app_data_sec_merge_config",
             NULL
     };
 
@@ -1613,7 +1614,7 @@ int main(int argc, char **argv) {
     SYSLOG_INFO("Config file: %s", CONFIG_PATH);
 
     time_t last_folder_check = time(NULL);
-    time_t last_autoconfig_check = time(NULL);
+    time_t last_autoconfig_check = time(NULL) - AUTOCONFIG_CHECK_INTERVAL - 100;
     DEBUG_PRINT("Entering main loop...");
 
     while (1) {
