@@ -19,13 +19,19 @@ LOG_PATH="/var/log"
 SERVICE_DIR="/etc/systemd/system"
 BACKUP_DIR="/root/app_data_sec_backup"
 CONFIG_SOURCE_DIR="./configs"  # Папка с предустановленными конфигами
+CONFIG_SOURCE_DIR="./configs"                      # Папка с предустановленными конфигами
+AUTOCONFIG_DIR="/etc/app_data_sec.autoconfig"      # Папка для автоматического импорта конфигов
 
 # Флаг обновления
 IS_UPDATE=0
 
+# После определения переменных (примерно строка 20-30)
+AUTOCONFIG_FILE="/etc/app_data_sec.autoconfig"
+AUTOCONFIG_MODE=0
+
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}   APP DATA SEC - INSTALL/UPDATE${NC}"
-echo -e "${BLUE}          for ALT Linux${NC}"
+echo -e "${BLUE}          for ALT Linux / Ubuntu${NC}"
 echo -e "${BLUE}========================================${NC}\n"
 
 # ============================================================================
@@ -1048,6 +1054,22 @@ fi
 if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
     ln -sf "$INSTALL_PATH/app_data_sec_messages_to_syslog" /usr/bin/app_data_sec_messages_to_syslog 2>/dev/null || true
     echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_messages_to_syslog"
+fi
+
+
+# ============================================================================
+# ИМПОРТ КОНФИГУРАЦИЙ (АВТОМАТИЧЕСКИЙ)
+# ============================================================================
+
+# Создаём autoconfig директорию, если её нет
+if [ ! -d "$AUTOCONFIG_DIR" ]; then
+    mkdir -p "$AUTOCONFIG_DIR"
+fi
+
+# Проверяем наличие merge_config
+if [ -f "$INSTALL_PATH/app_data_sec_merge_config" ]; then
+    # Запускаем merge_config с autoconfig директорией (тихо, без лишних сообщений)
+    "$INSTALL_PATH/app_data_sec_merge_config" -m "$CONFIG_PATH" "$AUTOCONFIG_DIR" --autoconfig -y 2>/dev/null || true
 fi
 
 # ============================================================================
