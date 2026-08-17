@@ -655,7 +655,7 @@ int main(int argc, char **argv) {
     }
 
     // Собираем все unprotect запросы
-    unprotect_entry_t *all_unprotect = NULL;
+//    unprotect_entry_t *all_unprotect = NULL;
     int total_unprotect_count = 0;
     int total_unprotect_programs = 0;
 
