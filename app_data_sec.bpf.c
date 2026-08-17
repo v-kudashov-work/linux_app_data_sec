@@ -867,6 +867,109 @@ int BPF_PROG(block_inode_mkdir, struct inode *dir, struct dentry *dentry, umode_
 {
     return check_access(dentry->d_parent, "INODE_MKDIR", 1);
 }
+//
+//SEC("lsm/path_unlink")
+//int BPF_PROG(block_path_unlink, const struct path *dir, struct dentry *dentry)
+//{
+//    return check_access(dentry, "UNLINK", 1);
+//}
+//
+//// Хук на удаление через inode (альтернативный способ)
+//SEC("lsm/inode_unlink")
+//int BPF_PROG(block_inode_unlink, struct inode *dir, struct dentry *dentry)
+//{
+//    return check_access(dentry, "INODE_UNLINK", 1);
+//}
+//
+//// Хук на удаление директории (уже есть path_rmdir)
+//SEC("lsm/path_rmdir")
+//int BPF_PROG(block_path_rmdir, const struct path *dir, struct dentry *dentry)
+//{
+//    return check_access(dentry, "RMDIR", 1);
+//}
+//
+//// Хук на удаление через inode_rmdir (альтернативный способ)
+//SEC("lsm/inode_rmdir")
+//int BPF_PROG(block_inode_rmdir, struct inode *dir, struct dentry *dentry)
+//{
+//    return check_access(dentry, "INODE_RMDIR", 1);
+//}
+//
+//// Хук на удаление ссылки (symlink)
+//SEC("lsm/path_unlink") // уже есть выше
+//// int BPF_PROG(block_path_unlink, const struct path *dir, struct dentry *dentry)
+//// {
+////     return check_access(dentry, "UNLINK", 1);
+//// }
+//
+//// Хук на удаление через truncate (очистка содержимого файла)
+//SEC("lsm/path_truncate")
+//int BPF_PROG(block_path_truncate, const struct path *path)
+//{
+//    if (!path || !path->dentry) {
+//        return 0;
+//    }
+//    return check_access(path->dentry, "TRUNCATE", 1);
+//}
+//
+//// Хук на изменение прав (может использоваться для подготовки к удалению)
+//SEC("lsm/inode_setattr")
+//int BPF_PROG(block_inode_setattr, struct dentry *dentry, struct iattr *attr)
+//{
+//    if (!dentry) {
+//        return 0;
+//    }
+//
+//    // Проверяем только если меняются права на запись (может быть подготовкой к удалению)
+//    if (attr && (attr->ia_valid & ATTR_MODE)) {
+//        return check_access(dentry, "SETATTR", 1);
+//    }
+//    return 0;
+//}
+//
+//// Хук на chmod (изменение прав)
+//SEC("lsm/path_chmod")
+//int BPF_PROG(block_path_chmod, const struct path *path, umode_t mode)
+//{
+//    if (!path || !path->dentry) {
+//        return 0;
+//    }
+//    return check_access(path->dentry, "CHMOD", 1);
+//}
+//
+//// Хук на chown (изменение владельца)
+//SEC("lsm/path_chown")
+//int BPF_PROG(block_path_chown, const struct path *path, kuid_t uid, kgid_t gid)
+//{
+//    if (!path || !path->dentry) {
+//        return 0;
+//    }
+//    return check_access(path->dentry, "CHOWN", 1);
+//}
+//
+//// Хук на rename (переименование, может использоваться для удаления)
+//SEC("lsm/path_rename")
+//int BPF_PROG(block_path_rename, const struct path *old_dir, struct dentry *old_dentry,
+//             const struct path *new_dir, struct dentry *new_dentry)
+//{
+//    int ret = check_access(old_dentry, "RENAME_OLD", 1);
+//    if (ret != 0) {
+//        return ret;
+//    }
+//    return check_access(new_dentry, "RENAME_NEW", 1);
+//}
+//
+//// Хук на rename через inode
+//SEC("lsm/inode_rename")
+//int BPF_PROG(block_inode_rename, struct inode *old_dir, struct dentry *old_dentry,
+//             struct inode *new_dir, struct dentry *new_dentry)
+//{
+//    int ret = check_access(old_dentry, "INODE_RENAME_OLD", 1);
+//    if (ret != 0) {
+//        return ret;
+//    }
+//    return check_access(new_dentry, "INODE_RENAME_NEW", 1);
+//}
 
 //SEC("lsm/file_permission")
 //int BPF_PROG(block_file_permission, struct file *file, int mask)

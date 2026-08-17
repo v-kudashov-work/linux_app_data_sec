@@ -22,6 +22,13 @@ typedef struct {
     int is_template;
 } protect_entry_t;
 
+// Структура для хранения запросов на удаление
+typedef struct {
+    char path[MAX_PATH_LEN];
+    char allowed[MAX_ALLOWED][MAX_PATH_LEN];
+    int allowed_count;
+} unprotect_entry_t;
+
 // ============================================================================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 // ============================================================================
@@ -130,7 +137,8 @@ static int get_config_files(const char *dir_path, char files[MAX_CONFIG_FILES][P
 // ПАРСИНГ КОНФИГА
 // ============================================================================
 
-static int parse_config(const char *filename, protect_entry_t **entries, int *count) {
+static int parse_config(const char *filename, protect_entry_t **entries, int *count,
+                        unprotect_entry_t **unprotect_entries, int *unprotect_count) {
     if (!filename || !entries || !count) {
         fprintf(stderr, "Error: NULL pointer passed to parse_config\n");
         return -1;
@@ -150,9 +158,21 @@ static int parse_config(const char *filename, protect_entry_t **entries, int *co
         return -1;
     }
 
+    // Выделяем память для unprotect записей
+    if (unprotect_entries && unprotect_count) {
+        *unprotect_entries = calloc(MAX_PATHS, sizeof(unprotect_entry_t));
+        if (!*unprotect_entries) {
+            fprintf(stderr, "Error: Failed to allocate memory for unprotect entries\n");
+            free(*entries);
+            fclose(fp);
+            return -1;
+        }
+    }
+
     char line[MAX_LINE_LEN];
     int line_num = 0;
     *count = 0;
+    if (unprotect_count) *unprotect_count = 0;
 
     while (fgets(line, sizeof(line), fp)) {
         line_num++;
@@ -217,6 +237,66 @@ static int parse_config(const char *filename, protect_entry_t **entries, int *co
 
             (*count)++;
         }
+        else if (starts_with(line, "unprotect")) {
+            if (!unprotect_entries || !unprotect_count) {
+                fprintf(stderr, "Warning: line %d: unprotect not supported in this context\n", line_num);
+                continue;
+            }
+
+            char *ptr = line + 9; // длина "unprotect"
+            while (*ptr == ' ' || *ptr == '\t') ptr++;
+
+            if (*ptr == '\0') {
+                fprintf(stderr, "Warning: line %d: missing path after unprotect\n", line_num);
+                continue;
+            }
+
+            if (*unprotect_count >= MAX_PATHS) {
+                fprintf(stderr, "Warning: line %d: max unprotect entries reached (%d)\n", line_num, MAX_PATHS);
+                break;
+            }
+
+            char *path_end = ptr;
+            while (*path_end && *path_end != ' ' && *path_end != '\t') path_end++;
+
+            size_t path_len = path_end - ptr;
+            if (path_len >= MAX_PATH_LEN) {
+                path_len = MAX_PATH_LEN - 1;
+                fprintf(stderr, "Warning: line %d: path too long, truncating\n", line_num);
+            }
+
+            unprotect_entry_t *entry = &(*unprotect_entries)[*unprotect_count];
+            memset(entry, 0, sizeof(unprotect_entry_t));
+            memcpy(entry->path, ptr, path_len);
+            entry->path[path_len] = '\0';
+
+            ptr = path_end;
+
+            while (*ptr) {
+                while (*ptr == ' ' || *ptr == '\t') ptr++;
+                if (*ptr == '\0') break;
+
+                char *arg_end = ptr;
+                while (*arg_end && *arg_end != ' ' && *arg_end != '\t') arg_end++;
+
+                size_t arg_len = arg_end - ptr;
+                if (arg_len > 0 && entry->allowed_count < MAX_ALLOWED) {
+                    if (arg_len >= MAX_PATH_LEN) {
+                        arg_len = MAX_PATH_LEN - 1;
+                    }
+                    memcpy(entry->allowed[entry->allowed_count], ptr, arg_len);
+                    entry->allowed[entry->allowed_count][arg_len] = '\0';
+                    entry->allowed_count++;
+                } else if (arg_len > 0) {
+                    fprintf(stderr, "Warning: line %d: max allowed programs reached for %s\n",
+                            line_num, entry->path);
+                }
+
+                ptr = arg_end;
+            }
+
+            (*unprotect_count)++;
+        }
     }
 
     fclose(fp);
@@ -247,6 +327,65 @@ static int is_allowed_exists(protect_entry_t *entry, const char *allowed_path) {
         }
     }
     return 0;
+}
+
+// ============================================================================
+// УДАЛЕНИЕ ПРОГРАММ ИЗ СПИСКА РАЗРЕШЕННЫХ
+// ============================================================================
+
+static int remove_allowed_programs(protect_entry_t *entries, int *count,
+                                   unprotect_entry_t *unprotect_entries, int unprotect_count,
+                                   int *total_removed) {
+    if (!entries || !count || !unprotect_entries || !total_removed) return -1;
+
+    *total_removed = 0;
+    int entries_modified = 0;
+
+    for (int u = 0; u < unprotect_count; u++) {
+        unprotect_entry_t *unprotect = &unprotect_entries[u];
+        int idx = find_entry(entries, *count, unprotect->path);
+
+        if (idx < 0) {
+            printf("  Warning: Path '%s' not found in configuration, skipping\n", unprotect->path);
+            continue;
+        }
+
+        protect_entry_t *entry = &entries[idx];
+        int removed_count = 0;
+
+        // Создаем новый список разрешенных программ без удаляемых
+        char new_allowed[MAX_ALLOWED][MAX_PATH_LEN];
+        int new_count = 0;
+
+        for (int i = 0; i < entry->allowed_count; i++) {
+            int should_remove = 0;
+            for (int j = 0; j < unprotect->allowed_count; j++) {
+                if (strcmp(entry->allowed[i], unprotect->allowed[j]) == 0) {
+                    should_remove = 1;
+                    removed_count++;
+                    break;
+                }
+            }
+            if (!should_remove) {
+                strcpy(new_allowed[new_count], entry->allowed[i]);
+                new_count++;
+            }
+        }
+
+        if (removed_count > 0) {
+            // Обновляем список разрешенных программ
+            memcpy(entry->allowed, new_allowed, sizeof(new_allowed));
+            entry->allowed_count = new_count;
+            entries_modified++;
+            *total_removed += removed_count;
+
+            printf("  Removed %d program(s) from '%s'\n", removed_count, entry->path);
+        } else {
+            printf("  No programs to remove from '%s'\n", entry->path);
+        }
+    }
+
+    return entries_modified;
 }
 
 // ============================================================================
@@ -283,6 +422,7 @@ static int write_config(const char *filename, protect_entry_t *entries, int coun
     fprintf(fp, "# protect <path> [allowed_prog1] [allowed_prog2] ... - защищает папку\n");
     fprintf(fp, "#   path - путь к папке (можно использовать ~ для домашней директории)\n");
     fprintf(fp, "#   allowed_prog - абсолютный путь к программе, которая может обходить защиту\n");
+    fprintf(fp, "# unprotect <path> [prog1] [prog2] ... - удаляет программы из списка разрешенных\n");
     fprintf(fp, "\n");
 
     fprintf(fp, "enable = %s\n\n", enable ? "yes" : "no");
@@ -310,10 +450,12 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "Usage: %s [OPTIONS] <config_file_or_dir>\n", prog);
     fprintf(stderr, "\n");
     fprintf(stderr, "Merge protect entries from config_file or all .conf files in directory.\n");
+    fprintf(stderr, "Support 'unprotect' directive to remove allowed programs.\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -m, --main <path>    Main config file (default: /etc/app_data_sec.conf)\n");
     fprintf(stderr, "  -d, --disable        Disable protection after merge (enable=no)\n");
+    fprintf(stderr, "  -y, --yes            Automatically confirm unprotect operations\n");
     fprintf(stderr, "  -h, --help           Show this help\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Examples:\n");
@@ -327,6 +469,7 @@ int main(int argc, char **argv) {
     const char *main_config = "/etc/app_data_sec.conf";
     const char *source = NULL;
     int enable = 1;
+    int auto_confirm = 0;
 
     if (argc < 2) {
         fprintf(stderr, "Error: Missing arguments\n");
@@ -347,6 +490,8 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--disable") == 0) {
             enable = 0;
+        } else if (strcmp(argv[i], "-y") == 0 || strcmp(argv[i], "--yes") == 0) {
+            auto_confirm = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -394,7 +539,7 @@ int main(int argc, char **argv) {
 
     if (path_exists(main_config)) {
         printf("Parsing main config...\n");
-        if (parse_config(main_config, &main_entries, &main_count) != 0) {
+        if (parse_config(main_config, &main_entries, &main_count, NULL, NULL) != 0) {
             fprintf(stderr, "Error: Failed to parse main config\n");
             free(main_entries);
             return 1;
@@ -431,30 +576,117 @@ int main(int argc, char **argv) {
         file_count = 1;
     }
 
-    // Парсим и сливаем все файлы
+    // Собираем все unprotect запросы
+    unprotect_entry_t *all_unprotect = NULL;
+    int total_unprotect_count = 0;
+    int total_unprotect_programs = 0;
+
+    // Первый проход: собираем все unprotect запросы
+    for (int f = 0; f < file_count; f++) {
+        protect_entry_t *temp_entries = NULL;
+        unprotect_entry_t *temp_unprotect = NULL;
+        int temp_count = 0;
+        int temp_unprotect_count = 0;
+
+        if (parse_config(config_files[f], &temp_entries, &temp_count, &temp_unprotect, &temp_unprotect_count) != 0) {
+            fprintf(stderr, "Error: Failed to parse %s\n", config_files[f]);
+            free(temp_entries);
+            free(temp_unprotect);
+            continue;
+        }
+
+        if (temp_unprotect_count > 0) {
+            // Подсчитываем общее количество программ для удаления
+            for (int i = 0; i < temp_unprotect_count; i++) {
+                total_unprotect_programs += temp_unprotect[i].allowed_count;
+                printf("DEBUG: unprotect for '%s' has %d programs\n",
+                       temp_unprotect[i].path, temp_unprotect[i].allowed_count);
+                for (int j = 0; j < temp_unprotect[i].allowed_count; j++) {
+                    printf("DEBUG:   program: '%s'\n", temp_unprotect[i].allowed[j]);
+                }
+            }
+            total_unprotect_count += temp_unprotect_count;
+        }
+
+        free(temp_entries);
+        free(temp_unprotect);
+    }
+
+    // Если есть unprotect запросы, запрашиваем подтверждение
+    if (total_unprotect_count > 0) {
+        printf("\n=== Unprotect Operations Found ===\n");
+        printf("Total unprotect entries: %d\n", total_unprotect_count);
+        printf("Total programs to remove: %d\n", total_unprotect_programs);
+        printf("\n");
+
+        if (!auto_confirm) {
+            char response[10];
+            printf("Do you want to proceed with removing these programs? (yes/no): ");
+            if (fgets(response, sizeof(response), stdin) == NULL) {
+                fprintf(stderr, "Error reading response\n");
+                free(main_entries);
+                return 1;
+            }
+            trim(response);
+            if (strcmp(response, "yes") != 0 && strcmp(response, "y") != 0) {
+                printf("Operation cancelled by user\n");
+                free(main_entries);
+                return 0;
+            }
+        } else {
+            printf("Auto-confirm enabled, proceeding...\n");
+        }
+        printf("\n");
+    }
+
+    // Второй проход: применяем protect и unprotect
     int total_added = 0;
     int total_updated = 0;
     int total_skipped = 0;
+    int total_unprotect_removed = 0;
 
     for (int f = 0; f < file_count; f++) {
         printf("--- Processing: %s ---\n", config_files[f]);
 
         protect_entry_t *merge_entries = NULL;
+        unprotect_entry_t *unprotect_entries = NULL;
         int merge_count = 0;
+        int unprotect_count = 0;
 
-        if (parse_config(config_files[f], &merge_entries, &merge_count) != 0) {
+        if (parse_config(config_files[f], &merge_entries, &merge_count, &unprotect_entries, &unprotect_count) != 0) {
             fprintf(stderr, "Error: Failed to parse %s\n", config_files[f]);
             free(merge_entries);
+            free(unprotect_entries);
             continue;
         }
 
+        // Обрабатываем unprotect запросы
+        if (unprotect_count > 0) {
+            printf("  Processing %d unprotect request(s)\n", unprotect_count);
+            for (int i = 0; i < unprotect_count; i++) {
+                printf("    Unprotect '%s' with %d program(s)\n",
+                       unprotect_entries[i].path, unprotect_entries[i].allowed_count);
+            }
+            int removed = 0;
+            int modified = remove_allowed_programs(main_entries, &main_count,
+                                                   unprotect_entries, unprotect_count, &removed);
+            if (modified > 0) {
+                total_unprotect_removed += removed;
+                printf("  Removed %d program(s) total\n", removed);
+            } else {
+                printf("  No programs were removed\n");
+            }
+        }
+
+        // Обрабатываем protect записи
         if (merge_count == 0) {
-            printf("  No protect entries found, skipping\n");
+            printf("  No protect entries found\n");
             free(merge_entries);
+            free(unprotect_entries);
             continue;
         }
 
-        printf("  Found %d entries\n", merge_count);
+        printf("  Found %d protect entries\n", merge_count);
 
         int file_added = 0;
         int file_updated = 0;
@@ -500,6 +732,7 @@ int main(int argc, char **argv) {
         }
 
         free(merge_entries);
+        free(unprotect_entries);
 
         total_added += file_added;
         total_updated += file_updated;
@@ -510,9 +743,14 @@ int main(int argc, char **argv) {
     }
 
     printf("=== Final Summary ===\n");
-    printf("Total: %d added, %d updated, %d skipped\n", total_added, total_updated, total_skipped);
+    printf("Added: %d entries\n", total_added);
+    printf("Updated: %d entries\n", total_updated);
+    printf("Skipped: %d entries\n", total_skipped);
+    if (total_unprotect_removed > 0) {
+        printf("Unprotected: %d programs removed\n", total_unprotect_removed);
+    }
 
-    if (total_added == 0 && total_updated == 0) {
+    if (total_added == 0 && total_updated == 0 && total_unprotect_removed == 0) {
         printf("No changes to write\n");
         free(main_entries);
         return 0;
