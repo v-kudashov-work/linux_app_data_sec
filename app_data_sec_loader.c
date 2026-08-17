@@ -29,6 +29,9 @@
 #define MAX_PATH_LEN 256
 #define CHECK_INTERVAL 5
 #define RETRY_INTERVAL 15
+#define AUTOCONFIG_DIR "/etc/app_data_sec.autoconfig"
+#define AUTOCONFIG_TIMESTAMP "/etc/app_data_sec.autoconfig.timestamp"
+#define AUTOCONFIG_CHECK_INTERVAL 3600  // 1 час
 
 // ============================================================================
 // ОТЛАДКА
@@ -1306,6 +1309,114 @@ static const char* find_bpf_object(void) {
 }
 
 // ============================================================================
+// ПРОВЕРКА АВТОКОНФИГУРАЦИИ
+// ============================================================================
+
+static int autoconfig_changed(void) {
+    struct stat st;
+    time_t current_mtime = 0;
+    time_t saved_timestamp = 0;
+
+    // Проверяем существование директории
+    if (stat(AUTOCONFIG_DIR, &st) != 0) {
+        SYSLOG_INFO_D("Auto-config directory not found: %s", AUTOCONFIG_DIR);
+        return 0;
+    }
+
+    // Проверяем, есть ли .conf файлы в директории
+    DIR *dir = opendir(AUTOCONFIG_DIR);
+    if (!dir) {
+        SYSLOG_INFO_D("Cannot open auto-config directory: %s", AUTOCONFIG_DIR);
+        return 0;
+    }
+
+    int has_conf = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char *ext = strrchr(entry->d_name, '.');
+        if (ext && strcmp(ext, ".conf") == 0) {
+            has_conf = 1;
+            break;
+        }
+    }
+    closedir(dir);
+
+    if (!has_conf) {
+        SYSLOG_INFO_D("No .conf files in auto-config directory");
+        return 0;
+    }
+
+    // Получаем текущее время изменения директории
+    current_mtime = st.st_mtime;
+
+    // Читаем сохранённое время
+    FILE *fp = fopen(AUTOCONFIG_TIMESTAMP, "r");
+    if (fp) {
+        if (fscanf(fp, "%ld", &saved_timestamp) == 1) {
+            SYSLOG_INFO_D("Saved timestamp: %ld, current: %ld", saved_timestamp, current_mtime);
+        }
+        fclose(fp);
+    }
+
+    // Если время изменилось или файл с временем не существует
+    if (current_mtime != saved_timestamp) {
+        // Сохраняем новое время
+        fp = fopen(AUTOCONFIG_TIMESTAMP, "w");
+        if (fp) {
+            fprintf(fp, "%ld", current_mtime);
+            fclose(fp);
+            SYSLOG_INFO("Auto-config timestamp updated: %ld", current_mtime);
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
+static int apply_autoconfig(void) {
+    SYSLOG_INFO("Auto-config changed! Applying new configurations...");
+
+    // Проверяем наличие merge_config
+    const char *merge_config_paths[] = {
+            "/usr/local/bin/app_data_sec_merge_config",
+            "/usr/bin/app_data_sec_merge_config",
+            NULL
+    };
+
+    char merge_cmd[PATH_MAX];
+    int found = 0;
+
+    for (int i = 0; merge_config_paths[i] != NULL; i++) {
+        if (access(merge_config_paths[i], X_OK) == 0) {
+            strcpy(merge_cmd, merge_config_paths[i]);
+            found = 1;
+            break;
+        }
+    }
+
+    if (!found) {
+        SYSLOG_ERR("app_data_sec_merge_config not found, cannot apply auto-config");
+        return -1;
+    }
+
+    // Формируем команду
+    char cmd[PATH_MAX * 2];
+    snprintf(cmd, sizeof(cmd), "%s --autoconfig", merge_cmd);
+
+    SYSLOG_INFO("Running: %s", cmd);
+
+    int result = system(cmd);
+    if (result != 0) {
+        SYSLOG_ERR("Failed to apply auto-config (exit code: %d)", result);
+        return -1;
+    }
+
+    SYSLOG_INFO("Auto-config applied successfully");
+    return 0;
+}
+
+// ============================================================================
 // ОСНОВНАЯ ФУНКЦИЯ
 // ============================================================================
 
@@ -1502,11 +1613,26 @@ int main(int argc, char **argv) {
     SYSLOG_INFO("Config file: %s", CONFIG_PATH);
 
     time_t last_folder_check = time(NULL);
+    time_t last_autoconfig_check = time(NULL);
     DEBUG_PRINT("Entering main loop...");
 
     while (1) {
         sleep(CHECK_INTERVAL);
         time_t now = time(NULL);
+
+        // Проверка автоконфигурации (раз в час)
+        if (now - last_autoconfig_check >= AUTOCONFIG_CHECK_INTERVAL) {
+            if (autoconfig_changed()) {
+                SYSLOG_INFO("Auto-config directory changed, applying...");
+
+                // Применяем автоконфигурацию
+                if (apply_autoconfig() == 0) {
+                    // После применения автоконфига, перезагружаем основную конфигурацию
+                    SYSLOG_INFO("Will be reloading configuration after auto-config update...");
+                }
+            }
+            last_autoconfig_check = now;
+        }
 
         if (config_changed()) {
             SYSLOG_INFO("Config changed! Reloading...");
