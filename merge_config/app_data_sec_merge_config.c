@@ -345,6 +345,7 @@ static int remove_allowed_programs(protect_entry_t **entries_ptr, int *count,
 
     for (int u = 0; u < unprotect_count; u++) {
         unprotect_entry_t *unprotect = &unprotect_entries[u];
+        
         int idx = find_entry(*entries_ptr, *count, unprotect->path);
 
         if (idx < 0) {
@@ -777,7 +778,7 @@ int main(int argc, char **argv) {
         printf("Unprotected: %d programs removed\n", total_unprotect_removed);
     }
 
-    if (total_added == 0 && total_updated == 0 && total_unprotect_removed == 0) {
+    if (total_added == 0 && total_updated == 0 && total_unprotect_removed == 0 && total_entries_deleted == 0) {
         printf("No changes to write\n");
         free(main_entries);
         return 0;
