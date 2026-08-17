@@ -489,13 +489,16 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  -m, --main <path>    Main config file (default: /etc/app_data_sec.conf)\n");
     fprintf(stderr, "  -d, --disable        Disable protection after merge (enable=no)\n");
     fprintf(stderr, "  -y, --yes            Automatically confirm unprotect operations\n");
+    fprintf(stderr, "  --autoconfig         Auto-config mode: use /etc/app_data_sec.autoconfig and auto-confirm\n");
     fprintf(stderr, "  -h, --help           Show this help\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Examples:\n");
     fprintf(stderr, "  %s /tmp/new.conf\n", prog);
     fprintf(stderr, "  %s /etc/app_data_sec.d/\n", prog);
+    fprintf(stderr, "  %s --autoconfig\n", prog);
     fprintf(stderr, "  %s -m /etc/app_data_sec.conf /tmp/new.conf\n", prog);
     fprintf(stderr, "  %s -m /etc/app_data_sec.conf /etc/app_data_sec.d/\n", prog);
+    fprintf(stderr, "  %s -m /etc/app_data_sec.conf --autoconfig\n", prog);
 }
 
 int main(int argc, char **argv) {
@@ -503,6 +506,7 @@ int main(int argc, char **argv) {
     const char *source = NULL;
     int enable = 1;
     int auto_confirm = 0;
+    int autoconfig_mode = 0;
 
     if (argc < 2) {
         fprintf(stderr, "Error: Missing arguments\n");
@@ -525,6 +529,10 @@ int main(int argc, char **argv) {
             enable = 0;
         } else if (strcmp(argv[i], "-y") == 0 || strcmp(argv[i], "--yes") == 0) {
             auto_confirm = 1;
+        } else if (strcmp(argv[i], "--autoconfig") == 0) {
+            autoconfig_mode = 1;
+            auto_confirm = 1;  // Автоматически включаем auto-confirm
+            source = "/etc/app_data_sec.autoconfig";  // Устанавливаем источник
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -543,8 +551,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (!path_exists(source)) {
+    if (!path_exists(source) && !autoconfig_mode) {
         fprintf(stderr, "Error: File or directory not found: %s\n", source);
+        return 1;
+    }
+
+    // Для autoconfig_mode проверяем существование файла
+    if (autoconfig_mode && !path_exists(source)) {
+        fprintf(stderr, "Error: Auto-config file not found: %s\n", source);
         return 1;
     }
 
@@ -555,10 +569,16 @@ int main(int argc, char **argv) {
     }
 
     // Определяем, файл это или директория
-    int is_dir_mode = is_dir(source);
+    int is_dir_mode = 0;
+    if (source) {
+        is_dir_mode = is_dir(source);
+    }
 
     printf("Main config: %s\n", main_config);
-    if (is_dir_mode) {
+    if (autoconfig_mode) {
+        printf("Mode: Auto-config (using %s)\n", source);
+        printf("Auto-confirm: enabled\n");
+    } else if (is_dir_mode) {
         printf("Source directory: %s (all .conf files)\n", source);
     } else {
         printf("Source config: %s\n", source);
