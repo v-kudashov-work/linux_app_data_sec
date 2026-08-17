@@ -333,6 +333,10 @@ static int is_allowed_exists(protect_entry_t *entry, const char *allowed_path) {
 // УДАЛЕНИЕ ПРОГРАММ ИЗ СПИСКА РАЗРЕШЕННЫХ ИЛИ УДАЛЕНИЕ ВСЕЙ ЗАПИСИ
 // ============================================================================
 
+// ============================================================================
+// УДАЛЕНИЕ ПРОГРАММ ИЗ СПИСКА РАЗРЕШЕННЫХ ИЛИ УДАЛЕНИЕ ВСЕЙ ЗАПИСИ
+// ============================================================================
+
 static int remove_allowed_programs(protect_entry_t **entries_ptr, int *count,
                                    unprotect_entry_t *unprotect_entries, int unprotect_count,
                                    int *total_removed, int *total_entries_deleted) {
@@ -345,62 +349,72 @@ static int remove_allowed_programs(protect_entry_t **entries_ptr, int *count,
 
     for (int u = 0; u < unprotect_count; u++) {
         unprotect_entry_t *unprotect = &unprotect_entries[u];
-        
-        int idx = find_entry(*entries_ptr, *count, unprotect->path);
 
-        if (idx < 0) {
-            printf("  Warning: Path '%s' not found in configuration, skipping\n", unprotect->path);
-            continue;
-        }
+        // Ищем ВСЕ записи с этим путем (может быть несколько)
+        int found_any = 0;
 
-        // Если нет программ для удаления - удаляем всю запись о папке
-        if (unprotect->allowed_count == 0) {
-            printf("  Deleting entire entry for '%s' (no programs specified)\n", unprotect->path);
-
-            // Сдвигаем все записи после удаляемой
-            for (int i = idx; i < *count - 1; i++) {
-                memcpy(&(*entries_ptr)[i], &(*entries_ptr)[i + 1], sizeof(protect_entry_t));
+        // Проходим по всем записям, но в обратном порядке, чтобы не сбивать индексы при удалении
+        for (int idx = *count - 1; idx >= 0; idx--) {
+            if (strcmp((*entries_ptr)[idx].path, unprotect->path) != 0) {
+                continue;
             }
-            (*count)--;
-            (*total_entries_deleted)++;
-            entries_modified++;
-            continue;
-        }
 
-        // Если есть программы для удаления - удаляем только их
-        protect_entry_t *entry = &(*entries_ptr)[idx];
-        int removed_count = 0;
+            found_any = 1;
 
-        // Создаем новый список разрешенных программ без удаляемых
-        char new_allowed[MAX_ALLOWED][MAX_PATH_LEN];
-        int new_count = 0;
+            // Если нет программ для удаления - удаляем всю запись о папке
+            if (unprotect->allowed_count == 0) {
+                printf("  Deleting entire entry for '%s' (no programs specified)\n", unprotect->path);
 
-        for (int i = 0; i < entry->allowed_count; i++) {
-            int should_remove = 0;
-            for (int j = 0; j < unprotect->allowed_count; j++) {
-                if (strcmp(entry->allowed[i], unprotect->allowed[j]) == 0) {
-                    should_remove = 1;
-                    removed_count++;
-                    break;
+                // Сдвигаем все записи после удаляемой
+                for (int i = idx; i < *count - 1; i++) {
+                    memcpy(&(*entries_ptr)[i], &(*entries_ptr)[i + 1], sizeof(protect_entry_t));
+                }
+                (*count)--;
+                (*total_entries_deleted)++;
+                entries_modified++;
+                // Не увеличиваем idx, так как элементы сдвинулись
+                continue;
+            }
+
+            // Если есть программы для удаления - удаляем только их
+            protect_entry_t *entry = &(*entries_ptr)[idx];
+            int removed_count = 0;
+
+            // Создаем новый список разрешенных программ без удаляемых
+            char new_allowed[MAX_ALLOWED][MAX_PATH_LEN];
+            int new_count = 0;
+
+            for (int i = 0; i < entry->allowed_count; i++) {
+                int should_remove = 0;
+                for (int j = 0; j < unprotect->allowed_count; j++) {
+                    if (strcmp(entry->allowed[i], unprotect->allowed[j]) == 0) {
+                        should_remove = 1;
+                        removed_count++;
+                        break;
+                    }
+                }
+                if (!should_remove) {
+                    strcpy(new_allowed[new_count], entry->allowed[i]);
+                    new_count++;
                 }
             }
-            if (!should_remove) {
-                strcpy(new_allowed[new_count], entry->allowed[i]);
-                new_count++;
+
+            if (removed_count > 0) {
+                // Обновляем список разрешенных программ (даже если он стал пустым)
+                memcpy(entry->allowed, new_allowed, sizeof(new_allowed));
+                entry->allowed_count = new_count;
+                entries_modified++;
+                *total_removed += removed_count;
+
+                printf("  Removed %d program(s) from '%s' (remaining: %d)\n",
+                       removed_count, entry->path, entry->allowed_count);
+            } else {
+                printf("  No programs to remove from '%s'\n", entry->path);
             }
         }
 
-        if (removed_count > 0) {
-            // Обновляем список разрешенных программ (даже если он стал пустым)
-            memcpy(entry->allowed, new_allowed, sizeof(new_allowed));
-            entry->allowed_count = new_count;
-            entries_modified++;
-            *total_removed += removed_count;
-
-            printf("  Removed %d program(s) from '%s' (remaining: %d)\n",
-                   removed_count, entry->path, entry->allowed_count);
-        } else {
-            printf("  No programs to remove from '%s'\n", entry->path);
+        if (!found_any) {
+            printf("  Warning: Path '%s' not found in configuration, skipping\n", unprotect->path);
         }
     }
 
