@@ -1737,7 +1737,7 @@ int main(int argc, char **argv) {
         time_t now = time(NULL);
 
         // Проверка автоконфигурации (раз в час)
-        if (keep_running && now - last_autoconfig_check >= AUTOCONFIG_CHECK_INTERVAL) {
+        if (keep_running && (now - last_autoconfig_check >= AUTOCONFIG_CHECK_INTERVAL)) {
             if (autoconfig_changed()) {
                 SYSLOG_INFO("Auto-config directory changed, applying...");
 
