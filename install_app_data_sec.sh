@@ -1060,13 +1060,13 @@ fi
 # Создаём и настраиваем права для autoconfig директории
 if [ -d "$AUTOCONFIG_DIR" ]; then
     chown root:root "$AUTOCONFIG_DIR"
-    chmod 755 "$AUTOCONFIG_DIR"
-    echo -e "${GREEN}[OK]${NC} Set permissions: $AUTOCONFIG_DIR (root:root, drwxr-xr-x)"
+    chmod 700 "$AUTOCONFIG_DIR"
+    echo -e "${GREEN}[OK]${NC} Set permissions: $AUTOCONFIG_DIR (root:root, drwx------)"
 else
     mkdir -p "$AUTOCONFIG_DIR"
     chown root:root "$AUTOCONFIG_DIR"
-    chmod 755 "$AUTOCONFIG_DIR"
-    echo -e "${GREEN}[OK]${NC} Created and set permissions: $AUTOCONFIG_DIR (root:root, drwxr-xr-x)"
+    chmod 700 "$AUTOCONFIG_DIR"
+    echo -e "${GREEN}[OK]${NC} Created and set permissions: $AUTOCONFIG_DIR (root:root, drwxr-----)"
 fi
 
 # Проверяем наличие merge_config
