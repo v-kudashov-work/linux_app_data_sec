@@ -71,7 +71,7 @@ static void log_to_syslog(int priority, const char *format, ...) {
     syslog(priority, "%s", buffer);
     closelog();
 
-    printf("%s\n", buffer);
+//    printf("%s\n", buffer);
     fflush(stdout);
 }
 
@@ -1458,10 +1458,10 @@ static int check_single_instance(void) {
         if (fp) {
             if (fscanf(fp, "%d", &existing_pid) == 1) {
                 if (kill(existing_pid, 0) == 0) {
-                    SYSLOG_ERR("Another instance is already running (PID: %d)", existing_pid);
+                    SYSLOG_ERR("Another instance is already running (PID: %d). Exiting.", existing_pid);
                     fclose(fp);
                     close(fd);
-                    return 0;  // Процесс жив - выходим
+                    return 0;  // ВОЗВРАЩАЕМ 0 - ПРОЦЕСС ЖИВ
                 } else {
                     SYSLOG_WARN("PID file exists but process %d is dead. Overriding...", existing_pid);
                 }
@@ -1521,6 +1521,11 @@ int main(int argc, char **argv) {
     int err = 0;
     int log_level = 1;
     const char *bpf_file = NULL;
+
+    if (getpid() == 1 || getppid() == 1) {
+        SYSLOG_INFO("First boot detected, waiting 3 seconds for kernel init...");
+        sleep(3);
+    }
 
     // Проверяем, не запущен ли уже другой экземпляр
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
