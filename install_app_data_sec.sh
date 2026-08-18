@@ -25,10 +25,6 @@ AUTOCONFIG_DIR="/etc/app_data_sec.autoconfig"      # Папка для авто�
 # Флаг обновления
 IS_UPDATE=0
 
-# После определения переменных (примерно строка 20-30)
-AUTOCONFIG_FILE="/etc/app_data_sec.autoconfig"
-AUTOCONFIG_MODE=0
-
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}   APP DATA SEC - INSTALL/UPDATE${NC}"
 echo -e "${BLUE}          for ALT Linux / Ubuntu${NC}"
@@ -1061,9 +1057,16 @@ fi
 # ИМПОРТ КОНФИГУРАЦИЙ (АВТОМАТИЧЕСКИЙ)
 # ============================================================================
 
-# Создаём autoconfig директорию, если её нет
-if [ ! -d "$AUTOCONFIG_DIR" ]; then
+# Создаём и настраиваем права для autoconfig директории
+if [ -d "$AUTOCONFIG_DIR" ]; then
+    chown root:root "$AUTOCONFIG_DIR"
+    chmod 755 "$AUTOCONFIG_DIR"
+    echo -e "${GREEN}[OK]${NC} Set permissions: $AUTOCONFIG_DIR (root:root, drwxr-xr-x)"
+else
     mkdir -p "$AUTOCONFIG_DIR"
+    chown root:root "$AUTOCONFIG_DIR"
+    chmod 755 "$AUTOCONFIG_DIR"
+    echo -e "${GREEN}[OK]${NC} Created and set permissions: $AUTOCONFIG_DIR (root:root, drwxr-xr-x)"
 fi
 
 # Проверяем наличие merge_config

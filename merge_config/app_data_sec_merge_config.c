@@ -333,10 +333,6 @@ static int is_allowed_exists(protect_entry_t *entry, const char *allowed_path) {
 // УДАЛЕНИЕ ПРОГРАММ ИЗ СПИСКА РАЗРЕШЕННЫХ ИЛИ УДАЛЕНИЕ ВСЕЙ ЗАПИСИ
 // ============================================================================
 
-// ============================================================================
-// УДАЛЕНИЕ ПРОГРАММ ИЗ СПИСКА РАЗРЕШЕННЫХ ИЛИ УДАЛЕНИЕ ВСЕЙ ЗАПИСИ
-// ============================================================================
-
 static int remove_allowed_programs(protect_entry_t **entries_ptr, int *count,
                                    unprotect_entry_t *unprotect_entries, int unprotect_count,
                                    int *total_removed, int *total_entries_deleted) {
