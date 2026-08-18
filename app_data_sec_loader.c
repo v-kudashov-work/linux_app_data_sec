@@ -620,7 +620,7 @@ static int clear_all_entries(struct bpf_object *obj) {
 
 //    memset(templates, 0, sizeof(templates));
 //    template_count = 0;
-    config_enabled = 0;
+//    config_enabled = 0;
 
     // struct stat st;
     // if (stat(CONFIG_PATH, &st) == 0) {
@@ -660,6 +660,8 @@ static int sync_config_to_entries(struct bpf_object *obj,
     if (!temp_config_enabled || temp_count == 0) {
         SYSLOG_INFO_D("Config disabled or empty, clearing all entries");
         int res = clear_all_entries(obj);
+
+        config_enabled = temp_config_enabled;
 
         SYSLOG_INFO_D("=== SYNC COMPLETE (cleared) ===");
         return res;
