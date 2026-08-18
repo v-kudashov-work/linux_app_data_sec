@@ -22,8 +22,8 @@
 // ============================================================================
 // НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ
 // ============================================================================
-#define VERSION "0.5.1"
-#define VERSION_DATE "2026-08-18"
+#define VERSION "0.5.2"
+#define VERSION_DATE "2026-08-19"
 
 #define CONFIG_PATH "/etc/app_data_sec.conf"
 #define PID_FILE "/run/app_data_sec_loader.pid"
