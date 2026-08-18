@@ -561,8 +561,8 @@ static int add_program_to_folder(struct bpf_object *obj, struct protect_entry *e
                     SYSLOG_ERR("  Failed to add program to BPF: %d", err);
                     return -1;
                 }
-                SYSLOG_INFO_D("  Program added to BPF: key=%llu (folder=%llu, idx=%d), value=%llu",
-                            (unsigned long long)key, (unsigned long long)folder_inode,
+                SYSLOG_INFO_D("  Program added to BPF: key (folder=%llu, idx=%d), value=%llu",
+                            (unsigned long long)folder_inode,
                             new_idx, (unsigned long long)program_inode);
             }
         }
@@ -618,8 +618,8 @@ static int clear_all_entries(struct bpf_object *obj) {
 
     entry_count = 0;
 
-    memset(templates, 0, sizeof(templates));
-    template_count = 0;
+//    memset(templates, 0, sizeof(templates));
+//    template_count = 0;
     config_enabled = 0;
 
     // struct stat st;
@@ -645,6 +645,17 @@ static int sync_config_to_entries(struct bpf_object *obj,
     SYSLOG_INFO_D("Temp entries: %d, Current entries: %d, Config enabled: %d",
                 temp_count, entry_count, temp_config_enabled);
 
+    // ============================================================
+    // 1. Обновляем templates
+    // ============================================================
+    SYSLOG_INFO_D("Step 1: Updating templates...");
+    memset(templates, 0, sizeof(templates));
+    if (temp_template_count > 0) {
+        memcpy(templates, temp_templates, sizeof(struct protect_template) * temp_template_count);
+        SYSLOG_INFO_D("Templates updated: %d", temp_template_count);
+    }
+    template_count = temp_template_count;
+
     // Если конфиг отключен или нет записей - очищаем всё
     if (!temp_config_enabled || temp_count == 0) {
         SYSLOG_INFO_D("Config disabled or empty, clearing all entries");
@@ -655,7 +666,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
     }
 
     // ============================================================
-    // 1. УДАЛЯЕМ папки, которых нет в temp_entries
+    // 2. УДАЛЯЕМ папки, которых нет в temp_entries
     // ============================================================
     SYSLOG_INFO_D("Step 1: Removing folders not in config...");
     for (i = entry_count - 1; i >= 0; i--) {
@@ -676,7 +687,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
     }
 
     // ============================================================
-    // 2. ОБНОВЛЯЕМ или ДОБАВЛЯЕМ папки из temp_entries
+    // 3. ОБНОВЛЯЕМ или ДОБАВЛЯЕМ папки из temp_entries
     // ============================================================
     SYSLOG_INFO_D("Step 2: Updating or adding folders from config...");
     for (i = 0; i < temp_count; i++) {
@@ -753,17 +764,6 @@ static int sync_config_to_entries(struct bpf_object *obj,
     }
 
     // ============================================================
-    // 3. Обновляем templates
-    // ============================================================
-    SYSLOG_INFO_D("Step 3: Updating templates...");
-    memset(templates, 0, sizeof(templates));
-    if (temp_template_count > 0) {
-        memcpy(templates, temp_templates, sizeof(struct protect_template) * temp_template_count);
-        SYSLOG_INFO_D("Templates updated: %d", temp_template_count);
-    }
-    template_count = temp_template_count;
-
-    // ============================================================
     // 4. Обновляем глобальные флаги
     // ============================================================
     config_enabled = temp_config_enabled;
@@ -809,6 +809,15 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
     struct stat st;
     if (stat(CONFIG_PATH, &st) == 0) {
         new_config_mtime = st.st_mtime;
+    }
+
+    if (access(CONFIG_PATH, R_OK) != 0) {
+        SYSLOG_ERR("Config file not accessible: %s (errno=%d)", CONFIG_PATH, errno);
+        free(*temp_entries);
+        free(*temp_templates);
+        *temp_entries = NULL;
+        *temp_templates = NULL;
+        return -1;
     }
 
     FILE *fp = fopen(CONFIG_PATH, "r");
@@ -1522,11 +1531,6 @@ int main(int argc, char **argv) {
     int log_level = 1;
     const char *bpf_file = NULL;
 
-    if (getpid() == 1 || getppid() == 1) {
-        SYSLOG_INFO("First boot detected, waiting 3 seconds for kernel init...");
-        sleep(3);
-    }
-
     // Проверяем, не запущен ли уже другой экземпляр
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
 
@@ -1638,7 +1642,11 @@ int main(int argc, char **argv) {
     err = bpf_object__load(bpf_obj);
     if (err) {
         SYSLOG_ERR("Failed to load BPF object: %d", err);
-        goto cleanup;
+        if (bpf_obj) {
+            bpf_object__close(bpf_obj);
+        }
+        closelog();
+        return 1;
     }
     DEBUG_PRINT("BPF object loaded successfully");
 
@@ -1825,7 +1833,7 @@ int main(int argc, char **argv) {
                 }
             }
 
-            if (scan_templates_and_load(bpf_obj)) {
+            if (config_enabled && scan_templates_and_load(bpf_obj)) {
                 changed = 1;
             }
 
@@ -1845,10 +1853,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    cleanup:
     if (bpf_obj) {
         bpf_object__close(bpf_obj);
     }
+
     SYSLOG_INFO("APP DATA SEC LOADER EXITING");
     closelog();
     DEBUG_PRINT("=== MAIN EXIT ===");
