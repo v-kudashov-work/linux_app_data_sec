@@ -15,6 +15,9 @@
 #include <time.h>
 #include <syslog.h>
 #include <stdarg.h>
+#include <sys/file.h>
+#include <fcntl.h>
+#include <signal.h>
 
 // ============================================================================
 // НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ
@@ -23,6 +26,7 @@
 #define VERSION_DATE "2026-08-18"
 
 #define CONFIG_PATH "/etc/app_data_sec.conf"
+#define PID_FILE "/run/app_data_sec_loader.pid"
 #define MAX_LINE_LEN 1024
 #define MAX_PATHS 5000
 #define MAX_ALLOWED 20
@@ -47,6 +51,9 @@ do { \
 #else
 #define DEBUG_PRINT(fmt, ...) ((void)0)
 #endif
+
+// Глобальный флаг для выхода
+static volatile int keep_running = 1;
 
 // ============================================================================
 // ЛОГИРОВАНИЕ В SYSLOG
@@ -1428,6 +1435,85 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  -h, --help             Show this help\n");
 }
 
+// ============================================================================
+// ПРОВЕРКА БЛОКИРОВКИ ПОВТОРНОГО ЗАПУСКА
+// ============================================================================
+
+static int check_single_instance(void) {
+    int fd;
+    char pid_str[32];
+    pid_t existing_pid;
+
+    // Открываем PID-файл
+    fd = open(PID_FILE, O_RDWR | O_CREAT, 0644);
+    if (fd < 0) {
+        SYSLOG_ERR("Failed to open PID file %s: %s", PID_FILE, strerror(errno));
+        return 0;  // Продолжаем запуск, но предупреждаем
+    }
+
+    // Пытаемся захватить блокировку с помощью flock (проще и надежнее)
+    if (flock(fd, LOCK_EX | LOCK_NB) == -1) {
+        // Блокировка уже захвачена другим процессом
+        FILE *fp = fopen(PID_FILE, "r");
+        if (fp) {
+            if (fscanf(fp, "%d", &existing_pid) == 1) {
+                if (kill(existing_pid, 0) == 0) {
+                    SYSLOG_ERR("Another instance is already running (PID: %d)", existing_pid);
+                } else {
+                    SYSLOG_WARN("PID file exists but process %d is dead. Overriding...", existing_pid);
+                    // Процесс мёртв, можно перезаписать
+                    close(fd);
+                    fd = open(PID_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
+                    if (fd < 0) {
+                        SYSLOG_ERR("Failed to recreate PID file: %s", strerror(errno));
+                        return 0;
+                    }
+                    if (flock(fd, LOCK_EX | LOCK_NB) == -1) {
+                        SYSLOG_ERR("Failed to lock PID file after recreate: %s", strerror(errno));
+                        close(fd);
+                        return 0;
+                    }
+                }
+            }
+            fclose(fp);
+        }
+
+        if (kill(existing_pid, 0) == 0) {
+            close(fd);
+            return 0;  // Выходим, так как процесс жив
+        }
+    }
+
+    // Записываем наш PID в файл
+    snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
+    if (ftruncate(fd, 0) == -1) {
+        SYSLOG_WARN("Failed to truncate PID file: %s", strerror(errno));
+    }
+    if (write(fd, pid_str, strlen(pid_str)) < 0) {
+        SYSLOG_WARN("Failed to write PID to %s: %s", PID_FILE, strerror(errno));
+    }
+
+    // Не закрываем fd, чтобы блокировка сохранялась
+    // fd будет закрыт при завершении процесса
+
+    SYSLOG_INFO("PID file created: %s (PID: %d)", PID_FILE, getpid());
+    return 1;
+}
+
+// Функция для удаления PID-файла при корректном завершении
+static void remove_pid_file(void) {
+    unlink(PID_FILE);
+    SYSLOG_INFO("PID file removed: %s", PID_FILE);
+}
+
+// Обработчик сигналов
+static void signal_handler(int sig) {
+    if (sig == SIGTERM || sig == SIGINT) {
+        SYSLOG_INFO("Received signal %d, shutting down...", sig);
+        keep_running = 0;
+    }
+}
+
 int main(int argc, char **argv) {
     DEBUG_PRINT("=== MAIN START ===");
 
@@ -1437,6 +1523,36 @@ int main(int argc, char **argv) {
     int err = 0;
     int log_level = 1;
     const char *bpf_file = NULL;
+
+    // Проверяем, не запущен ли уже другой экземпляр
+    openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
+
+    if (!check_single_instance()) {
+        // Если не удалось захватить блокировку, проверяем, не запущен ли процесс
+        // и если запущен - выходим
+        FILE *fp = fopen(PID_FILE, "r");
+        if (fp) {
+            pid_t existing_pid;
+            if (fscanf(fp, "%d", &existing_pid) == 1) {
+                if (kill(existing_pid, 0) == 0) {
+                    SYSLOG_ERR("Another instance is running (PID: %d). Exiting.", existing_pid);
+                    closelog();
+                    return 1;
+                }
+            }
+            fclose(fp);
+        }
+        // Если процесс мёртв, продолжаем
+        SYSLOG_WARN("PID file exists but process is dead. Continuing...");
+    }
+
+    // Устанавливаем обработчики сигналов
+    signal(SIGTERM, signal_handler);
+    signal(SIGINT, signal_handler);
+    signal(SIGHUP, signal_handler);  // Можно перезагружать конфиг по SIGHUP
+
+    // Регистрируем удаление PID-файла при выходе
+    atexit(remove_pid_file);
 
     DEBUG_PRINT("sizeof(protect_entry) = %zu bytes", sizeof(struct protect_entry));
     DEBUG_PRINT("sizeof(protect_template) = %zu bytes", sizeof(struct protect_template));
@@ -1621,7 +1737,7 @@ int main(int argc, char **argv) {
         time_t now = time(NULL);
 
         // Проверка автоконфигурации (раз в час)
-        if (now - last_autoconfig_check >= AUTOCONFIG_CHECK_INTERVAL) {
+        if (keep_running && now - last_autoconfig_check >= AUTOCONFIG_CHECK_INTERVAL) {
             if (autoconfig_changed()) {
                 SYSLOG_INFO("Auto-config directory changed, applying...");
 
@@ -1633,6 +1749,13 @@ int main(int argc, char **argv) {
             }
             last_autoconfig_check = now;
         }
+
+        // Проверяем завершение с задержкой
+        for (int i = 0; i < CHECK_INTERVAL && keep_running; i++) {
+            sleep(1);
+        }
+
+        if (!keep_running) break;
 
         sleep(CHECK_INTERVAL);
         now = time(NULL);

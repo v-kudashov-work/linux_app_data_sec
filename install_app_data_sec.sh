@@ -1206,7 +1206,7 @@ ReadWritePaths=/
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_DAC_OVERRIDE CAP_SYS_NICE CAP_IPC_LOCK
 
 [Install]
-WantedBy=sysinit.target
+WantedBy=multi-user.target
 EOF
 echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_loader.service"
 
