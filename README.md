@@ -120,6 +120,8 @@ protect ~/.test_app /bin/my_app
 ```code
 # Создание автоконфигурации
 sudo mkdir -p /etc/app_data_sec.autoconfig/
+sudo chown root:root /etc/app_data_sec.autoconfig/
+sudo chmod 750 /etc/app_data_sec.autoconfig/
 sudo cp my_config.conf /etc/app_data_sec.autoconfig/
 ```
 
@@ -133,6 +135,8 @@ sudo app_data_sec_merge_config --autoconfig
 ```code
 if [ ! -d "$AUTOCONFIG_DIR" ]; then
     mkdir -p "$AUTOCONFIG_DIR"
+    chown root:root "$AUTOCONFIG_DIR"
+    chmod 750 "$AUTOCONFIG_DIR"
 fi
 
 # Проверяем наличие merge_config и запускаем, если есть
