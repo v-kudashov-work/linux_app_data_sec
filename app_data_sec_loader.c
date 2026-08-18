@@ -1442,45 +1442,45 @@ static void print_usage(const char *prog) {
 static int check_single_instance(void) {
     int fd;
     char pid_str[32];
-    pid_t existing_pid;
+    pid_t existing_pid = 0;
 
     // Открываем PID-файл
     fd = open(PID_FILE, O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
         SYSLOG_ERR("Failed to open PID file %s: %s", PID_FILE, strerror(errno));
-        return 0;  // Продолжаем запуск, но предупреждаем
+        return 0;
     }
 
-    // Пытаемся захватить блокировку с помощью flock (проще и надежнее)
+    // Пытаемся захватить блокировку
     if (flock(fd, LOCK_EX | LOCK_NB) == -1) {
-        // Блокировка уже захвачена другим процессом
+        // Блокировка уже захвачена - читаем PID
         FILE *fp = fopen(PID_FILE, "r");
         if (fp) {
             if (fscanf(fp, "%d", &existing_pid) == 1) {
                 if (kill(existing_pid, 0) == 0) {
                     SYSLOG_ERR("Another instance is already running (PID: %d)", existing_pid);
+                    fclose(fp);
+                    close(fd);
+                    return 0;  // Процесс жив - выходим
                 } else {
                     SYSLOG_WARN("PID file exists but process %d is dead. Overriding...", existing_pid);
-                    // Процесс мёртв, можно перезаписать
-                    close(fd);
-                    fd = open(PID_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
-                    if (fd < 0) {
-                        SYSLOG_ERR("Failed to recreate PID file: %s", strerror(errno));
-                        return 0;
-                    }
-                    if (flock(fd, LOCK_EX | LOCK_NB) == -1) {
-                        SYSLOG_ERR("Failed to lock PID file after recreate: %s", strerror(errno));
-                        close(fd);
-                        return 0;
-                    }
                 }
             }
             fclose(fp);
         }
 
-        if (kill(existing_pid, 0) == 0) {
+        // Процесс мёртв - перезаписываем файл
+        close(fd);
+        fd = open(PID_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            SYSLOG_ERR("Failed to recreate PID file: %s", strerror(errno));
+            return 0;
+        }
+
+        if (flock(fd, LOCK_EX | LOCK_NB) == -1) {
+            SYSLOG_ERR("Failed to lock PID file after recreate: %s", strerror(errno));
             close(fd);
-            return 0;  // Выходим, так как процесс жив
+            return 0;
         }
     }
 
@@ -1493,9 +1493,6 @@ static int check_single_instance(void) {
         SYSLOG_WARN("Failed to write PID to %s: %s", PID_FILE, strerror(errno));
     }
 
-    // Не закрываем fd, чтобы блокировка сохранялась
-    // fd будет закрыт при завершении процесса
-
     SYSLOG_INFO("PID file created: %s (PID: %d)", PID_FILE, getpid());
     return 1;
 }
@@ -1504,6 +1501,7 @@ static int check_single_instance(void) {
 static void remove_pid_file(void) {
     unlink(PID_FILE);
     SYSLOG_INFO("PID file removed: %s", PID_FILE);
+    fflush(stdout);
 }
 
 // Обработчик сигналов
@@ -1527,29 +1525,17 @@ int main(int argc, char **argv) {
     // Проверяем, не запущен ли уже другой экземпляр
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
 
+    // ПРОВЕРКА БЛОКИРОВКИ - САМАЯ ПЕРВАЯ
     if (!check_single_instance()) {
-        // Если не удалось захватить блокировку, проверяем, не запущен ли процесс
-        // и если запущен - выходим
-        FILE *fp = fopen(PID_FILE, "r");
-        if (fp) {
-            pid_t existing_pid;
-            if (fscanf(fp, "%d", &existing_pid) == 1) {
-                if (kill(existing_pid, 0) == 0) {
-                    SYSLOG_ERR("Another instance is running (PID: %d). Exiting.", existing_pid);
-                    closelog();
-                    return 1;
-                }
-            }
-            fclose(fp);
-        }
-        // Если процесс мёртв, продолжаем
-        SYSLOG_WARN("PID file exists but process is dead. Continuing...");
+        SYSLOG_ERR("Another instance is already running. Exiting.");
+        closelog();
+        return 1;
     }
 
     // Устанавливаем обработчики сигналов
     signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
-    signal(SIGHUP, signal_handler);  // Можно перезагружать конфиг по SIGHUP
+    signal(SIGHUP, signal_handler);
 
     // Регистрируем удаление PID-файла при выходе
     atexit(remove_pid_file);
@@ -1562,7 +1548,6 @@ int main(int argc, char **argv) {
                 (sizeof(entries) + sizeof(templates)) / 1024,
                 (double)(sizeof(entries) + sizeof(templates)) / (1024 * 1024));
 
-    openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
     SYSLOG_INFO("APP DATA SEC LOADER STARTING (PID: %d)", getpid());
     SYSLOG_INFO("APP DATA SEC LOADER v%s (built: %s)", VERSION, VERSION_DATE);
 
@@ -1733,7 +1718,7 @@ int main(int argc, char **argv) {
     time_t last_autoconfig_check = time(NULL) - AUTOCONFIG_CHECK_INTERVAL - 100;
     SYSLOG_INFO("Entering main loop...");
 
-    while (1) {
+    while (keep_running) {
         time_t now = time(NULL);
 
         // Проверка автоконфигурации (раз в час)
