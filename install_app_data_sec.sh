@@ -1089,6 +1089,9 @@ if [ ! -f "$CONFIG_PATH" ]; then
 # protect <path> [allowed_prog1] [allowed_prog2] ... - защищает папку
 #   path - путь к папке (можно использовать ~ для домашней директории)
 #   allowed_prog - абсолютный путь к программе, которая может обходить защиту
+#   Пути с пробелами можно заключать в кавычки: "path with spaces"
+#   Пример: protect "/home/user/My Documents" "/usr/bin/my app"
+#   Пример: protect ~/.secret "/usr/bin/my app" /bin/bash
 
 enable = yes
 

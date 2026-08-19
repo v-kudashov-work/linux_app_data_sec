@@ -137,6 +137,59 @@ static int get_config_files(const char *dir_path, char files[MAX_CONFIG_FILES][P
 // ПАРСИНГ КОНФИГА
 // ============================================================================
 
+static int parse_quoted_string(const char **ptr, char *buffer, size_t buffer_size) {
+    if (!ptr || !*ptr || !buffer || buffer_size == 0) return -1;
+
+    const char *p = *ptr;
+
+    // Пропускаем пробелы
+    while (*p == ' ' || *p == '\t') p++;
+
+    if (*p == '\0') return -1;
+
+    char quote_char = 0;
+    int is_quoted = 0;
+
+    // Проверяем, начинается ли строка с кавычки
+    if (*p == '"' || *p == '\'') {
+        quote_char = *p;
+        is_quoted = 1;
+        p++; // Пропускаем открывающую кавычку
+    }
+
+    int pos = 0;
+    while (*p != '\0') {
+        if (is_quoted) {
+            if (*p == quote_char) {
+                // Закрывающая кавычка
+                p++;
+                break;
+            }
+            // Внутри кавычек разрешаем пробелы
+            if (pos < (int)buffer_size - 1) {
+                buffer[pos++] = *p;
+            }
+            p++;
+        } else {
+            // Без кавычек - останавливаемся на пробеле или табе
+            if (*p == ' ' || *p == '\t') {
+                break;
+            }
+            if (pos < (int)buffer_size - 1) {
+                buffer[pos++] = *p;
+            }
+            p++;
+        }
+    }
+    buffer[pos] = '\0';
+
+    // Пропускаем пробелы после строки
+    while (*p == ' ' || *p == '\t') p++;
+
+    *ptr = p;
+    return 0;
+}
+
 static int parse_config(const char *filename, protect_entry_t **entries, int *count,
                         unprotect_entry_t **unprotect_entries, int *unprotect_count) {
     if (!filename || !entries || !count) {
@@ -196,43 +249,27 @@ static int parse_config(const char *filename, protect_entry_t **entries, int *co
                 break;
             }
 
-            char *path_end = ptr;
-            while (*path_end && *path_end != ' ' && *path_end != '\t') path_end++;
-
-            size_t path_len = path_end - ptr;
-            if (path_len >= MAX_PATH_LEN) {
-                path_len = MAX_PATH_LEN - 1;
-                fprintf(stderr, "Warning: line %d: path too long, truncating\n", line_num);
-            }
-
             protect_entry_t *entry = &(*entries)[*count];
             memset(entry, 0, sizeof(protect_entry_t));
-            memcpy(entry->path, ptr, path_len);
-            entry->path[path_len] = '\0';
+
+            // Парсим путь с поддержкой кавычек
+            if (parse_quoted_string((const char **)&ptr, entry->path, MAX_PATH_LEN) != 0) {
+                fprintf(stderr, "Warning: line %d: invalid path\n", line_num);
+                continue;
+            }
+
             entry->is_template = (entry->path[0] == '~');
 
-            ptr = path_end;
+            // Парсим все программы с поддержкой кавычек
             while (*ptr) {
-                while (*ptr == ' ' || *ptr == '\t') ptr++;
-                if (*ptr == '\0') break;
-
-                char *arg_end = ptr;
-                while (*arg_end && *arg_end != ' ' && *arg_end != '\t') arg_end++;
-
-                size_t arg_len = arg_end - ptr;
-                if (arg_len > 0 && entry->allowed_count < MAX_ALLOWED) {
-                    if (arg_len >= MAX_PATH_LEN) {
-                        arg_len = MAX_PATH_LEN - 1;
-                    }
-                    memcpy(entry->allowed[entry->allowed_count], ptr, arg_len);
-                    entry->allowed[entry->allowed_count][arg_len] = '\0';
-                    entry->allowed_count++;
-                } else if (arg_len > 0) {
-                    fprintf(stderr, "Warning: line %d: max allowed programs reached for %s\n",
-                            line_num, entry->path);
+                char program_path[MAX_PATH_LEN];
+                if (parse_quoted_string((const char **)&ptr, program_path, MAX_PATH_LEN) != 0) {
+                    break;
                 }
-
-                ptr = arg_end;
+                if (program_path[0] != '\0' && entry->allowed_count < MAX_ALLOWED) {
+                    strcpy(entry->allowed[entry->allowed_count], program_path);
+                    entry->allowed_count++;
+                }
             }
 
             (*count)++;
@@ -243,7 +280,7 @@ static int parse_config(const char *filename, protect_entry_t **entries, int *co
                 continue;
             }
 
-            char *ptr = line + 9; // длина "unprotect"
+            char *ptr = line + 9;
             while (*ptr == ' ' || *ptr == '\t') ptr++;
 
             if (*ptr == '\0') {
@@ -256,43 +293,25 @@ static int parse_config(const char *filename, protect_entry_t **entries, int *co
                 break;
             }
 
-            char *path_end = ptr;
-            while (*path_end && *path_end != ' ' && *path_end != '\t') path_end++;
-
-            size_t path_len = path_end - ptr;
-            if (path_len >= MAX_PATH_LEN) {
-                path_len = MAX_PATH_LEN - 1;
-                fprintf(stderr, "Warning: line %d: path too long, truncating\n", line_num);
-            }
-
             unprotect_entry_t *entry = &(*unprotect_entries)[*unprotect_count];
             memset(entry, 0, sizeof(unprotect_entry_t));
-            memcpy(entry->path, ptr, path_len);
-            entry->path[path_len] = '\0';
 
-            ptr = path_end;
+            // Парсим путь с поддержкой кавычек
+            if (parse_quoted_string((const char **)&ptr, entry->path, MAX_PATH_LEN) != 0) {
+                fprintf(stderr, "Warning: line %d: invalid path\n", line_num);
+                continue;
+            }
 
+            // Парсим все программы с поддержкой кавычек
             while (*ptr) {
-                while (*ptr == ' ' || *ptr == '\t') ptr++;
-                if (*ptr == '\0') break;
-
-                char *arg_end = ptr;
-                while (*arg_end && *arg_end != ' ' && *arg_end != '\t') arg_end++;
-
-                size_t arg_len = arg_end - ptr;
-                if (arg_len > 0 && entry->allowed_count < MAX_ALLOWED) {
-                    if (arg_len >= MAX_PATH_LEN) {
-                        arg_len = MAX_PATH_LEN - 1;
-                    }
-                    memcpy(entry->allowed[entry->allowed_count], ptr, arg_len);
-                    entry->allowed[entry->allowed_count][arg_len] = '\0';
-                    entry->allowed_count++;
-                } else if (arg_len > 0) {
-                    fprintf(stderr, "Warning: line %d: max allowed programs reached for %s\n",
-                            line_num, entry->path);
+                char program_path[MAX_PATH_LEN];
+                if (parse_quoted_string((const char **)&ptr, program_path, MAX_PATH_LEN) != 0) {
+                    break;
                 }
-
-                ptr = arg_end;
+                if (program_path[0] != '\0' && entry->allowed_count < MAX_ALLOWED) {
+                    strcpy(entry->allowed[entry->allowed_count], program_path);
+                    entry->allowed_count++;
+                }
             }
 
             (*unprotect_count)++;
@@ -452,15 +471,32 @@ static int write_config(const char *filename, protect_entry_t *entries, int coun
     fprintf(fp, "#   path - путь к папке (можно использовать ~ для домашней директории)\n");
     fprintf(fp, "#   allowed_prog - абсолютный путь к программе, которая может обходить защиту\n");
     fprintf(fp, "# unprotect <path> [prog1] [prog2] ... - удаляет программы из списка разрешенных\n");
+    fprintf(fp, "#   Пути с пробелами можно заключать в кавычки: \"path with spaces\"\n");
+    fprintf(fp, "#   Пример: protect \"/home/user/My Documents\" \"/usr/bin/my app\"\n");
+    fprintf(fp, "#   Пример: protect ~/.secret \"/usr/bin/my app\" /bin/bash\n");
     fprintf(fp, "\n");
 
     fprintf(fp, "enable = %s\n\n", enable ? "yes" : "no");
 
     for (int i = 0; i < count; i++) {
         protect_entry_t *entry = &entries[i];
-        fprintf(fp, "protect %s", entry->path);
+
+        // Проверяем, нужны ли кавычки для пути
+        int needs_quotes = (strchr(entry->path, ' ') != NULL || strchr(entry->path, '\t') != NULL);
+        if (needs_quotes) {
+            fprintf(fp, "protect \"%s\"", entry->path);
+        } else {
+            fprintf(fp, "protect %s", entry->path);
+        }
+
         for (int j = 0; j < entry->allowed_count; j++) {
-            fprintf(fp, " %s", entry->allowed[j]);
+            // Проверяем, нужны ли кавычки для программы
+            int prog_needs_quotes = (strchr(entry->allowed[j], ' ') != NULL || strchr(entry->allowed[j], '\t') != NULL);
+            if (prog_needs_quotes) {
+                fprintf(fp, " \"%s\"", entry->allowed[j]);
+            } else {
+                fprintf(fp, " %s", entry->allowed[j]);
+            }
         }
         fprintf(fp, "\n");
     }

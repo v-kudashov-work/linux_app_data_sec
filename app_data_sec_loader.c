@@ -154,6 +154,59 @@ static const char* find_bpf_object(void);
 // БЕЗОПАСНОЕ КОПИРОВАНИЕ СТРОК
 // ============================================================================
 
+static int parse_quoted_string(const char **ptr, char *buffer, size_t buffer_size) {
+    if (!ptr || !*ptr || !buffer || buffer_size == 0) return -1;
+
+    const char *p = *ptr;
+
+    // Пропускаем пробелы
+    while (*p == ' ' || *p == '\t') p++;
+
+    if (*p == '\0') return -1;
+
+    char quote_char = 0;
+    int is_quoted = 0;
+
+    // Проверяем, начинается ли строка с кавычки
+    if (*p == '"' || *p == '\'') {
+        quote_char = *p;
+        is_quoted = 1;
+        p++; // Пропускаем открывающую кавычку
+    }
+
+    int pos = 0;
+    while (*p != '\0') {
+        if (is_quoted) {
+            if (*p == quote_char) {
+                // Закрывающая кавычка
+                p++;
+                break;
+            }
+            // Внутри кавычек разрешаем пробелы
+            if (pos < (int)buffer_size - 1) {
+                buffer[pos++] = *p;
+            }
+            p++;
+        } else {
+            // Без кавычек - останавливаемся на пробеле или табе
+            if (*p == ' ' || *p == '\t') {
+                break;
+            }
+            if (pos < (int)buffer_size - 1) {
+                buffer[pos++] = *p;
+            }
+            p++;
+        }
+    }
+    buffer[pos] = '\0';
+
+    // Пропускаем пробелы после строки
+    while (*p == ' ' || *p == '\t') p++;
+
+    *ptr = p;
+    return 0;
+}
+
 static void safe_strcpy(char *dest, const char *src, size_t size) {
     if (!dest || !src || size == 0) return;
     size_t src_len = strnlen(src, size - 1);
@@ -895,35 +948,27 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
                 continue;
             }
 
-            char raw_path[MAX_PATH_LEN];
-            char *path_end = ptr;
-            while (*path_end && *path_end != ' ' && *path_end != '\t') path_end++;
-
-            size_t path_len = path_end - ptr;
-            if (path_len >= sizeof(raw_path)) path_len = sizeof(raw_path) - 1;
-            memcpy(raw_path, ptr, path_len);
-            raw_path[path_len] = '\0';
-
             __u64 allowed_inodes[MAX_ALLOWED];
             char allowed_paths[MAX_ALLOWED][MAX_PATH_LEN];
             int allowed_count = 0;
             memset(allowed_inodes, 0, sizeof(allowed_inodes));
             memset(allowed_paths, 0, sizeof(allowed_paths));
 
-            ptr = path_end;
+            // Парсим путь с поддержкой кавычек
+            char raw_path[MAX_PATH_LEN];
+            if (parse_quoted_string((const char **)&ptr, raw_path, MAX_PATH_LEN) != 0) {
+                SYSLOG_WARN("Config line %d: invalid path", line_num);
+                continue;
+            }
+
+            // Парсим все программы с поддержкой кавычек
             while (*ptr) {
-                while (*ptr == ' ' || *ptr == '\t') ptr++;
-                if (*ptr == '\0') break;
+                char prog_path[PATH_MAX];
+                if (parse_quoted_string((const char **)&ptr, prog_path, PATH_MAX) != 0) {
+                    break;
+                }
 
-                char *arg_end = ptr;
-                while (*arg_end && *arg_end != ' ' && *arg_end != '\t') arg_end++;
-
-                size_t arg_len = arg_end - ptr;
-                if (arg_len > 0 && allowed_count < MAX_ALLOWED) {
-                    char prog_path[PATH_MAX];
-                    strncpy(prog_path, ptr, arg_len);
-                    prog_path[arg_len] = '\0';
-                    // Всегда сохраняем путь
+                if (prog_path[0] != '\0' && allowed_count < MAX_ALLOWED) {
                     safe_strcpy(allowed_paths[allowed_count], prog_path, MAX_PATH_LEN);
 
                     // Пытаемся получить inode
@@ -936,10 +981,7 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
                         SYSLOG_WARN("  Allowed program NOT FOUND (will retry): %s", prog_path);
                     }
                     allowed_count++;
-
                 }
-
-                ptr = arg_end;
             }
 
             // if (raw_path[0] == '~') {
