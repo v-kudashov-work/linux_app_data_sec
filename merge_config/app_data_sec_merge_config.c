@@ -543,6 +543,10 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "    Example: unprotect /home/user/.secret /bin/konsole\n");
     fprintf(stderr, "    Example: unprotect /home/user/.secret (removes entire protection)\n");
     fprintf(stderr, "\n");
+    fprintf(stderr, "#   Paths with spaces can be enclosed in quotes: \"path with spaces\"\n");
+    fprintf(stderr, "#   Example: protect \"/home/user/My Documents\" \"/usr/bin/my app\"\n");
+    fprintf(stderr, "#   Example: protect ~/.secret \"/usr/bin/my app\" /bin/bash\n");
+    fprintf(stderr, "\n");
     fprintf(stderr, "  Notes:\n");
     fprintf(stderr, "    - Duplicate entries with same path are merged (programs are added)\n");
     fprintf(stderr, "    - Unprotect removes programs from ALL duplicate entries with same path\n");
