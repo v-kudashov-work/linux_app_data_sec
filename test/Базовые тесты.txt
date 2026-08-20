@@ -50,3 +50,10 @@ test_app_data_sec.c пока не проверялось. Основные те�
 - **Windowing System:**                            Wayland
 - **Kernel Version:**                              Linux 7.0.0-29-generic
 
+Операционная система: Debian GNU/Linux 13
+Версия KDE Plasma: 6.3.6
+Версия KDE Frameworks: 6.13.0
+Версия Qt: 6.8.2
+Версия ядра: 6.12.101+deb13-amd64 (64-бита)
+Графическая платформа: Wayland
+

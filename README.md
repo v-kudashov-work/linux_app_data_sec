@@ -53,7 +53,7 @@
 
 - **Ядро Linux**: версия 5.8+ с поддержкой BPF LSM и BTF (CO-RE)
 - **Архитектура**: x86_64
-- **Дистрибутивы**: ALT Linux (Проверялось на версии К), Ubuntu. В разработке: Debian, RHEL/CentOS/Fedora
+- **Дистрибутивы**: ALT Linux (Проверялось на версии К), Ubuntu, Debian. В разработке: RHEL/CentOS/Fedora
 - **Зависимости**: libbpf, libelf, zlib, clang, bpftool
 
 ## Быстрая установка
