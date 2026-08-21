@@ -18,6 +18,7 @@
 #include <sys/file.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <pthread.h>
 
 // ============================================================================
 // НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ
@@ -86,6 +87,7 @@ static void log_to_syslog(int priority, const char *format, ...) {
 #define SYSLOG_INFO_D(fmt, ...) ((void)0)
 #define SYSLOG_WARN_D(fmt, ...) ((void)0)
 #endif
+
 // ============================================================================
 // ОПТИМИЗИРОВАННЫЕ СТРУКТУРЫ
 // ============================================================================
@@ -130,6 +132,11 @@ static int config_enabled = 0;
 static time_t config_mtime = 0;
 
 // ============================================================================
+// ИЗМЕНЕНИЕ 2: ДОБАВЛЯЕМ МЬЮТЕКС ДЛЯ СИНХРОНИЗАЦИИ
+// ============================================================================
+static pthread_mutex_t scan_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// ============================================================================
 // ПРОТОТИПЫ ФУНКЦИЙ
 // ============================================================================
 
@@ -149,6 +156,10 @@ static int load_single_entry(struct bpf_object *obj, struct protect_entry *entry
 static int scan_templates_and_load(struct bpf_object *obj);
 static int config_changed(void);
 static const char* find_bpf_object(void);
+// ============================================================================
+// ИЗМЕНЕНИЕ 3: ДОБАВЛЯЕМ ПРОТОТИП ФУНКЦИИ ПОЛНОГО СКАНИРОВАНИЯ
+// ============================================================================
+static void perform_full_scan(struct bpf_object *obj);
 
 // ============================================================================
 // БЕЗОПАСНОЕ КОПИРОВАНИЕ СТРОК
@@ -318,7 +329,7 @@ static int add_folder_to_entries(struct bpf_object *obj, struct protect_entry *n
     for (int i = 0; i < entry_count; i++) {
         if (entries[i].inode == new_entry->inode) {
             SYSLOG_WARN_D("Folder already exists: %s (inode: %lu)",
-                        new_entry->path, (unsigned long)new_entry->inode);
+                          new_entry->path, (unsigned long)new_entry->inode);
             return 0;
         }
     }
@@ -346,8 +357,8 @@ static int add_folder_to_entries(struct bpf_object *obj, struct protect_entry *n
             fd = bpf_map__fd(map);
             if (fd >= 0) {
                 struct protected_folder_config config = {
-                    .folder_inode = new_entry->inode,
-                    .allowed_program_count = new_entry->allowed_count,
+                        .folder_inode = new_entry->inode,
+                        .allowed_program_count = new_entry->allowed_count,
                 };
                 if (bpf_map_update_elem(fd, &new_entry->inode, &config, BPF_ANY) < 0) {
                     SYSLOG_ERR("Failed to add folder to BPF: %s", new_entry->path);
@@ -406,7 +417,7 @@ static int remove_program_from_entry(struct bpf_object *obj, int entry_idx, int 
     SYSLOG_INFO_D("=== REMOVE PROGRAM ===");
     SYSLOG_INFO_D("  Folder: %s (inode: %lu)", path, (unsigned long)folder_inode);
     SYSLOG_INFO_D("  Program: %s (inode: %lu)",
-                entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_inode);
+                  entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_inode);
 
     // Удаляем из BPF
     if (obj) {
@@ -588,7 +599,7 @@ static int add_program_to_folder(struct bpf_object *obj, struct protect_entry *e
     for (int i = 0; i < entry->allowed_count; i++) {
         if (entry->allowed_inodes[i] == program_inode) {
             SYSLOG_WARN_D("Program already exists in %s: %s (inode: %lu)",
-                        entry->path, program_path, (unsigned long)program_inode);
+                          entry->path, program_path, (unsigned long)program_inode);
             return 0;
         }
     }
@@ -597,7 +608,7 @@ static int add_program_to_folder(struct bpf_object *obj, struct protect_entry *e
     int new_idx = entry->allowed_count;
 
     SYSLOG_INFO_D("Adding program to folder %s: %s (inode: %lu)",
-                entry->path, program_path, (unsigned long)program_inode);
+                  entry->path, program_path, (unsigned long)program_inode);
 
     // 1. Добавляем в BPF (если объект существует)
     if (obj) {
@@ -615,8 +626,8 @@ static int add_program_to_folder(struct bpf_object *obj, struct protect_entry *e
                     return -1;
                 }
                 SYSLOG_INFO_D("  Program added to BPF: key (folder=%llu, idx=%d), value=%llu",
-                            (unsigned long long)folder_inode,
-                            new_idx, (unsigned long long)program_inode);
+                              (unsigned long long)folder_inode,
+                              new_idx, (unsigned long long)program_inode);
             }
         }
     }
@@ -633,8 +644,8 @@ static int add_program_to_folder(struct bpf_object *obj, struct protect_entry *e
             int fd = bpf_map__fd(map);
             if (fd >= 0) {
                 struct protected_folder_config config = {
-                    .folder_inode = folder_inode,
-                    .allowed_program_count = entry->allowed_count,
+                        .folder_inode = folder_inode,
+                        .allowed_program_count = entry->allowed_count,
                 };
                 // Ключ - folder_inode, значение - config
                 int err = bpf_map_update_elem(fd, &folder_inode, &config, BPF_ANY);
@@ -647,7 +658,7 @@ static int add_program_to_folder(struct bpf_object *obj, struct protect_entry *e
                     return -1;
                 }
                 SYSLOG_INFO_D("  Folder config updated: inode=%llu, programs=%d",
-                            (unsigned long long)folder_inode, entry->allowed_count);
+                              (unsigned long long)folder_inode, entry->allowed_count);
             }
         }
     }
@@ -689,14 +700,14 @@ static int clear_all_entries(struct bpf_object *obj) {
 // ============================================================================
 
 static int sync_config_to_entries(struct bpf_object *obj,
-                                struct protect_entry *temp_entries, int temp_count,
-                                struct protect_template *temp_templates, int temp_template_count,
-                                int temp_config_enabled) {
+                                  struct protect_entry *temp_entries, int temp_count,
+                                  struct protect_template *temp_templates, int temp_template_count,
+                                  int temp_config_enabled) {
     int i, j, k, found;
 
     SYSLOG_INFO_D("=== SYNC CONFIG TO ENTRIES ===");
     SYSLOG_INFO_D("Temp entries: %d, Current entries: %d, Config enabled: %d",
-                temp_count, entry_count, temp_config_enabled);
+                  temp_count, entry_count, temp_config_enabled);
 
     // ============================================================
     // 1. Обновляем templates
@@ -736,7 +747,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
         }
         if (!found) {
             SYSLOG_INFO_D("Deleting folder not in config: %s (inode: %lu)",
-                        entries[i].path, (unsigned long)entries[i].inode);
+                          entries[i].path, (unsigned long)entries[i].inode);
             remove_folder_from_entries(obj, i);
         }
     }
@@ -751,7 +762,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
             if (temp_entries[i].inode == entries[j].inode) {
                 found = 1;
                 SYSLOG_INFO_D("Folder exists: %s (inode: %lu)",
-                            entries[j].path, (unsigned long)entries[j].inode);
+                              entries[j].path, (unsigned long)entries[j].inode);
 
                 // Проверяем программы: какие нужно удалить, какие добавить
                 // Удаляем программы, которых нет в temp_entries
@@ -777,7 +788,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
 
                     if (!prog_found) {
                         SYSLOG_INFO_D("Removing program from %s: %s",
-                                    entries[j].path, entries[j].allowed_paths[k]);
+                                      entries[j].path, entries[j].allowed_paths[k]);
                         remove_program_from_entry(obj, j, k);
                     }
                 }
@@ -788,8 +799,8 @@ static int sync_config_to_entries(struct bpf_object *obj,
         if (!found) {
             // Новая папка - добавляем
             SYSLOG_INFO_D("Adding new folder: %s (inode: %lu, programs: %d)",
-                        temp_entries[i].path, (unsigned long)temp_entries[i].inode,
-                        temp_entries[i].allowed_count);
+                          temp_entries[i].path, (unsigned long)temp_entries[i].inode,
+                          temp_entries[i].allowed_count);
             add_folder_to_entries(obj, &temp_entries[i]);
         }
 
@@ -809,8 +820,8 @@ static int sync_config_to_entries(struct bpf_object *obj,
                     }
                     if (!prog_found) {
                         add_program_to_folder(obj, &entries[j],
-                                            temp_entries[i].allowed_inodes[k],
-                                            temp_entries[i].allowed_paths[k]);
+                                              temp_entries[i].allowed_inodes[k],
+                                              temp_entries[i].allowed_paths[k]);
                     }
                 }
                 break;
@@ -985,71 +996,71 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
             }
 
             // if (raw_path[0] == '~') {
-                struct protect_template *tmpl = &(*temp_templates)[new_template_count];
-                safe_strcpy(tmpl->pattern, raw_path, sizeof(tmpl->pattern));
-                int isHome = is_home_path(raw_path);
+            struct protect_template *tmpl = &(*temp_templates)[new_template_count];
+            safe_strcpy(tmpl->pattern, raw_path, sizeof(tmpl->pattern));
+            int isHome = is_home_path(raw_path);
 
-                const char *subpath = raw_path + 1;
+            const char *subpath = raw_path + 1;
 
-                if (isHome) {
-                    safe_strcpy(tmpl->subpath, subpath, sizeof(tmpl->subpath));
-                }
+            if (isHome) {
+                safe_strcpy(tmpl->subpath, subpath, sizeof(tmpl->subpath));
+            }
 
-                for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
-                    tmpl->allowed_inodes[i] = allowed_inodes[i];
-                    safe_strcpy(tmpl->allowed_paths[i], allowed_paths[i], MAX_PATH_LEN);
-                }
-                tmpl->allowed_count = allowed_count;
+            for (int i = 0; i < allowed_count && i < MAX_ALLOWED; i++) {
+                tmpl->allowed_inodes[i] = allowed_inodes[i];
+                safe_strcpy(tmpl->allowed_paths[i], allowed_paths[i], MAX_PATH_LEN);
+            }
+            tmpl->allowed_count = allowed_count;
 //                tmpl->enabled = 1;
-                tmpl->is_home = isHome;
+            tmpl->is_home = isHome;
 
-                if (isHome) {
-                    SYSLOG_INFO("Config: home template ~%s (will scan all users)", tmpl->subpath);
+            if (isHome) {
+                SYSLOG_INFO("Config: home template ~%s (will scan all users)", tmpl->subpath);
+            }
+            else {
+                SYSLOG_INFO("Config: path template %s (will scan this path)", tmpl->pattern);
+            }
+
+            new_template_count++;
+
+            char *found_paths[MAX_PATHS] = {NULL};  // Инициализируем нулями
+            int found_count = 0;
+
+            if (!isHome) {
+                // Для не домашнего пути просто используем сам путь
+                found_paths[0] = strdup(raw_path);  // или strdup(raw_path)
+                if (found_paths[0]) {
+                    found_count = 1;
                 }
-                else {
-                    SYSLOG_INFO("Config: path template %s (will scan this path)", tmpl->pattern);
+            } else {
+                found_count = scan_home_for_template(tmpl->subpath, found_paths, MAX_PATHS);
+            }
+
+            for (int i = 0; i < found_count && new_entry_count < MAX_PATHS; i++) {
+                struct protect_entry *entry = &(*temp_entries)[new_entry_count];
+                safe_strcpy(entry->path, found_paths[i], sizeof(entry->path));
+
+                entry->inode = get_inode_from_path(entry->path);
+                entry->is_active = (entry->inode != 0);
+                entry->allowed_count = 0;
+                entry->last_check = time(NULL);
+                entry->is_home = isHome;
+
+                for (int j = 0; j < tmpl->allowed_count && j < MAX_ALLOWED; j++) {
+                    entry->allowed_inodes[j] = tmpl->allowed_inodes[j];
+                    safe_strcpy(entry->allowed_paths[j], tmpl->allowed_paths[j], MAX_PATH_LEN);
+                    entry->allowed_count++;
                 }
 
-                new_template_count++;
-
-                char *found_paths[MAX_PATHS] = {NULL};  // Инициализируем нулями
-                int found_count = 0;
-
-                if (!isHome) {
-                    // Для не домашнего пути просто используем сам путь
-                    found_paths[0] = strdup(raw_path);  // или strdup(raw_path)
-                    if (found_paths[0]) {
-                        found_count = 1;
-                    }
+                if (entry->inode != 0) {
+                    SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
                 } else {
-                    found_count = scan_home_for_template(tmpl->subpath, found_paths, MAX_PATHS);
+                    SYSLOG_WARN("Config: protect %s (NOT FOUND YET, will retry)", entry->path);
                 }
 
-                for (int i = 0; i < found_count && new_entry_count < MAX_PATHS; i++) {
-                    struct protect_entry *entry = &(*temp_entries)[new_entry_count];
-                    safe_strcpy(entry->path, found_paths[i], sizeof(entry->path));
-
-                    entry->inode = get_inode_from_path(entry->path);
-                    entry->is_active = (entry->inode != 0);
-                    entry->allowed_count = 0;
-                    entry->last_check = time(NULL);
-                    entry->is_home = isHome;
-
-                    for (int j = 0; j < tmpl->allowed_count && j < MAX_ALLOWED; j++) {
-                        entry->allowed_inodes[j] = tmpl->allowed_inodes[j];
-                        safe_strcpy(entry->allowed_paths[j], tmpl->allowed_paths[j], MAX_PATH_LEN);
-                        entry->allowed_count++;
-                    }
-
-                    if (entry->inode != 0) {
-                        SYSLOG_INFO("Config: protect %s (inode: %lu)", entry->path, (unsigned long)entry->inode);
-                    } else {
-                        SYSLOG_WARN("Config: protect %s (NOT FOUND YET, will retry)", entry->path);
-                    }
-
-                    new_entry_count++;
-                    free(found_paths[i]);
-                }
+                new_entry_count++;
+                free(found_paths[i]);
+            }
             // } else {
             //     struct protect_entry *entry = &(*temp_entries)[new_entry_count];
             //     safe_strcpy(entry->path, raw_path, sizeof(entry->path));
@@ -1215,9 +1226,9 @@ static int scan_all_entries(struct bpf_object *obj) {
         if (entries[i].inode == 0) continue;
 
         SYSLOG_INFO_D("Checking folder: %s (inode: %lu, programs: %d)",
-                    entries[i].path,
-                    (unsigned long)entries[i].inode,
-                    entries[i].allowed_count);
+                      entries[i].path,
+                      (unsigned long)entries[i].inode,
+                      entries[i].allowed_count);
 
         // Проверяем каждую программу в папке
         for (int j = entries[i].allowed_count - 1; j >= 0; j--) {
@@ -1233,9 +1244,9 @@ static int scan_all_entries(struct bpf_object *obj) {
             } else if (entries[i].allowed_inodes[j] != current_inode) {
                 // Программа пересоздана
                 SYSLOG_INFO_D("  Program recreated: %s (old: %lu, new: %lu)",
-                            program_path,
-                            (unsigned long)entries[i].allowed_inodes[j],
-                            (unsigned long)current_inode);
+                              program_path,
+                              (unsigned long)entries[i].allowed_inodes[j],
+                              (unsigned long)current_inode);
                 entries[i].allowed_inodes[j] = current_inode;
                 // Обновляем в BPF
                 if (obj) {
@@ -1293,7 +1304,7 @@ static int scan_missing_programs(struct bpf_object *obj) {
                 if (current_inode != 0) {
                     // Программа появилась!
                     SYSLOG_INFO_D("  Program appeared: %s (inode: %lu)",
-                                program_path, (unsigned long)current_inode);
+                                  program_path, (unsigned long)current_inode);
 
                     // Обновляем inode в entries
                     entries[i].allowed_inodes[j] = current_inode;
@@ -1321,8 +1332,8 @@ static int scan_missing_programs(struct bpf_object *obj) {
                         int fd = bpf_map__fd(map);
                         if (fd >= 0) {
                             struct protected_folder_config config = {
-                                .folder_inode = entries[i].inode,
-                                .allowed_program_count = entries[i].allowed_count,
+                                    .folder_inode = entries[i].inode,
+                                    .allowed_program_count = entries[i].allowed_count,
                             };
                             bpf_map_update_elem(fd, &entries[i].inode, &config, BPF_ANY);
                             SYSLOG_INFO_D("    Folder config updated");
@@ -1339,6 +1350,60 @@ static int scan_missing_programs(struct bpf_object *obj) {
 }
 
 // ============================================================================
+// ИЗМЕНЕНИЕ 3: ФУНКЦИЯ ПОЛНОГО СКАНИРОВАНИЯ (С ОЖИДАНИЕМ МЬЮТЕКСА)
+// ============================================================================
+static void perform_full_scan(struct bpf_object *obj) {
+    if (!obj) return;
+
+    // Захватываем мьютекс с ожиданием в очереди
+    SYSLOG_INFO_D("Full scan: waiting for mutex...");
+    pthread_mutex_lock(&scan_mutex);
+    SYSLOG_INFO_D("Full scan: mutex acquired");
+
+    SYSLOG_INFO("Starting full scan from templates...");
+
+    int changed = 0;
+
+    // Сканируем шаблоны и загружаем новые папки
+    if (scan_templates_and_load(obj)) {
+        changed = 1;
+    }
+
+    // Проверяем программы в существующих папках
+    if (scan_all_entries(obj) > 0) {
+        changed = 1;
+    }
+
+    // Проверяем пропавшие программы
+    if (scan_missing_programs(obj) > 0) {
+        changed = 1;
+    }
+
+    if (changed) {
+        SYSLOG_INFO("Full scan completed, changes detected");
+    } else {
+        SYSLOG_INFO_D("Full scan completed, no changes");
+    }
+
+    SYSLOG_INFO_D("Full scan: releasing mutex");
+    pthread_mutex_unlock(&scan_mutex);
+}
+// ============================================================================
+
+// ============================================================================
+// ИЗМЕНЕНИЕ 3: ОБРАБОТЧИК СИГНАЛА ДЛЯ ПРИНУДИТЕЛЬНОГО СКАНИРОВАНИЯ
+// ============================================================================
+static volatile int signal_scan_requested = 0;
+
+static void signal_handler_scan(int sig) {
+    if (sig == SIGUSR1) {
+        SYSLOG_INFO("Received SIGUSR1 signal, full scan requested");
+        signal_scan_requested = 1;
+    }
+}
+// ============================================================================
+
+// ============================================================================
 // ФУНКЦИЯ ПОИСКА BPF ОБЪЕКТА
 // ============================================================================
 
@@ -1347,13 +1412,13 @@ static const char* find_bpf_object(void) {
     struct stat st;
 
     const char *paths[] = {
-        "/usr/local/lib/app_data_sec/app_data_sec.bpf.o",
-        "./app_data_sec.bpf.o",
+            "/usr/local/lib/app_data_sec/app_data_sec.bpf.o",
+            "./app_data_sec.bpf.o",
 //        "../app_data_sec.bpf.o",
-        "/opt/app_data_sec/app_data_sec.bpf.o",
-        "/usr/lib/app_data_sec/app_data_sec.bpf.o",
-        "/usr/local/app_data_sec.bpf.o",
-        NULL
+            "/opt/app_data_sec/app_data_sec.bpf.o",
+            "/usr/lib/app_data_sec/app_data_sec.bpf.o",
+            "/usr/local/app_data_sec.bpf.o",
+            NULL
     };
 
     for (int i = 0; paths[i] != NULL; i++) {
@@ -1589,6 +1654,10 @@ int main(int argc, char **argv) {
     signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
     signal(SIGHUP, signal_handler);
+    // ============================================================================
+    // ИЗМЕНЕНИЕ 3: УСТАНАВЛИВАЕМ ОБРАБОТЧИК SIGUSR1
+    // ============================================================================
+    signal(SIGUSR1, signal_handler_scan);
 
     // Регистрируем удаление PID-файла при выходе
     atexit(remove_pid_file);
@@ -1716,12 +1785,12 @@ int main(int argc, char **argv) {
     // Синхронизируем entries с BPF
     DEBUG_PRINT("Syncing entries to BPF...");
     sync_config_to_entries(
-        bpf_obj,
-        temp_entries,
-        temp_count,
-        temp_templates,
-        temp_template_count,
-        temp_config_enabled
+            bpf_obj,
+            temp_entries,
+            temp_count,
+            temp_templates,
+            temp_template_count,
+            temp_config_enabled
     );
     DEBUG_PRINT("Sync complete");
 
@@ -1778,6 +1847,15 @@ int main(int argc, char **argv) {
     while (keep_running) {
         time_t now = time(NULL);
 
+        // ============================================================================
+        // ИЗМЕНЕНИЕ 3: ПРОВЕРКА СИГНАЛА ДЛЯ ПРИНУДИТЕЛЬНОГО СКАНИРОВАНИЯ
+        // ============================================================================
+        if (signal_scan_requested) {
+            signal_scan_requested = 0;
+            SYSLOG_INFO("Processing forced scan request from signal");
+            perform_full_scan(bpf_obj);
+        }
+
         // Проверка автоконфигурации (раз в час)
         if (keep_running && (now - last_autoconfig_check >= AUTOCONFIG_CHECK_INTERVAL)) {
             if (autoconfig_changed()) {
@@ -1792,16 +1870,103 @@ int main(int argc, char **argv) {
             last_autoconfig_check = now;
         }
 
-        // Проверяем завершение с задержкой
-        for (int i = 0; i < CHECK_INTERVAL && keep_running; i++) {
-            sleep(1);
+        // ============================================================================
+        // ИЗМЕНЕНИЕ 1: ЗАМЕНЯЕМ sleep(1) НА usleep(100000) В ЦИКЛЕ
+        // ============================================================================
+        // Проверяем завершение с задержкой 100 мс
+        for (int i = 0; i < CHECK_INTERVAL * 10 && keep_running; i++) {
+            usleep(100000);  // 100 миллисекунд
         }
 
         if (!keep_running) break;
 
-        sleep(CHECK_INTERVAL);
-        now = time(NULL);
+        // ============================================================================
+        // ИЗМЕНЕНИЕ 2: ПРОВЕРКА НОВЫХ КАТАЛОГОВ В /home/
+        // ============================================================================
+        // Проверяем, есть ли домашние шаблоны
+        int has_home_templates = 0;
+        for (int i = 0; i < template_count; i++) {
+            if (templates[i].is_home) {
+                has_home_templates = 1;
+                break;
+            }
+        }
 
+        if (has_home_templates && config_enabled) {
+            // Сканируем /home на наличие новых каталогов
+            DIR *dir = opendir("/home/");
+            if (dir) {
+                struct dirent *entry;
+                struct stat st;
+                int found_new_home_dirs = 0;
+
+                // Собираем список существующих каталогов в /home
+                char existing_homes[MAX_PATHS][MAX_PATH_LEN];
+                int existing_count = 0;
+
+                // Заполняем из entries
+                for (int i = 0; i < entry_count; i++) {
+                    if (entries[i].is_home && entries[i].path[0] != '\0') {
+                        // Извлекаем имя пользователя из пути
+                        char *home_path = entries[i].path;
+                        // Проверяем, что путь начинается с /home/
+                        if (strncmp(home_path, "/home/", 6) == 0) {
+                            char *username = home_path + 6;
+                            char *slash = strchr(username, '/');
+                            if (slash) {
+                                *slash = '\0';
+                                // Проверяем, есть ли уже этот пользователь в списке
+                                int already_exists = 0;
+                                for (int j = 0; j < existing_count; j++) {
+                                    if (strcmp(existing_homes[j], username) == 0) {
+                                        already_exists = 1;
+                                        break;
+                                    }
+                                }
+                                if (!already_exists && username[0] != '\0') {
+                                    safe_strcpy(existing_homes[existing_count], username, MAX_PATH_LEN);
+                                    existing_count++;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Сканируем /home
+                while ((entry = readdir(dir)) != NULL) {
+                    if (entry->d_name[0] == '.') continue;
+
+                    char full_path[PATH_MAX];
+                    snprintf(full_path, sizeof(full_path), "/home/%s", entry->d_name);
+
+                    if (stat(full_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+                        // Проверяем, есть ли этот пользователь в существующих
+                        int found = 0;
+                        for (int i = 0; i < existing_count; i++) {
+                            if (strcmp(existing_homes[i], entry->d_name) == 0) {
+                                found = 1;
+                                break;
+                            }
+                        }
+
+                        if (!found) {
+                            // Новый каталог в /home
+                            SYSLOG_INFO("New home directory detected: %s", full_path);
+                            found_new_home_dirs = 1;
+                            break;
+                        }
+                    }
+                }
+                closedir(dir);
+
+                if (found_new_home_dirs) {
+                    SYSLOG_INFO("New home directories detected, running full scan...");
+                    perform_full_scan(bpf_obj);
+                }
+            }
+        }
+
+        // Проверка изменений конфига
         if (config_changed()) {
             SYSLOG_INFO("Config changed! Reloading...");
 
@@ -1812,19 +1977,19 @@ int main(int argc, char **argv) {
             int new_temp_config_enabled = 0;
 
             if (parse_config_to_temp(&new_temp_entries, &new_temp_count,
-                &new_temp_templates, &new_temp_template_count,
-                &new_temp_config_enabled) != 0) {
+                                     &new_temp_templates, &new_temp_template_count,
+                                     &new_temp_config_enabled) != 0) {
                 SYSLOG_ERR("Failed to parse config after change");
                 continue;
             }
 
             sync_config_to_entries(
-                bpf_obj,
-                new_temp_entries,
-                new_temp_count,
-                new_temp_templates,
-                new_temp_template_count,
-                new_temp_config_enabled
+                    bpf_obj,
+                    new_temp_entries,
+                    new_temp_count,
+                    new_temp_templates,
+                    new_temp_template_count,
+                    new_temp_config_enabled
             );
 
             // Освобождаем временную память
@@ -1842,57 +2007,10 @@ int main(int argc, char **argv) {
         }
 
         if (now - last_folder_check >= RETRY_INTERVAL) {
-            int changed = 0;
-
-            for (int i = entry_count - 1; i >= 0; i--) {
-                if (entries[i].path[0] == '\0') continue;
-
-                __u64 current_inode = get_inode_from_path(entries[i].path);
-
-                if (current_inode == 0) {
-                    if (entries[i].inode != 0 && entries[i].is_active) {
-                        SYSLOG_INFO_D("Folder removed from filesystem: %s", entries[i].path);
-                        remove_folder_from_entries(bpf_obj, i);
-                        changed = 1;
-                    }
-                } else if (entries[i].inode == 0) {
-                    entries[i].inode = current_inode;
-                    entries[i].is_active = 1;
-                    SYSLOG_INFO_D("New folder found: %s (inode: %lu)",
-                                entries[i].path, (unsigned long)current_inode);
-                    add_folder_to_entries(bpf_obj, &entries[i]);
-                    remove_folder_from_entries(bpf_obj, i);
-                    changed = 1;
-                } else if (entries[i].inode != current_inode) {
-                    struct protect_entry *new_entry = &entries[i];
-                    SYSLOG_INFO_D("Folder recreated: %s (old: %lu, new: %lu)",
-                                entries[i].path,
-                                (unsigned long)entries[i].inode,
-                                (unsigned long)current_inode);
-                    remove_folder_from_entries(bpf_obj, i);
-                    new_entry->inode = current_inode;
-                    new_entry->is_active = 1;
-                    add_folder_to_entries(bpf_obj, new_entry);
-                    changed = 1;
-                }
-            }
-
-            if (config_enabled && scan_templates_and_load(bpf_obj)) {
-                changed = 1;
-            }
-
-            if (scan_all_entries(bpf_obj) > 0) {
-                changed = 1;
-            }
-
-            if (scan_missing_programs(bpf_obj) > 0) {
-                changed = 1;
-            }
-
-            if (changed) {
-                SYSLOG_INFO("Filesystem changes detected, sync complete");
-            }
-
+            // ============================================================================
+            // ИЗМЕНЕНИЕ 2: ИСПОЛЬЗУЕМ perform_full_scan() ВМЕСТО РАЗРОЗНЕННЫХ СКАНИРОВАНИЙ
+            // ============================================================================
+            perform_full_scan(bpf_obj);
             last_folder_check = now;
         }
     }
