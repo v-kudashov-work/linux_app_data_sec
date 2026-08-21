@@ -1968,6 +1968,10 @@ int main(int argc, char **argv) {
 
         // Проверка изменений конфига
         if (config_changed()) {
+            SYSLOG_INFO_D("Config change: waiting for sync mutex...");
+            pthread_mutex_lock(&scan_mutex);
+            SYSLOG_INFO_D("Config change: mutex acquired");
+
             SYSLOG_INFO("Config changed! Reloading...");
 
             struct protect_entry *new_temp_entries = NULL;
@@ -1980,6 +1984,7 @@ int main(int argc, char **argv) {
                                      &new_temp_templates, &new_temp_template_count,
                                      &new_temp_config_enabled) != 0) {
                 SYSLOG_ERR("Failed to parse config after change");
+                pthread_mutex_unlock(&scan_mutex);
                 continue;
             }
 
@@ -2004,6 +2009,9 @@ int main(int argc, char **argv) {
             // }
 
             last_folder_check = now;
+
+            SYSLOG_INFO_D("Config change: releasing mutex");
+            pthread_mutex_unlock(&scan_mutex);
         }
 
         if (now - last_folder_check >= RETRY_INTERVAL) {
