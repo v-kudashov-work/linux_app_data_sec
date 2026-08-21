@@ -38,6 +38,7 @@
 #define AUTOCONFIG_TIMESTAMP "/etc/app_data_sec.autoconfig.timestamp"
 #define AUTOCONFIG_CHECK_INTERVAL 900  // 15 минут
 #define MOUNT_CHECK_INTERVAL 1
+#define HOME_SCAN_INTERVAL 1
 #define MAX_SCAN_MOUNT_PATHS 100        // Максимальное количество путей для scan_mount
 
 // ============================================================================
@@ -295,6 +296,7 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 
         if (path_exists(expanded)) {
             found_paths[idx] = strdup(expanded);
+//            SYSLOG_INFO("=========> Add home Path: %s", found_paths[idx]);
             if (found_paths[idx]) idx++;
         }
     }
@@ -1065,6 +1067,7 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
             for (int i = 0; i < found_count && new_entry_count < MAX_PATHS; i++) {
                 struct protect_entry *entry = &(*temp_entries)[new_entry_count];
                 safe_strcpy(entry->path, found_paths[i], sizeof(entry->path));
+//                SYSLOG_INFO(" ============> %s", entry->path);
 
                 entry->inode = get_inode_from_path(entry->path);
                 entry->is_active = (entry->inode != 0);
@@ -1170,6 +1173,7 @@ static int scan_templates_and_load(struct bpf_object *obj) {
 
             int already_exists = 0;
             for (int j = 0; j < entry_count; j++) {
+//                SYSLOG_INFO("compare %s and %s", entries[j].path, found_paths[i]);
                 if (strcmp(entries[j].path, found_paths[i]) == 0) {
                     already_exists = 1;
                     break;
@@ -1185,6 +1189,7 @@ static int scan_templates_and_load(struct bpf_object *obj) {
             if (entry_count < MAX_PATHS) {
                 struct protect_entry entry;
                 memset(&entry, 0, sizeof(struct protect_entry));
+//                SYSLOG_INFO("===> adding %s", found_paths[i]);
                 safe_strcpy(entry.path, found_paths[i], sizeof(entry.path));
 
                 entry.inode = get_inode_from_path(entry.path);
@@ -1727,6 +1732,7 @@ static int parse_scan_mount(const char *line) {
         // Для ~ пути сохраняем подпуть
         safe_strcpy(scan_mount_paths[scan_mount_path_count].subpath, raw_path + 1, MAX_PATH_LEN);
         // Для отображения в логах используем raw_path
+//        SYSLOG_INFO("====> Added scan_mount path ~");
         safe_strcpy(scan_mount_paths[scan_mount_path_count].path, raw_path, MAX_PATH_LEN);
         SYSLOG_INFO("Added scan_mount path: %s (home template)", raw_path);
     } else {
@@ -1736,6 +1742,7 @@ static int parse_scan_mount(const char *line) {
 //            safe_strcpy(scan_mount_paths[scan_mount_path_count].path, expanded_path, MAX_PATH_LEN);
 //            SYSLOG_INFO("Added scan_mount path: %s (expanded to: %s)", raw_path, expanded_path);
 //        } else {
+//        SYSLOG_INFO("====> Added scan_mount path =");
             safe_strcpy(scan_mount_paths[scan_mount_path_count].path, raw_path, MAX_PATH_LEN);
             SYSLOG_INFO("Added scan_mount path: %s", raw_path);
 //        }
@@ -2031,9 +2038,11 @@ int main(int argc, char **argv) {
         if (!keep_running) break;
 
         // ============================================================================
-        // ИЗМЕНЕНИЕ 2: ПРОВЕРКА НОВЫХ КАТАЛОГОВ В /home/
-        // ============================================================================
-        // Проверяем, есть ли домашние шаблоны
+// ИЗМЕНЕНИЕ 2: ПРОВЕРКА НОВЫХ КАТАЛОГОВ В /home/ (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+// ============================================================================
+        static time_t last_home_scan = 0;
+
+// Проверяем, есть ли домашние шаблоны
         int has_home_templates = 0;
         for (int i = 0; i < template_count; i++) {
             if (templates[i].is_home) {
@@ -2042,44 +2051,42 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (has_home_templates && config_enabled) {
+        if (has_home_templates && config_enabled && (now - last_home_scan >= HOME_SCAN_INTERVAL)) {
             // Сканируем /home на наличие новых каталогов
             DIR *dir = opendir("/home/");
             if (dir) {
                 struct dirent *entry;
                 struct stat st;
                 int found_new_home_dirs = 0;
+                char new_username[MAX_PATH_LEN] = "";
 
                 // Собираем список существующих каталогов в /home
                 char existing_homes[MAX_PATHS][MAX_PATH_LEN];
                 int existing_count = 0;
 
-                // Заполняем из entries
+                // Заполняем из entries - все папки, которые начинаются с /home/
                 for (int i = 0; i < entry_count; i++) {
-                    if (entries[i].is_home && entries[i].path[0] != '\0') {
-                        // Извлекаем имя пользователя из пути
-                        char *home_path = entries[i].path;
-                        // Проверяем, что путь начинается с /home/
-                        if (strncmp(home_path, "/home/", 6) == 0) {
-                            char *username = home_path + 6;
-                            char *slash = strchr(username, '/');
-                            if (slash) {
-                                *slash = '\0';
-                                // Проверяем, есть ли уже этот пользователь в списке
-                                int already_exists = 0;
-                                for (int j = 0; j < existing_count; j++) {
-                                    if (strcmp(existing_homes[j], username) == 0) {
-                                        already_exists = 1;
-                                        SYSLOG_INFO("already_exists: %s", username);
-                                        break;
-                                    }
-                                }
-                                if (!already_exists && username[0] != '\0') {
-                                    safe_strcpy(existing_homes[existing_count], username, MAX_PATH_LEN);
-                                    SYSLOG_INFO("not exists: %s", username);
-                                    existing_count++;
-                                }
+                    if (entries[i].path[0] != '\0' && strncmp(entries[i].path, "/home/", 6) == 0) {
+                        // КОПИРУЕМ путь во временный буфер, чтобы не изменять оригинал
+                        char temp_path[MAX_PATH_LEN];
+                        safe_strcpy(temp_path, entries[i].path, MAX_PATH_LEN);
+
+                        char *username = temp_path + 6;
+                        char *slash = strchr(username, '/');
+                        if (slash) {
+                            *slash = '\0';
+                        }
+                        // Проверяем, есть ли уже этот пользователь в списке
+                        int already_exists = 0;
+                        for (int j = 0; j < existing_count; j++) {
+                            if (strcmp(existing_homes[j], username) == 0) {
+                                already_exists = 1;
+                                break;
                             }
+                        }
+                        if (!already_exists && username[0] != '\0') {
+                            safe_strcpy(existing_homes[existing_count], username, MAX_PATH_LEN);
+                            existing_count++;
                         }
                     }
                 }
@@ -2102,9 +2109,9 @@ int main(int argc, char **argv) {
                         }
 
                         if (!found) {
-                            // Новый каталог в /home
                             SYSLOG_INFO("New home directory detected: %s", full_path);
                             found_new_home_dirs = 1;
+                            strcpy(new_username, entry->d_name);
                             break;
                         }
                     }
@@ -2115,16 +2122,8 @@ int main(int argc, char **argv) {
                     SYSLOG_INFO("New home directories detected, running full scan...");
                     perform_full_scan(bpf_obj);
                 }
+                last_home_scan = now;
             }
-        }
-
-        static time_t last_scan_mount_check = 0;
-        if (now - last_scan_mount_check >= MOUNT_CHECK_INTERVAL) {
-            if (check_scan_mount_paths()) {
-                SYSLOG_INFO("scan_mount: mount change detected, running full scan...");
-                perform_full_scan(bpf_obj);
-            }
-            last_scan_mount_check = now;
         }
 
         // Проверка изменений конфига
