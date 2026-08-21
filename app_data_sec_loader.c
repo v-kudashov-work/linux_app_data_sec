@@ -37,6 +37,8 @@
 #define AUTOCONFIG_DIR "/etc/app_data_sec.autoconfig"
 #define AUTOCONFIG_TIMESTAMP "/etc/app_data_sec.autoconfig.timestamp"
 #define AUTOCONFIG_CHECK_INTERVAL 900  // 15 минут
+#define MOUNT_CHECK_INTERVAL 1
+#define MAX_SCAN_MOUNT_PATHS 100        // Максимальное количество путей для scan_mount
 
 // ============================================================================
 // ОТЛАДКА
@@ -132,6 +134,22 @@ static int config_enabled = 0;
 static time_t config_mtime = 0;
 
 // ============================================================================
+// СТРУКТУРЫ ДЛЯ SCAN_MOUNT
+// ============================================================================
+
+struct scan_mount_entry {
+    char path[MAX_PATH_LEN];
+    char original_pattern[MAX_PATH_LEN];
+    int is_home;
+    char subpath[MAX_PATH_LEN];
+    int is_mounted;
+    time_t last_check;
+};
+
+static struct scan_mount_entry scan_mount_paths[MAX_SCAN_MOUNT_PATHS];
+static int scan_mount_path_count = 0;
+
+// ============================================================================
 // ИЗМЕНЕНИЕ 2: ДОБАВЛЯЕМ МЬЮТЕКС ДЛЯ СИНХРОНИЗАЦИИ
 // ============================================================================
 static pthread_mutex_t scan_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -156,6 +174,9 @@ static int load_single_entry(struct bpf_object *obj, struct protect_entry *entry
 static int scan_templates_and_load(struct bpf_object *obj);
 static int config_changed(void);
 static const char* find_bpf_object(void);
+static int parse_scan_mount(const char *line);
+static int check_scan_mount_paths(void);
+static int is_path_mounted(const char *path);
 // ============================================================================
 // ИЗМЕНЕНИЕ 3: ДОБАВЛЯЕМ ПРОТОТИП ФУНКЦИИ ПОЛНОГО СКАНИРОВАНИЯ
 // ============================================================================
@@ -950,6 +971,11 @@ static int parse_config_to_temp(struct protect_entry **temp_entries, int *temp_c
             continue;
         }
 
+        if (strncmp(start, "scan_mount", 10) == 0) {
+            parse_scan_mount(start);
+            continue;
+        }
+
         if (strncmp(start, "protect", 7) == 0) {
             char *ptr = start + 7;
             while (*ptr == ' ' || *ptr == '\t') ptr++;
@@ -1630,6 +1656,130 @@ static void signal_handler(int sig) {
     }
 }
 
+// ============================================================================
+// ФУНКЦИЯ ПРОВЕРКИ МОНТИРОВАНИЯ ПУТИ
+// ============================================================================
+
+static int is_path_mounted(const char *path) {
+    if (!path || path[0] == '\0') return 0;
+
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+
+    if (!S_ISDIR(st.st_mode)) return 0;
+
+    char parent_path[PATH_MAX];
+    snprintf(parent_path, sizeof(parent_path), "%s/..", path);
+
+    struct stat parent_st;
+    if (stat(parent_path, &parent_st) != 0) return 0;
+
+    // Если устройство отличается - это точка монтирования
+    return (st.st_dev != parent_st.st_dev);
+}
+
+// ============================================================================
+// ПАРСИНГ ДИРЕКТИВЫ SCAN_MOUNT
+// ============================================================================
+
+static int parse_scan_mount(const char *line) {
+    if (!line) return -1;
+
+    char *ptr = (char *)line + strlen("scan_mount");
+    while (*ptr == ' ' || *ptr == '\t') ptr++;
+
+    if (*ptr == '\0') {
+        SYSLOG_WARN("Missing path after scan_mount");
+        return -1;
+    }
+
+    char raw_path[MAX_PATH_LEN];
+    if (parse_quoted_string((const char **)&ptr, raw_path, MAX_PATH_LEN) != 0) {
+        SYSLOG_WARN("Invalid scan_mount path");
+        return -1;
+    }
+
+    if (raw_path[0] == '\0') {
+        SYSLOG_WARN("Empty scan_mount path");
+        return -1;
+    }
+
+    // Проверяем, не добавлен ли уже этот путь
+    for (int i = 0; i < scan_mount_path_count; i++) {
+        if (strcmp(scan_mount_paths[i].path, raw_path) == 0) {
+            SYSLOG_INFO_D("scan_mount path already added: %s", raw_path);
+            return 0;
+        }
+    }
+
+    if (scan_mount_path_count >= MAX_SCAN_MOUNT_PATHS) {
+        SYSLOG_WARN("Max scan_mount paths reached");
+        return -1;
+    }
+
+    // Сохраняем исходный шаблон
+    safe_strcpy(scan_mount_paths[scan_mount_path_count].original_pattern, raw_path, MAX_PATH_LEN);
+
+    // Определяем, является ли путь домашним
+    scan_mount_paths[scan_mount_path_count].is_home = is_home_path(raw_path);
+
+    if (scan_mount_paths[scan_mount_path_count].is_home) {
+        // Для ~ пути сохраняем подпуть
+        safe_strcpy(scan_mount_paths[scan_mount_path_count].subpath, raw_path + 1, MAX_PATH_LEN);
+        // Для отображения в логах используем raw_path
+        safe_strcpy(scan_mount_paths[scan_mount_path_count].path, raw_path, MAX_PATH_LEN);
+        SYSLOG_INFO("Added scan_mount path: %s (home template)", raw_path);
+    } else {
+        // Для обычных путей - пытаемся расширить ~
+//        char expanded_path[MAX_PATH_LEN];
+//        if (expand_home_path(raw_path, expanded_path, sizeof(expanded_path)) == 0) {
+//            safe_strcpy(scan_mount_paths[scan_mount_path_count].path, expanded_path, MAX_PATH_LEN);
+//            SYSLOG_INFO("Added scan_mount path: %s (expanded to: %s)", raw_path, expanded_path);
+//        } else {
+            safe_strcpy(scan_mount_paths[scan_mount_path_count].path, raw_path, MAX_PATH_LEN);
+            SYSLOG_INFO("Added scan_mount path: %s", raw_path);
+//        }
+    }
+
+    scan_mount_paths[scan_mount_path_count].is_mounted = is_path_mounted(scan_mount_paths[scan_mount_path_count].path);
+    scan_mount_paths[scan_mount_path_count].last_check = time(NULL);
+
+    SYSLOG_INFO("  Currently %s", scan_mount_paths[scan_mount_path_count].is_mounted ? "mounted" : "not mounted");
+
+    scan_mount_path_count++;
+    return 0;
+}
+
+// ============================================================================
+// ПРОВЕРКА ВСЕХ SCAN_MOUNT ПУТЕЙ
+// ============================================================================
+
+static int check_scan_mount_paths(void) {
+    if (scan_mount_path_count == 0) {
+        return 0;
+    }
+
+    int mount_changed = 0;
+
+    for (int i = 0; i < scan_mount_path_count; i++) {
+        // Проверяем, смонтирован ли путь
+        int currently_mounted = is_path_mounted(scan_mount_paths[i].path);
+
+        if (currently_mounted != scan_mount_paths[i].is_mounted) {
+            if (currently_mounted) {
+                SYSLOG_INFO("scan_mount: path mounted: %s", scan_mount_paths[i].path);
+            } else {
+                SYSLOG_INFO("scan_mount: path unmounted: %s", scan_mount_paths[i].path);
+            }
+            scan_mount_paths[i].is_mounted = currently_mounted;
+            scan_mount_paths[i].last_check = time(NULL);
+            mount_changed = 1;
+        }
+    }
+
+    return mount_changed;
+}
+
 int main(int argc, char **argv) {
     DEBUG_PRINT("=== MAIN START ===");
 
@@ -1920,11 +2070,13 @@ int main(int argc, char **argv) {
                                 for (int j = 0; j < existing_count; j++) {
                                     if (strcmp(existing_homes[j], username) == 0) {
                                         already_exists = 1;
+                                        SYSLOG_INFO("already_exists: %s", username);
                                         break;
                                     }
                                 }
                                 if (!already_exists && username[0] != '\0') {
                                     safe_strcpy(existing_homes[existing_count], username, MAX_PATH_LEN);
+                                    SYSLOG_INFO("not exists: %s", username);
                                     existing_count++;
                                 }
                             }
@@ -1964,6 +2116,15 @@ int main(int argc, char **argv) {
                     perform_full_scan(bpf_obj);
                 }
             }
+        }
+
+        static time_t last_scan_mount_check = 0;
+        if (now - last_scan_mount_check >= MOUNT_CHECK_INTERVAL) {
+            if (check_scan_mount_paths()) {
+                SYSLOG_INFO("scan_mount: mount change detected, running full scan...");
+                perform_full_scan(bpf_obj);
+            }
+            last_scan_mount_check = now;
         }
 
         // Проверка изменений конфига
