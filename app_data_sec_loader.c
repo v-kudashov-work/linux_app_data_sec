@@ -1662,6 +1662,29 @@ static void signal_handler(int sig) {
 }
 
 // ============================================================================
+// ФУНКЦИЯ ПРОВЕРКИ, ЧТО ПАПКА НЕ ПУСТА
+// ============================================================================
+
+static int is_directory_not_empty(const char *path) {
+    if (!path || path[0] == '\0') return 0;
+
+    DIR *dir = opendir(path);
+    if (!dir) return 0;
+
+    struct dirent *entry;
+    int has_files = 0;
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        has_files = 1;
+        break;
+    }
+    closedir(dir);
+
+    return has_files;
+}
+
+// ============================================================================
 // ФУНКЦИЯ ПРОВЕРКИ МОНТИРОВАНИЯ ПУТИ
 // ============================================================================
 
@@ -1748,7 +1771,8 @@ static int parse_scan_mount(const char *line) {
 //        }
     }
 
-    scan_mount_paths[scan_mount_path_count].is_mounted = is_path_mounted(scan_mount_paths[scan_mount_path_count].path);
+    scan_mount_paths[scan_mount_path_count].is_mounted = is_path_mounted(scan_mount_paths[scan_mount_path_count].path)
+            && is_directory_not_empty(scan_mount_paths[scan_mount_path_count].path);
     scan_mount_paths[scan_mount_path_count].last_check = time(NULL);
 
     SYSLOG_INFO("  Currently %s", scan_mount_paths[scan_mount_path_count].is_mounted ? "mounted" : "not mounted");
@@ -1772,13 +1796,28 @@ static int check_scan_mount_paths(void) {
         // Проверяем, смонтирован ли путь
         int currently_mounted = is_path_mounted(scan_mount_paths[i].path);
 
-        if (currently_mounted != scan_mount_paths[i].is_mounted) {
-            if (currently_mounted) {
-                SYSLOG_INFO("scan_mount: path mounted: %s", scan_mount_paths[i].path);
+        // Проверяем, не пуста ли папка
+        int not_empty = 0;
+        if (currently_mounted) {
+            not_empty = is_directory_not_empty(scan_mount_paths[i].path);
+        }
+
+        // Считаем монтирование валидным только если папка смонтирована И не пуста
+        int is_valid_mount = currently_mounted && not_empty;
+
+        if (is_valid_mount != scan_mount_paths[i].is_mounted) {
+            if (is_valid_mount) {
+                SYSLOG_INFO("scan_mount: valid mount detected: %s (mounted and not empty)",
+                            scan_mount_paths[i].path);
             } else {
-                SYSLOG_INFO("scan_mount: path unmounted: %s", scan_mount_paths[i].path);
+                if (currently_mounted && !not_empty) {
+                    SYSLOG_INFO("scan_mount: path is mounted but empty: %s (waiting for content)",
+                                scan_mount_paths[i].path);
+                } else {
+                    SYSLOG_INFO("scan_mount: path unmounted: %s", scan_mount_paths[i].path);
+                }
             }
-            scan_mount_paths[i].is_mounted = currently_mounted;
+            scan_mount_paths[i].is_mounted = is_valid_mount;
             scan_mount_paths[i].last_check = time(NULL);
             mount_changed = 1;
         }
@@ -2124,6 +2163,18 @@ int main(int argc, char **argv) {
                 }
                 last_home_scan = now;
             }
+        }
+
+        // ============================================================================
+        // ПРОВЕРКА SCAN_MOUNT ПУТЕЙ
+        // ============================================================================
+        static time_t last_scan_mount_check = 0;
+        if (now - last_scan_mount_check >= MOUNT_CHECK_INTERVAL) {
+            if (check_scan_mount_paths()) {
+                SYSLOG_INFO("scan_mount: mount change detected, running full scan...");
+                perform_full_scan(bpf_obj);
+            }
+            last_scan_mount_check = now;
         }
 
         // Проверка изменений конфига
