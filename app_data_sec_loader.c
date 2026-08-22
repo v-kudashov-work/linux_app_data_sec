@@ -40,7 +40,7 @@
 #define MOUNT_CHECK_INTERVAL 0
 #define HOME_SCAN_INTERVAL 0
 #define MAX_SCAN_MOUNT_PATHS 100        // Максимальное количество путей для scan_mount
-#define HOME_PATH "/home_t/"            // Путь к домашним директориям
+#define HOME_PATH "/home/"            // Путь к домашним директориям
 
 // ============================================================================
 // ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ОТСЛЕЖИВАНИЯ ПОЛЬЗОВАТЕЛЕЙ
@@ -1841,8 +1841,8 @@ static void remove_processed_home_users(void) {
     int i = 0;
 
     while (i < processed_home_users_count) {
-        char full_path[PATH_MAX];
-        snprintf(full_path, sizeof(full_path), "%s", processed_home_users[i]);
+        char *full_path = processed_home_users[i];
+//        snprintf(full_path, sizeof(full_path), "%s", processed_home_users[i]);
 
         struct stat st;
         if (stat(full_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
