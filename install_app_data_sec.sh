@@ -82,11 +82,15 @@ if [ "$IS_UPDATE" -eq 1 ]; then
     if [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
         cp "$INSTALL_PATH/app_data_sec_messages_to_syslog" "$BACKUP_DIR/app_data_sec_messages_to_syslog.backup"
     fi
+    if [ -f "$INSTALL_PATH/app_data_sec_autoconfig" ]; then
+        cp "$INSTALL_PATH/app_data_sec_autoconfig" "$BACKUP_DIR/app_data_sec_autoconfig.backup"
+    fi
 
     # Останавливаем сервисы
     systemctl stop app_data_sec_loader 2>/dev/null || true
     systemctl stop app_data_sec_watchdog 2>/dev/null || true
     systemctl stop app_data_sec_messages 2>/dev/null || true
+    systemctl stop app_data_sec_autoconfig 2>/dev/null || true
 
     # Ждём завершения
     sleep 2
@@ -95,6 +99,7 @@ if [ "$IS_UPDATE" -eq 1 ]; then
     pkill -f app_data_sec_loader 2>/dev/null || true
     pkill -f app_data_sec_watchdog 2>/dev/null || true
     pkill -f app_data_sec_messages_to_syslog 2>/dev/null || true
+    pkill -f app_data_sec_autoconfig 2>/dev/null || true
 
     echo -e "${GREEN}[OK]${NC} Services stopped"
 fi

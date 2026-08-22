@@ -27,6 +27,7 @@ echo "  - app_data_sec_merge_config"
 echo "  - app_data_sec_unprotect"
 echo "  - app_data_sec_watchdog"
 echo "  - app_data_sec_messages_to_syslog"
+echo "  - app_data_sec_autoconfig"
 echo "  - BPF objects (app_data_sec.bpf.o)"
 echo "  - Systemd services"
 echo "  - Log files"
@@ -48,8 +49,10 @@ echo -e "\n${BLUE}[INFO]${NC} Stopping services..."
 
 systemctl stop app_data_sec_loader 2>/dev/null || true
 systemctl stop app_data_sec_watchdog 2>/dev/null || true
+systemctl stop app_data_sec_autoconfig 2>/dev/null || true
 systemctl disable app_data_sec_loader 2>/dev/null || true
 systemctl disable app_data_sec_watchdog 2>/dev/null || true
+systemctl disable app_data_sec_autoconfig 2>/dev/null || true
 
 systemctl stop app_data_sec_messages 2>/dev/null || true
 systemctl disable app_data_sec_messages 2>/dev/null || true
@@ -58,6 +61,7 @@ pkill -f app_data_sec_messages_to_syslog 2>/dev/null || true
 # Убиваем процессы если остались
 pkill -f app_data_sec_loader 2>/dev/null || true
 pkill -f app_data_sec_watchdog 2>/dev/null || true
+pkill -f app_data_sec_autoconfig 2>/dev/null || true
 
 echo -e "${GREEN}[OK]${NC} Services stopped"
 
@@ -72,10 +76,12 @@ rm -f /usr/local/bin/app_data_sec_loader
 rm -f /usr/local/bin/app_data_sec_merge_config
 rm -f /usr/local/bin/app_data_sec_unprotect
 rm -f /usr/local/bin/app_data_sec_watchdog
+rm -f /usr/local/bin/app_data_sec_autoconfig
 rm -f /usr/bin/app_data_sec_loader 2>/dev/null || true
 rm -f /usr/bin/app_data_sec_merge_config 2>/dev/null || true
 rm -f /usr/bin/app_data_sec_unprotect 2>/dev/null || true
 rm -f /usr/bin/app_data_sec_watchdog 2>/dev/null || true
+rm -f /usr/bin/app_data_sec_autoconfig 2>/dev/null || true
 echo -e "${GREEN}[OK]${NC} Removed binaries"
 
 # BPF объекты
@@ -87,18 +93,21 @@ echo -e "${GREEN}[OK]${NC} Removed BPF objects"
 # Сервисы
 rm -f /etc/systemd/system/app_data_sec_loader.service
 rm -f /etc/systemd/system/app_data_sec_watchdog.service
+rm -f /etc/systemd/system/app_data_sec_autoconfig.service
 echo -e "${GREEN}[OK]${NC} Removed service files"
 
 # Логи
 rm -f /var/log/app_data_sec_loader.log
 rm -f /var/log/app_data_sec_loader_error.log
 rm -f /var/log/app_data_sec_watchdog.log
+rm -f /var/log/app_data_sec_autoconfig.log
 rm -f /var/log/app_data_sec_watchdog_error.log
 echo -e "${GREEN}[OK]${NC} Removed log files"
 
 # PID файлы
 rm -f /run/app_data_sec_loader.pid
 rm -f /run/app_data_sec_watchdog.pid
+rm -f /run/app_data_sec_autoconfig.pid
 echo -e "${GREEN}[OK]${NC} Removed PID files"
 
 # Lock файлы
@@ -226,6 +235,7 @@ ${BLUE}Removed:${NC}
   - app_data_sec_unprotect binary
   - app_data_sec_watchdog binary
   - app_data_sec_messages_to_syslog binary
+  - app_data_sec_autoconfig binary
   - BPF objects (app_data_sec.bpf.o)
   - Systemd services
   - Log files
