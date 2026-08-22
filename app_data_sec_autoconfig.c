@@ -107,13 +107,19 @@ static int autoconfig_changed(void) {
     // Если время изменилось или файл с временем не существует
     if (current_mtime != saved_timestamp) {
         // Сохраняем новое время
-        fp = fopen(AUTOCONFIG_TIMESTAMP, "w");
-        if (fp) {
-            fprintf(fp, "%ld", current_mtime);
-            fclose(fp);
-            SYSLOG_INFO("Auto-config timestamp updated: %ld", current_mtime);
+        if (apply_autoconfig() == 0) {
+            // После применения автоконфига
+            SYSLOG_INFO("Will be reloading configuration...");
+
+            // Сохраняем новое время
+            FILE* fp = fopen(AUTOCONFIG_TIMESTAMP, "w");
+            if (fp) {
+                fprintf(fp, "%ld", current_mtime);
+                fclose(fp);
+                SYSLOG_INFO("Auto-config timestamp updated: %ld", current_mtime);
+            }
+            return 1;
         }
-        return 1;
     }
 
     return 0;
@@ -357,10 +363,7 @@ int main(int argc, char **argv) {
         SYSLOG_INFO("Running once mode (--once)");
 
         if (autoconfig_changed()) {
-            SYSLOG_INFO("Auto-config changed, applying...");
-            apply_autoconfig();
-        } else {
-            SYSLOG_INFO("No changes detected");
+            SYSLOG_INFO("Auto-config changed, applied");
         }
 
         SYSLOG_INFO("APP DATA SEC AUTOCONFIG EXITING (once mode)");

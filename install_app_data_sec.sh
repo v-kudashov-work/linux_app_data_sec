@@ -1362,22 +1362,22 @@ Wants=app_data_sec_loader.service
 Type=simple
 User=root
 Group=root
+ExecStartPre=/bin/sleep 5
 ExecStart=/usr/local/bin/app_data_sec_autoconfig
 ExecStop=/bin/kill -SIGTERM $MAINPID
 Restart=always
 RestartSec=30
 
-# Ускорение
-TimeoutStartSec=10
+TimeoutStartSec=45
 TimeoutStopSec=5
 
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=app_data_sec_autoconfig
 
-# Минимальные права - только чтение конфигов и выполнение merge_config
+# Мягкая изоляция, позволяющая запись в /etc
 PrivateTmp=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=true
 NoNewPrivileges=true
 PrivateDevices=true
@@ -1388,12 +1388,12 @@ RestrictRealtime=true
 MemoryDenyWriteExecute=true
 LockPersonality=true
 
-# Разрешаем только нужные пути
-ReadWritePaths=/etc/app_data_sec.conf /etc/app_data_sec.autoconfig.timestamp
-ReadOnlyPaths=/etc/app_data_sec.autoconfig /usr/local/bin/app_data_sec_merge_config /usr/bin/app_data_sec_merge_config
+# Явно разрешаем запись в /etc для конфигов
+ReadWritePaths=/etc/app_data_sec.conf /etc/app_data_sec.autoconfig.timestamp /etc /run/app_data_sec_autoconfig.pid /run
+ReadOnlyPaths=/usr/local/bin/app_data_sec_merge_config /usr/bin/app_data_sec_merge_config /run/app_data_sec_loader.pid
 
-# Минимальные capabilities для работы с файлами
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
+# Минимальные capabilities для работы с файлами в /etc
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_ADMIN
 
 [Install]
 WantedBy=multi-user.target
