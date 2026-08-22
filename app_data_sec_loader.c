@@ -1401,7 +1401,7 @@ static void perform_full_scan(struct bpf_object *obj) {
     pthread_mutex_lock(&scan_mutex);
     SYSLOG_INFO_D("Full scan: mutex acquired");
 
-    SYSLOG_INFO("Starting full scan from templates...");
+    SYSLOG_INFO_D("Starting full scan from templates...");
 
     int changed = 0;
 
@@ -2251,6 +2251,7 @@ int main(int argc, char **argv) {
 
         // Проверка автоконфигурации (раз в час)
         if ((now - last_autoconfig_check >= AUTOCONFIG_CHECK_INTERVAL) || rescan_on_signal) {
+//            SYSLOG_INFO("rescan part 1");
             if (autoconfig_changed()) {
                 SYSLOG_INFO("Auto-config directory changed, applying...");
 
@@ -2271,6 +2272,7 @@ int main(int argc, char **argv) {
         // ============================================================================
         static time_t last_home_scan = 0;
         if ((now - last_home_scan >= HOME_SCAN_INTERVAL) ||  rescan_on_signal) {
+//            SYSLOG_INFO("rescan part 2");
             check_new_home_directories(bpf_obj, 0);
             last_home_scan = now;
         }
@@ -2281,6 +2283,9 @@ int main(int argc, char **argv) {
         if (!rescan_on_signal) {
             usleep(500000);
         }
+//        else {
+//            SYSLOG_INFO("rescan part 3");
+//        }
 
         now = time(NULL);
         if (!keep_running) break;
@@ -2290,6 +2295,7 @@ int main(int argc, char **argv) {
         // ============================================================================
         static time_t last_scan_mount_check = 0;
         if ((now - last_scan_mount_check >= MOUNT_CHECK_INTERVAL) || rescan_on_signal) {
+//            SYSLOG_INFO("rescan part 4");
             if (check_scan_mount_paths()) {
                 SYSLOG_INFO("scan_mount: mount change detected, running full scan...");
                 perform_full_scan(bpf_obj);
@@ -2303,6 +2309,7 @@ int main(int argc, char **argv) {
         // Проверка изменений конфига
         static time_t last_config_changed_check = 0;
         if ((now - last_config_changed_check >= CONFIG_CHECK_INTERVAL) || rescan_on_signal) {
+//            SYSLOG_INFO("rescan part 5");
             if (config_changed()) {
                 SYSLOG_INFO_D("Config change: waiting for sync mutex...");
                 pthread_mutex_lock(&scan_mutex);
@@ -2356,6 +2363,7 @@ int main(int argc, char **argv) {
         if (!keep_running) break;
 
         if ((now - last_folder_check >= RETRY_INTERVAL) || rescan_on_signal) {
+//            SYSLOG_INFO("rescan part 6");
             // ============================================================================
             // ИЗМЕНЕНИЕ 2: ИСПОЛЬЗУЕМ perform_full_scan() ВМЕСТО РАЗРОЗНЕННЫХ СКАНИРОВАНИЙ
             // ============================================================================
