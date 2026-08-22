@@ -187,7 +187,7 @@ static int parse_scan_mount(const char *line);
 static int check_scan_mount_paths(void);
 static int is_home_user_processed(const char *username);
 static void add_processed_home_user(const char *username);
-static void clear_processed_home_users(void);
+//static void clear_processed_home_users(void);
 static int check_new_home_directories(struct bpf_object *obj, int without_rescan);
 static void perform_full_scan(struct bpf_object *obj);
 
@@ -1826,11 +1826,11 @@ static void add_processed_home_user(const char *username) {
     SYSLOG_INFO_D("Added processed home user: %s (total: %d)", username, processed_home_users_count);
 }
 
-static void clear_processed_home_users(void) {
-    memset(processed_home_users, 0, sizeof(processed_home_users));
-    processed_home_users_count = 0;
-    SYSLOG_INFO_D("Cleared processed home users list");
-}
+//static void clear_processed_home_users(void) {
+//    memset(processed_home_users, 0, sizeof(processed_home_users));
+//    processed_home_users_count = 0;
+//    SYSLOG_INFO_D("Cleared processed home users list");
+//}
 
 // ============================================================================
 // ФУНКЦИЯ УДАЛЕНИЯ НЕСУЩЕСТВУЮЩИХ ПОЛЬЗОВАТЕЛЕЙ ИЗ СПИСКА
@@ -1875,27 +1875,6 @@ static void remove_processed_home_users(void) {
 static int check_new_home_directories(struct bpf_object *obj, int without_rescan) {
     if (!obj) return 0;
 
-//    static time_t last_home_scan = 0;
-//    time_t now = time(NULL);
-
-    // Проверяем, есть ли домашние шаблоны
-//    int has_home_templates = 0;
-//    for (int i = 0; i < template_count; i++) {
-//        if (templates[i].is_home) {
-//            has_home_templates = 1;
-//            break;
-//        }
-//    }
-//
-//    if (!has_home_templates || !config_enabled) {
-//        return 0;
-//    }
-
-    // Проверяем интервал сканирования
-//    if (now - last_home_scan < HOME_SCAN_INTERVAL) {
-//        return 0;
-//    }
-
     int found_new = 0;
     DIR *dir = opendir(HOME_PATH);
     if (!dir) {
@@ -1905,11 +1884,8 @@ static int check_new_home_directories(struct bpf_object *obj, int without_rescan
 
     struct dirent *entry;
     struct stat st;
-    char new_username[MAX_PATH_LEN] = "";
 
     // Сканируем HOME_PATH и собираем все существующие директории
-    char existing_homes[MAX_PATHS][MAX_PATH_LEN];
-    int existing_count = 0;
 
     SYSLOG_INFO_D("Scanning %s for existing directories...", HOME_PATH);
 
@@ -1935,35 +1911,6 @@ static int check_new_home_directories(struct bpf_object *obj, int without_rescan
             }
         }
 
-        // После сканирования добавляем найденного пользователя в список обработанных
-//        if (new_username[0] != '\0') {
-//            add_processed_home_user(new_username);
-//        }
-//
-//        // Также добавляем всех существующих пользователей, которые есть в entries
-//        for (int i = 0; i < entry_count; i++) {
-//            if (entries[i].path[0] != '\0' && strncmp(entries[i].path, HOME_PATH, strlen(HOME_PATH)) == 0) {
-//                char temp_path[MAX_PATH_LEN];
-//                safe_strcpy(temp_path, entries[i].path, MAX_PATH_LEN);
-//                char *username = temp_path + strlen(HOME_PATH);
-//                char *slash = strchr(username, '/');
-//                if (slash) {
-//                    *slash = '\0';
-//                }
-//                if (username[0] != '\0') {
-//                    add_processed_home_user(username);
-//                }
-//            }
-//        }
-
-
-
-
-//        if (stat(full_path, &st) == 0 && S_ISDIR(st.st_mode)) {
-//            safe_strcpy(existing_homes[existing_count], entry->d_name, MAX_PATH_LEN);
-//            existing_count++;
-//            SYSLOG_INFO_D("  Found existing home directory: %s", entry->d_name);
-//        }
     }
     closedir(dir);
 
@@ -1974,47 +1921,6 @@ static int check_new_home_directories(struct bpf_object *obj, int without_rescan
         perform_full_scan(obj);
     }
 
-//    SYSLOG_INFO_D("Total existing home directories: %d", existing_count);
-//
-//    // Проверяем, какие из существующих папок ещё не обработаны
-//    for (int i = 0; i < existing_count; i++) {
-//        if (!is_home_user_processed(existing_homes[i])) {
-//            SYSLOG_INFO("New home directory detected (not processed): %s", existing_homes[i]);
-//            found_new = 1;
-//            strcpy(new_username, existing_homes[i]);
-//            break;
-//        } else {
-//            SYSLOG_INFO_D("Home user already processed: %s", existing_homes[i]);
-//        }
-//    }
-//
-//    if (found_new) {
-//        SYSLOG_INFO("New home directories detected, running full scan...");
-//        perform_full_scan(obj);
-//
-//        // После сканирования добавляем найденного пользователя в список обработанных
-//        if (new_username[0] != '\0') {
-//            add_processed_home_user(new_username);
-//        }
-//
-//        // Также добавляем всех существующих пользователей, которые есть в entries
-//        for (int i = 0; i < entry_count; i++) {
-//            if (entries[i].path[0] != '\0' && strncmp(entries[i].path, HOME_PATH, strlen(HOME_PATH)) == 0) {
-//                char temp_path[MAX_PATH_LEN];
-//                safe_strcpy(temp_path, entries[i].path, MAX_PATH_LEN);
-//                char *username = temp_path + strlen(HOME_PATH);
-//                char *slash = strchr(username, '/');
-//                if (slash) {
-//                    *slash = '\0';
-//                }
-//                if (username[0] != '\0') {
-//                    add_processed_home_user(username);
-//                }
-//            }
-//        }
-//    }
-
-//    last_home_scan = now;
     return found_new;
 }
 
