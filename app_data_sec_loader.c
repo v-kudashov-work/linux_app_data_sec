@@ -1833,6 +1833,42 @@ static void clear_processed_home_users(void) {
 }
 
 // ============================================================================
+// ФУНКЦИЯ УДАЛЕНИЯ НЕСУЩЕСТВУЮЩИХ ПОЛЬЗОВАТЕЛЕЙ ИЗ СПИСКА
+// ============================================================================
+
+static void remove_processed_home_users(void) {
+    int removed_count = 0;
+    int i = 0;
+
+    while (i < processed_home_users_count) {
+        char full_path[PATH_MAX];
+        snprintf(full_path, sizeof(full_path), "%s", processed_home_users[i]);
+
+        struct stat st;
+        if (stat(full_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            // Пользователь больше не существует - удаляем из списка
+            SYSLOG_INFO_D("Home directory no longer exists, removing from processed list: %s",
+                          processed_home_users[i]);
+
+            // Сдвигаем все элементы влево
+            for (int j = i; j < processed_home_users_count - 1; j++) {
+                safe_strcpy(processed_home_users[j], processed_home_users[j + 1], MAX_PATH_LEN);
+            }
+            processed_home_users_count--;
+            removed_count++;
+            // Не увеличиваем i, так как на место удаленного встал следующий элемент
+        } else {
+            i++;
+        }
+    }
+
+    if (removed_count > 0) {
+        SYSLOG_INFO("Removed %d non-existing home users from processed list, remaining: %d",
+                      removed_count, processed_home_users_count);
+    }
+}
+
+// ============================================================================
 // ФУНКЦИЯ ПРОВЕРКИ НОВЫХ ДОМАШНИХ ДИРЕКТОРИЙ
 // ============================================================================
 
@@ -1890,7 +1926,7 @@ static int check_new_home_directories(struct bpf_object *obj, int without_rescan
                 found_new = 1;
 //                strcpy(new_username, full_path);
             } else {
-                SYSLOG_INFO_D("Home user already processed: %s", existing_homes[i]);
+                SYSLOG_INFO_D("Home user already processed: %s", full_path);
             }
 
             if (!is_processed) {
@@ -1930,6 +1966,8 @@ static int check_new_home_directories(struct bpf_object *obj, int without_rescan
 //        }
     }
     closedir(dir);
+
+    remove_processed_home_users();
 
     if (found_new && !without_rescan) {
         SYSLOG_INFO("New home directories detected, running full scan...");
