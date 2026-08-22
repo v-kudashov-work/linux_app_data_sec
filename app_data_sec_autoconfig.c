@@ -22,8 +22,8 @@
 
 #define AUTOCONFIG_DIR "/etc/app_data_sec.autoconfig"
 #define AUTOCONFIG_TIMESTAMP "/etc/app_data_sec.autoconfig.timestamp"
-//#define AUTOCONFIG_CHECK_INTERVAL 900  // 15 минут
-#define AUTOCONFIG_CHECK_INTERVAL 30  // 15 минут
+#define AUTOCONFIG_CHECK_INTERVAL 900  // 15 минут
+//#define AUTOCONFIG_CHECK_INTERVAL 30  // 30 секунд
 #define PID_FILE "/run/app_data_sec_autoconfig.pid"
 #define CONFIG_PATH "/etc/app_data_sec.conf"
 #define LOADER_PID_FILE "/run/app_data_sec_loader.pid"
