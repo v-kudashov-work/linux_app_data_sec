@@ -1,0 +1,2 @@
+mount --bind /home/vladimir-vb/Документы/ /home/vladimir-vb/test_mount
+umount /home/vladimir-vb/test_mount

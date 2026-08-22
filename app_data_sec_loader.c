@@ -1591,6 +1591,12 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -l, --log-level <0-2>  Set log level (0=off, 1=blocked only, 2=everything, default=1)\n");
     fprintf(stderr, "  -h, --help             Show this help\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Configuration directives in %s:\n", CONFIG_PATH);
+    fprintf(stderr, "  enable = yes|no          Enable/disable protection\n");
+    fprintf(stderr, "  protect <path> [prog...] Protect folder, allow programs\n");
+    fprintf(stderr, "  scan_mount <path>        Scan templates when path appears/mounted\n");
+    fprintf(stderr, "  Quotes \"path with spaces\" Support spaces in paths\n");
 }
 
 // ============================================================================

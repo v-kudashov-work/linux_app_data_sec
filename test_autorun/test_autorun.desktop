@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=TestAuthorun
+Comment=Для тестирования app_data_sec
+Exec=/bin/sh /app_data_sec/src/test_autorun/test_autorun.sh
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
