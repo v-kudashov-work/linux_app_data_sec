@@ -1399,8 +1399,7 @@ static void perform_full_scan(struct bpf_object *obj) {
     pthread_mutex_lock(&scan_mutex);
     SYSLOG_INFO_D("Full scan: mutex acquired");
 
-
-    SYSLOG_INFO("Starting full scan from templates...");
+    SYSLOG_INFO_D("Starting full scan from templates...");
 
     int changed = 0;
 
@@ -1851,8 +1850,8 @@ static void remove_processed_home_users(void) {
 //        snprintf(full_path, sizeof(full_path), "%s", processed_home_users[i]);
 
         struct stat st;
-        if (stat(full_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
-            // Пользователь больше не существует - удаляем из списка
+        if (stat(full_path, &st) != 0 || !S_ISDIR(st.st_mode) || !is_directory_not_empty(full_path)) {
+            // Директория пользователя больше не смонтирована - удаляем из списка
             SYSLOG_INFO_D("Home directory no longer exists, removing from processed list: %s",
                           processed_home_users[i]);
 
@@ -1901,7 +1900,7 @@ static int check_new_home_directories(struct bpf_object *obj, int without_rescan
         char full_path[PATH_MAX];
         snprintf(full_path, sizeof(full_path), "%s%s", HOME_PATH, entry->d_name);
 
-        if (stat(full_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (stat(full_path, &st) == 0 && S_ISDIR(st.st_mode) && is_directory_not_empty(full_path)) {
             int is_processed = is_home_user_processed(full_path);
             if (!found_new && !is_processed) {
                 SYSLOG_INFO("New home directory, found_new = 1");
@@ -2024,6 +2023,8 @@ int main(int argc, char **argv) {
     int temp_template_count = 0;
     int temp_config_enabled = 0;
 
+    check_new_home_directories(bpf_obj, 1);
+
     if (parse_config_to_temp(&temp_entries, &temp_count, &temp_templates, &temp_template_count, &temp_config_enabled) != 0) {
         SYSLOG_ERR("Failed to parse config");
         closelog();
@@ -2081,8 +2082,6 @@ int main(int argc, char **argv) {
 //    memcpy(templates, temp_templates, sizeof(struct protect_template) * temp_template_count);
 //    template_count = temp_template_count;
 //    config_enabled = temp_config_enabled;
-
-    check_new_home_directories(bpf_obj, 1);
 
     // Синхронизируем entries с BPF
     DEBUG_PRINT("Syncing entries to BPF...");
@@ -2176,11 +2175,6 @@ int main(int argc, char **argv) {
             last_autoconfig_check = now;
         }
 
-        if (!keep_running) break;
-
-        // Проверяем завершение с задержкой 500 мс
-        usleep(500000);
-
         now = time(NULL);
         if (!keep_running) break;
 
@@ -2192,6 +2186,11 @@ int main(int argc, char **argv) {
             check_new_home_directories(bpf_obj, 0);
             last_home_scan = now;
         }
+
+        if (!keep_running) break;
+
+        // Проверяем завершение с задержкой 500 мс
+        usleep(500000);
 
         now = time(NULL);
         if (!keep_running) break;
