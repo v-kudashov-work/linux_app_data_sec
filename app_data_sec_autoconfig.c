@@ -53,6 +53,8 @@ static void log_to_syslog(int priority, const char *format, ...) {
 #define SYSLOG_WARN(fmt, ...) log_to_syslog(LOG_WARNING, "[WARNING] " fmt, ##__VA_ARGS__)
 #define SYSLOG_INFO(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__)
 
+static int apply_autoconfig(void);
+
 // ============================================================================
 // ФУНКЦИИ ПРОВЕРКИ АВТОКОНФИГУРАЦИИ
 // ============================================================================
@@ -381,10 +383,7 @@ int main(int argc, char **argv) {
             SYSLOG_INFO("Checking for auto-config changes...");
 
             if (autoconfig_changed()) {
-                SYSLOG_INFO("Auto-config changed, applying...");
-                apply_autoconfig();
-            } else {
-                SYSLOG_INFO("No changes detected");
+                SYSLOG_INFO("Auto-config changed, applied");
             }
 
             last_check = now;
