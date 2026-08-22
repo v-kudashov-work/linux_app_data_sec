@@ -1221,7 +1221,7 @@ fi
 echo -e "\n${BLUE}[INFO]${NC} Creating log files..."
 
 for logfile in app_data_sec_loader.log app_data_sec_loader_error.log \
-               app_data_sec_watchdog.log app_data_sec_watchdog_error.log \
+               app_data_sec_watchdog.log app_data_sec_autoconfig.log app_data_sec_watchdog_error.log \
                app_data_sec_messages.log app_data_sec_messages_error.log; do
     touch "$LOG_PATH/$logfile"
     chmod 644 "$LOG_PATH/$logfile"
@@ -1523,6 +1523,10 @@ echo ""
 echo -e "${BLUE}app_data_sec_watchdog:${NC}"
 systemctl status app_data_sec_watchdog --no-pager || true
 
+echo ""
+echo -e "${BLUE}app_data_sec_autoconfig:${NC}"
+systemctl status app_data_sec_autoconfig --no-pager || true
+
 #if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
 #    echo ""
 #    echo -e "${BLUE}app_data_sec_messages:${NC}"
@@ -1547,6 +1551,10 @@ journalctl -u app_data_sec_loader -n 5 --no-pager 2>/dev/null || echo "  No logs
 echo ""
 echo -e "${BLUE}app_data_sec_watchdog logs:${NC}"
 journalctl -u app_data_sec_watchdog -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
+
+echo ""
+echo -e "${BLUE}app_data_sec_autoconfig logs:${NC}"
+journalctl -u app_data_sec_autoconfig -n 5 --no-pager 2>/dev/null || echo "  No logs yet"
 
 if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
     echo ""
@@ -1641,8 +1649,10 @@ cat << EOF
 ${BLUE}Commands:${NC}
   sudo systemctl status app_data_sec_loader
   sudo systemctl status app_data_sec_watchdog
+  sudo systemctl status app_data_sec_autoconfig
   sudo journalctl -u app_data_sec_loader -f
   sudo journalctl -u app_data_sec_watchdog -f
+  sudo journalctl -u app_data_sec_autoconfig -f
 EOF
 
 if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
