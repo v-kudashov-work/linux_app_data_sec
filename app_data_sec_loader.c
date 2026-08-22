@@ -39,13 +39,14 @@
 #define AUTOCONFIG_CHECK_INTERVAL 900  // 15 минут
 #define MOUNT_CHECK_INTERVAL 0
 #define HOME_SCAN_INTERVAL 0
-#define MAX_SCAN_MOUNT_PATHS 100        // Максимальное количество путей для scan_mount
+#define MAX_SCAN_MOUNT_PATHS 500        // Максимальное количество путей для scan_mount
 #define HOME_PATH "/home/"            // Путь к домашним директориям
+#define MAX_HOME_USERS 1000 //Максимальное количество папок в папке /home/ (количество пользователей)
 
 // ============================================================================
 // ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ОТСЛЕЖИВАНИЯ ПОЛЬЗОВАТЕЛЕЙ
 // ============================================================================
-#define MAX_HOME_USERS 1000
+
 static char processed_home_users[MAX_HOME_USERS][MAX_PATH_LEN];
 static int processed_home_users_count = 0;
 
