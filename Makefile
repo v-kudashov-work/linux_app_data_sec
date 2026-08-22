@@ -5,7 +5,7 @@ CFLAGS = -Wall -O2
 LDFLAGS = -lm
 
 # Основные цели
-TARGETS = app_data_sec_loader app_data_sec_merge_config app_data_sec_watchdog
+TARGETS = app_data_sec_loader app_data_sec_merge_config app_data_sec_watchdog app_data_sec_autoconfig
 
 # Исходники
 LOADER_SRC = app_data_sec_loader.c
@@ -23,9 +23,12 @@ BPF_OBJ = app_data_sec.bpf.o
 UNPROTECT = app_data_sec_unprotect
 UNPROTECT_SRC = app_data_sec_unprotect.c
 
+AUTOCONFIG = app_data_sec_autoconfig
+AUTOCONFIG_SRC = app_data_sec_autoconfig.c
+
 # ==== Основные цели ====
 
-all: $(TARGETS) $(BPF_OBJ) $(UNPROTECT)
+all: $(TARGETS) $(BPF_OBJ) $(UNPROTECT) $(AUTOCONFIG)
 
 app_data_sec_loader: $(LOADER_SRC)
 	$(CC) $(CFLAGS) -o $@ $< -lbpf -lelf -lz
@@ -38,6 +41,9 @@ app_data_sec_watchdog: $(WATCHDOG_SRC)
 
 $(UNPROTECT): $(UNPROTECT_SRC)
 	$(CC) $(CFLAGS) -o $@ $<
+
+$(AUTOCONFIG): $(AUTOCONFIG_SRC)
+	$(CC) $(CFLAGS) -o $@ $< -lbpf -lelf -lz
 
 $(BPF_OBJ): $(BPF_SRC) vmlinux.h
 	$(CLANG) $(BPF_CFLAGS) -I. -Wno-missing-declarations -c $< -o $@
@@ -59,7 +65,7 @@ vmlinux.h:
 # ==== Остальное ====
 
 clean:
-	rm -f $(TARGETS) $(BPF_OBJ) $(UNPROTECT) *.o
+	rm -f $(TARGETS) $(BPF_OBJ) $(UNPROTECT) $(AUTOCONFIG) *.o
 
 rebuild: clean all
 
