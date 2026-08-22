@@ -474,6 +474,9 @@ static int write_config(const char *filename, protect_entry_t *entries, int coun
     fprintf(fp, "#   Пути с пробелами можно заключать в кавычки: \"path with spaces\"\n");
     fprintf(fp, "#   Пример: protect \"/home/user/My Documents\" \"/usr/bin/my app\"\n");
     fprintf(fp, "#   Пример: protect ~/.secret \"/usr/bin/my app\" /bin/bash\n");
+    fprintf(fp, "# protect <path> [prog...] Protect folder, allow programs\n");
+    fprintf(fp, "# scan_mount <path>        Scan templates when path appears/mounted\n");
+    fprintf(fp, "# Quotes \"path with spaces\" Support spaces in paths\n");
     fprintf(fp, "\n");
 
     fprintf(fp, "enable = %s\n\n", enable ? "yes" : "no");

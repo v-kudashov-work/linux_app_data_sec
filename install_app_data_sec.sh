@@ -1382,7 +1382,7 @@ SyslogIdentifier=app_data_sec_autoconfig
 
 # Мягкая изоляция, позволяющая запись в /etc
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=no
 ProtectHome=true
 NoNewPrivileges=true
 PrivateDevices=true
