@@ -1404,6 +1404,40 @@ static void perform_full_scan(struct bpf_object *obj) {
 
     int changed = 0;
 
+    //обновление папок
+    for (int i = entry_count - 1; i >= 0; i--) {
+        if (entries[i].path[0] == '\0') continue;
+
+        __u64 current_inode = get_inode_from_path(entries[i].path);
+
+        if (current_inode == 0) {
+            if (entries[i].inode != 0 && entries[i].is_active) {
+                SYSLOG_INFO_D("Folder removed from filesystem: %s", entries[i].path);
+                remove_folder_from_entries(obj, i);
+                changed = 1;
+            }
+        } else if (entries[i].inode == 0) {
+            entries[i].inode = current_inode;
+            entries[i].is_active = 1;
+            SYSLOG_INFO_D("New folder found: %s (inode: %lu)",
+                          entries[i].path, (unsigned long)current_inode);
+            add_folder_to_entries(obj, &entries[i]);
+            remove_folder_from_entries(obj, i);
+            changed = 1;
+        } else if (entries[i].inode != current_inode) {
+            struct protect_entry *new_entry = &entries[i];
+            SYSLOG_INFO_D("Folder recreated: %s (old: %lu, new: %lu)",
+                          entries[i].path,
+                          (unsigned long)entries[i].inode,
+                          (unsigned long)current_inode);
+            remove_folder_from_entries(obj, i);
+            new_entry->inode = current_inode;
+            new_entry->is_active = 1;
+            add_folder_to_entries(obj, new_entry);
+            changed = 1;
+        }
+    }
+
     // Сканируем шаблоны и загружаем новые папки
     if (scan_templates_and_load(obj)) {
         changed = 1;
