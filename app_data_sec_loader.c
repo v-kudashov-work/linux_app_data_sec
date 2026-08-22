@@ -348,7 +348,7 @@ static int scan_home_for_template(const char *subpath, char **found_paths, int m
 
 static int add_folder_to_entries(struct bpf_object *obj, struct protect_entry *new_entry) {
     if (!new_entry || new_entry->inode == 0) {
-        SYSLOG_ERR("Empty entry for add_folder_to_entries");
+        SYSLOG_WARN("Empty entry for add_folder_to_entries");
         return -1;
     }
 
