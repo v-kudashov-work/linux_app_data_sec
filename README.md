@@ -293,6 +293,8 @@ sudo ./uninstall_app_data_sec.sh
     #define MAX_PATH_LEN 256 - максимальная длинна пути к файлу или папке
     #define CHECK_INTERVAL 5 - период проверки конфига на наличие изменений
     #define RETRY_INTERVAL 15 - период проверки файлов на доступность или удаление
+    #define MAX_SCAN_MOUNT_PATHS 500 - Максимальное количество путей для scan_mount
+    #define MAX_HOME_USERS 1000 - Максимальное количество папок в папке /home/ (количество пользователей)
 ```
 
 # Статус
