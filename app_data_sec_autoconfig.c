@@ -28,6 +28,8 @@
 #define CONFIG_PATH "/etc/app_data_sec.conf"
 #define LOADER_PID_FILE "/run/app_data_sec_loader.pid"
 
+// #define DEBUG_ENABLED 1
+
 // ============================================================================
 // ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 // ============================================================================
@@ -53,6 +55,14 @@ static void log_to_syslog(int priority, const char *format, ...) {
 #define SYSLOG_WARN(fmt, ...) log_to_syslog(LOG_WARNING, "[WARNING] " fmt, ##__VA_ARGS__)
 #define SYSLOG_INFO(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__)
 
+#ifdef DEBUG_ENABLED
+#define SYSLOG_INFO_D(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__)
+#define SYSLOG_WARN_D(fmt, ...) log_to_syslog(LOG_WARNING, "[WARNING] " fmt, ##__VA_ARGS__)
+#else
+#define SYSLOG_INFO_D(fmt, ...) ((void)0)
+#define SYSLOG_WARN_D(fmt, ...) ((void)0)
+#endif
+
 static int apply_autoconfig(void);
 
 // ============================================================================
@@ -66,7 +76,7 @@ static int autoconfig_changed(void) {
 
     // Проверяем существование директории
     if (stat(AUTOCONFIG_DIR, &st) != 0) {
-        SYSLOG_INFO("Auto-config directory not found: %s", AUTOCONFIG_DIR);
+        SYSLOG_WARN("Auto-config directory not found: %s", AUTOCONFIG_DIR);
         return 0;
     }
 
@@ -93,7 +103,7 @@ static int autoconfig_changed(void) {
     closedir(dir);
 
     if (!has_conf) {
-        SYSLOG_INFO("No .conf files in auto-config directory");
+        SYSLOG_INFO_D("No .conf files in auto-config directory");
         return 0;
     }
 
@@ -101,7 +111,7 @@ static int autoconfig_changed(void) {
     FILE *fp = fopen(AUTOCONFIG_TIMESTAMP, "r");
     if (fp) {
         if (fscanf(fp, "%ld", &saved_timestamp) == 1) {
-            SYSLOG_INFO("Saved timestamp: %ld, current: %ld", saved_timestamp, current_mtime);
+            SYSLOG_INFO_D("Saved timestamp: %ld, current: %ld", saved_timestamp, current_mtime);
         }
         fclose(fp);
     }
@@ -380,7 +390,7 @@ int main(int argc, char **argv) {
         time_t now = time(NULL);
 
         if (now - last_check >= AUTOCONFIG_CHECK_INTERVAL) {
-            SYSLOG_INFO("Checking for auto-config changes...");
+            SYSLOG_INFO_D("Checking for auto-config changes...");
 
             if (autoconfig_changed()) {
                 SYSLOG_INFO("Auto-config changed, applied");
