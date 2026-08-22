@@ -245,6 +245,7 @@ ${BLUE}Removed:${NC}
 ${YELLOW}To verify:${NC}
   systemctl status app_data_sec_loader 2>/dev/null || echo "  Service not found"
   systemctl status app_data_sec_watchdog 2>/dev/null || echo "  Service not found"
+  systemctl status app_data_sec_autoconfig 2>/dev/null || echo "  Service not found"
   ls -la /usr/local/bin/app_data_sec* 2>/dev/null || echo "  Binaries removed"
   ls -la /usr/local/lib/app_data_sec 2>/dev/null || echo "  BPF objects removed"
 
