@@ -37,8 +37,8 @@
 #define AUTOCONFIG_DIR "/etc/app_data_sec.autoconfig"
 #define AUTOCONFIG_TIMESTAMP "/etc/app_data_sec.autoconfig.timestamp"
 #define AUTOCONFIG_CHECK_INTERVAL 900  // 15 минут
-#define MOUNT_CHECK_INTERVAL 1
-#define HOME_SCAN_INTERVAL 1
+#define MOUNT_CHECK_INTERVAL 0
+#define HOME_SCAN_INTERVAL 0
 #define MAX_SCAN_MOUNT_PATHS 100        // Максимальное количество путей для scan_mount
 
 // ============================================================================
@@ -177,7 +177,6 @@ static int config_changed(void);
 static const char* find_bpf_object(void);
 static int parse_scan_mount(const char *line);
 static int check_scan_mount_paths(void);
-static int is_path_mounted(const char *path);
 // ============================================================================
 // ИЗМЕНЕНИЕ 3: ДОБАВЛЯЕМ ПРОТОТИП ФУНКЦИИ ПОЛНОГО СКАНИРОВАНИЯ
 // ============================================================================
@@ -1685,28 +1684,6 @@ static int is_directory_not_empty(const char *path) {
 }
 
 // ============================================================================
-// ФУНКЦИЯ ПРОВЕРКИ МОНТИРОВАНИЯ ПУТИ
-// ============================================================================
-
-static int is_path_mounted(const char *path) {
-    if (!path || path[0] == '\0') return 0;
-
-    struct stat st;
-    if (stat(path, &st) != 0) return 0;
-
-    if (!S_ISDIR(st.st_mode)) return 0;
-
-    char parent_path[PATH_MAX];
-    snprintf(parent_path, sizeof(parent_path), "%s/..", path);
-
-    struct stat parent_st;
-    if (stat(parent_path, &parent_st) != 0) return 0;
-
-    // Если устройство отличается - это точка монтирования
-    return (st.st_dev != parent_st.st_dev);
-}
-
-// ============================================================================
 // ПАРСИНГ ДИРЕКТИВЫ SCAN_MOUNT
 // ============================================================================
 
@@ -1771,8 +1748,7 @@ static int parse_scan_mount(const char *line) {
 //        }
     }
 
-    scan_mount_paths[scan_mount_path_count].is_mounted = is_path_mounted(scan_mount_paths[scan_mount_path_count].path)
-            && is_directory_not_empty(scan_mount_paths[scan_mount_path_count].path);
+    scan_mount_paths[scan_mount_path_count].is_mounted = is_directory_not_empty(scan_mount_paths[scan_mount_path_count].path);
     scan_mount_paths[scan_mount_path_count].last_check = time(NULL);
 
     SYSLOG_INFO("  Currently %s", scan_mount_paths[scan_mount_path_count].is_mounted ? "mounted" : "not mounted");
@@ -1793,29 +1769,18 @@ static int check_scan_mount_paths(void) {
     int mount_changed = 0;
 
     for (int i = 0; i < scan_mount_path_count; i++) {
-        // Проверяем, смонтирован ли путь
-        int currently_mounted = is_path_mounted(scan_mount_paths[i].path);
-
-        // Проверяем, не пуста ли папка
-        int not_empty = 0;
-        if (currently_mounted) {
-            not_empty = is_directory_not_empty(scan_mount_paths[i].path);
-        }
+        // Проверяем, не пуста ли папка (это означает, что она смонтирована)
+        int not_empty = is_directory_not_empty(scan_mount_paths[i].path);
 
         // Считаем монтирование валидным только если папка смонтирована И не пуста
-        int is_valid_mount = currently_mounted && not_empty;
+        int is_valid_mount = not_empty;
 
         if (is_valid_mount != scan_mount_paths[i].is_mounted) {
             if (is_valid_mount) {
                 SYSLOG_INFO("scan_mount: valid mount detected: %s (mounted and not empty)",
                             scan_mount_paths[i].path);
             } else {
-                if (currently_mounted && !not_empty) {
-                    SYSLOG_INFO("scan_mount: path is mounted but empty: %s (waiting for content)",
-                                scan_mount_paths[i].path);
-                } else {
-                    SYSLOG_INFO("scan_mount: path unmounted: %s", scan_mount_paths[i].path);
-                }
+                SYSLOG_INFO("scan_mount: path unmounted: %s", scan_mount_paths[i].path);
             }
             scan_mount_paths[i].is_mounted = is_valid_mount;
             scan_mount_paths[i].last_check = time(NULL);
@@ -2066,13 +2031,8 @@ int main(int argc, char **argv) {
             last_autoconfig_check = now;
         }
 
-        // ============================================================================
-        // ИЗМЕНЕНИЕ 1: ЗАМЕНЯЕМ sleep(1) НА usleep(100000) В ЦИКЛЕ
-        // ============================================================================
-        // Проверяем завершение с задержкой 100 мс
-        for (int i = 0; i < CHECK_INTERVAL * 10 && keep_running; i++) {
-            usleep(100000);  // 100 миллисекунд
-        }
+        // Проверяем завершение с задержкой 500 мс
+        usleep(500000);
 
         if (!keep_running) break;
 
