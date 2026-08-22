@@ -37,6 +37,7 @@
 #define AUTOCONFIG_DIR "/etc/app_data_sec.autoconfig"
 #define AUTOCONFIG_TIMESTAMP "/etc/app_data_sec.autoconfig.timestamp"
 #define AUTOCONFIG_CHECK_INTERVAL 900  // 15 минут
+#define CONFIG_CHECK_INTERVAL 2
 #define MOUNT_CHECK_INTERVAL 0
 #define HOME_SCAN_INTERVAL 0
 #define MAX_SCAN_MOUNT_PATHS 500        // Максимальное количество путей для scan_mount
@@ -1400,7 +1401,7 @@ static void perform_full_scan(struct bpf_object *obj) {
     pthread_mutex_lock(&scan_mutex);
     SYSLOG_INFO_D("Full scan: mutex acquired");
 
-    SYSLOG_INFO_D("Starting full scan from templates...");
+    SYSLOG_INFO("Starting full scan from templates...");
 
     int changed = 0;
 
@@ -1625,6 +1626,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -l, --log-level <0-2>  Set log level (0=off, 1=blocked only, 2=everything, default=1)\n");
     fprintf(stderr, "  -h, --help             Show this help\n");
+    fprintf(stderr, "  --rescan               Send SIGUSR1 to running instance to trigger full scan\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Configuration directives in %s:\n", CONFIG_PATH);
     fprintf(stderr, "  enable = yes|no          Enable/disable protection\n");
@@ -1964,6 +1966,31 @@ static int check_new_home_directories(struct bpf_object *obj, int without_rescan
     return found_new;
 }
 
+// ============================================================================
+// ПОИСК PID ЗАПУЩЕННОГО ПРОЦЕССА
+// ============================================================================
+
+static pid_t find_running_pid(void) {
+    FILE *fp = fopen(PID_FILE, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    pid_t pid = 0;
+    if (fscanf(fp, "%d", &pid) != 1) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+
+    // Проверяем, существует ли процесс
+    if (pid > 0 && kill(pid, 0) == 0) {
+        return pid;
+    }
+
+    return -1;
+}
+
 int main(int argc, char **argv) {
     DEBUG_PRINT("=== MAIN START ===");
 
@@ -1973,6 +2000,31 @@ int main(int argc, char **argv) {
     int err = 0;
     int log_level = 1;
     const char *bpf_file = NULL;
+
+// Обработка --rescan
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--rescan") == 0) {
+            pid_t running_pid = find_running_pid();
+
+            if (running_pid > 0) {
+                SYSLOG_INFO("Sending SIGUSR1 to running process (PID: %d)", running_pid);
+                if (kill(running_pid, SIGUSR1) == 0) {
+                    SYSLOG_INFO("Signal sent successfully");
+                    closelog();
+                    return 0; // Успешный выход
+                } else {
+                    SYSLOG_ERR("Failed to send signal to PID %d: %s",
+                               running_pid, strerror(errno));
+                    closelog();
+                    return 1;
+                }
+            } else {
+                SYSLOG_ERR("No running app_data_sec_loader process found");
+                closelog();
+                return 1;
+            }
+        }
+    }
 
     // Проверяем, не запущен ли уже другой экземпляр
     openlog("app_data_sec_loader", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
@@ -2187,17 +2239,18 @@ int main(int argc, char **argv) {
         // ============================================================================
         // ИЗМЕНЕНИЕ 3: ПРОВЕРКА СИГНАЛА ДЛЯ ПРИНУДИТЕЛЬНОГО СКАНИРОВАНИЯ
         // ============================================================================
+        int rescan_on_signal = 0;
         if (signal_scan_requested) {
             signal_scan_requested = 0;
+            rescan_on_signal = 1;
             SYSLOG_INFO("Processing forced scan request from signal");
-            perform_full_scan(bpf_obj);
         }
 
         now = time(NULL);
         if (!keep_running) break;
 
         // Проверка автоконфигурации (раз в час)
-        if (keep_running && (now - last_autoconfig_check >= AUTOCONFIG_CHECK_INTERVAL)) {
+        if ((now - last_autoconfig_check >= AUTOCONFIG_CHECK_INTERVAL) || rescan_on_signal) {
             if (autoconfig_changed()) {
                 SYSLOG_INFO("Auto-config directory changed, applying...");
 
@@ -2217,7 +2270,7 @@ int main(int argc, char **argv) {
         // ПРОВЕРКА появления новых директорий в папке home
         // ============================================================================
         static time_t last_home_scan = 0;
-        if (now - last_home_scan >= HOME_SCAN_INTERVAL) {
+        if ((now - last_home_scan >= HOME_SCAN_INTERVAL) ||  rescan_on_signal) {
             check_new_home_directories(bpf_obj, 0);
             last_home_scan = now;
         }
@@ -2225,7 +2278,9 @@ int main(int argc, char **argv) {
         if (!keep_running) break;
 
         // Проверяем завершение с задержкой 500 мс
-        usleep(500000);
+        if (!rescan_on_signal) {
+            usleep(500000);
+        }
 
         now = time(NULL);
         if (!keep_running) break;
@@ -2234,7 +2289,7 @@ int main(int argc, char **argv) {
         // ПРОВЕРКА SCAN_MOUNT ПУТЕЙ
         // ============================================================================
         static time_t last_scan_mount_check = 0;
-        if (now - last_scan_mount_check >= MOUNT_CHECK_INTERVAL) {
+        if ((now - last_scan_mount_check >= MOUNT_CHECK_INTERVAL) || rescan_on_signal) {
             if (check_scan_mount_paths()) {
                 SYSLOG_INFO("scan_mount: mount change detected, running full scan...");
                 perform_full_scan(bpf_obj);
@@ -2246,60 +2301,69 @@ int main(int argc, char **argv) {
         if (!keep_running) break;
 
         // Проверка изменений конфига
-        if (config_changed()) {
-            SYSLOG_INFO_D("Config change: waiting for sync mutex...");
-            pthread_mutex_lock(&scan_mutex);
-            SYSLOG_INFO_D("Config change: mutex acquired");
+        static time_t last_config_changed_check = 0;
+        if ((now - last_config_changed_check >= CONFIG_CHECK_INTERVAL) || rescan_on_signal) {
+            if (config_changed()) {
+                SYSLOG_INFO_D("Config change: waiting for sync mutex...");
+                pthread_mutex_lock(&scan_mutex);
+                SYSLOG_INFO_D("Config change: mutex acquired");
 
-            SYSLOG_INFO("Config changed! Reloading...");
+                SYSLOG_INFO("Config changed! Reloading...");
 
-            struct protect_entry *new_temp_entries = NULL;
-            struct protect_template *new_temp_templates = NULL;
-            int new_temp_count = 0;
-            int new_temp_template_count = 0;
-            int new_temp_config_enabled = 0;
+                struct protect_entry *new_temp_entries = NULL;
+                struct protect_template *new_temp_templates = NULL;
+                int new_temp_count = 0;
+                int new_temp_template_count = 0;
+                int new_temp_config_enabled = 0;
 
-            if (parse_config_to_temp(&new_temp_entries, &new_temp_count,
-                                     &new_temp_templates, &new_temp_template_count,
-                                     &new_temp_config_enabled) != 0) {
-                SYSLOG_ERR("Failed to parse config after change");
+                if (parse_config_to_temp(&new_temp_entries, &new_temp_count,
+                                         &new_temp_templates, &new_temp_template_count,
+                                         &new_temp_config_enabled) != 0) {
+                    SYSLOG_ERR("Failed to parse config after change");
+                    pthread_mutex_unlock(&scan_mutex);
+                    continue;
+                }
+
+                sync_config_to_entries(
+                        bpf_obj,
+                        new_temp_entries,
+                        new_temp_count,
+                        new_temp_templates,
+                        new_temp_template_count,
+                        new_temp_config_enabled
+                );
+
+                // Освобождаем временную память
+                free(new_temp_entries);
+                free(new_temp_templates);
+                new_temp_entries = NULL;
+                new_temp_templates = NULL;
+
+                // struct stat st;
+                // if (stat(CONFIG_PATH, &st) == 0) {
+                //     config_mtime = st.st_mtime;
+                // }
+
+                last_folder_check = now;
+
+                SYSLOG_INFO_D("Config change: releasing mutex");
                 pthread_mutex_unlock(&scan_mutex);
-                continue;
             }
-
-            sync_config_to_entries(
-                    bpf_obj,
-                    new_temp_entries,
-                    new_temp_count,
-                    new_temp_templates,
-                    new_temp_template_count,
-                    new_temp_config_enabled
-            );
-
-            // Освобождаем временную память
-            free(new_temp_entries);
-            free(new_temp_templates);
-            new_temp_entries = NULL;
-            new_temp_templates = NULL;
-
-            // struct stat st;
-            // if (stat(CONFIG_PATH, &st) == 0) {
-            //     config_mtime = st.st_mtime;
-            // }
-
-            last_folder_check = now;
-
-            SYSLOG_INFO_D("Config change: releasing mutex");
-            pthread_mutex_unlock(&scan_mutex);
+            last_config_changed_check = now;
         }
 
-        if (now - last_folder_check >= RETRY_INTERVAL) {
+        now = time(NULL);
+        if (!keep_running) break;
+
+        if ((now - last_folder_check >= RETRY_INTERVAL) || rescan_on_signal) {
             // ============================================================================
             // ИЗМЕНЕНИЕ 2: ИСПОЛЬЗУЕМ perform_full_scan() ВМЕСТО РАЗРОЗНЕННЫХ СКАНИРОВАНИЙ
             // ============================================================================
             perform_full_scan(bpf_obj);
             last_folder_check = now;
         }
+
+        rescan_on_signal = 0;
     }
 
     if (bpf_obj) {
