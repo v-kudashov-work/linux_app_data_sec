@@ -1603,18 +1603,31 @@ static int apply_autoconfig(void) {
 
     // Формируем команду
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "%s --autoconfig", merge_cmd);
+    snprintf(cmd, sizeof(cmd),
+             "/bin/bash -c 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin %s --autoconfig'",
+             merge_cmd);
 
     SYSLOG_INFO("Running: %s", cmd);
 
     int result = system(cmd);
-    if (result != 0) {
-        SYSLOG_ERR("Failed to apply auto-config (exit code: %d)", result);
+    if (result == -1) {
+        SYSLOG_ERR("Failed to execute command: %s", strerror(errno));
         return -1;
     }
 
-    SYSLOG_INFO("Auto-config applied successfully");
-    return 0;
+    if (WIFEXITED(result)) {
+        int exit_code = WEXITSTATUS(result);
+        if (exit_code == 0) {
+            SYSLOG_INFO("Auto-config applied successfully");
+            return 0;
+        } else {
+            SYSLOG_ERR("Failed to apply auto-config (exit code: %d)", exit_code);
+            return -1;
+        }
+    } else {
+        SYSLOG_ERR("Failed to apply auto-config (unexpected status: %d)", result);
+        return -1;
+    }
 }
 
 // ============================================================================
