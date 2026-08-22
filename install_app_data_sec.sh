@@ -860,10 +860,30 @@ if [ -n "$MERGE_SRC" ] && [ -f "$MERGE_SRC" ]; then
         echo -e "${GREEN}[OK]${NC} Merge_config compiled"
     else
         echo -e "${RED}[ERROR]${NC} Merge_config compilation failed!"
-        # Не прерываем установку, т.к. это вспомогательная утилита
+        exit 1
     fi
 else
     echo -e "${YELLOW}[WARNING]${NC} app_data_sec_merge_config.c not found, skipping"
+fi
+
+# ============================================================================
+# КОМПИЛЯЦИЯ AUTOCONFIG
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Building app_data_sec_autoconfig..."
+
+if [ ! -f "app_data_sec_autoconfig.c" ]; then
+    echo -e "${GREEN}[OK]${NC} Not found app_data_sec_autoconfig.c"
+    exit 1
+EOF
+    echo -e "${BLUE}[INFO]${NC} Compiling autoconfig..."
+    gcc -Wall -O2 -o app_data_sec_autoconfig app_data_sec_autoconfig.c 2>&1
+
+    if [ ! -f "app_data_sec_autoconfig" ]; then
+        echo -e "${RED}[ERROR]${NC} Autoconfig compilation failed!"
+        exit 1
+    fi
+    echo -e "${GREEN}[OK]${NC} Autoconfig compiled"
 fi
 
 # ============================================================================
@@ -1014,6 +1034,16 @@ if [ -f "app_data_sec_watchdog" ]; then
     cp -f app_data_sec_watchdog "$INSTALL_PATH/"
     chmod 755 "$INSTALL_PATH/app_data_sec_watchdog"
     echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_watchdog"
+fi
+
+# Устанавливаем autoconfig
+if [ -f "app_data_sec_autoconfig" ]; then
+    cp -f app_data_sec_autoconfig "$INSTALL_PATH/"
+    chmod 755 "$INSTALL_PATH/app_data_sec_autoconfig"
+    echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_autoconfig"
+
+    ln -sf "$INSTALL_PATH/app_data_sec_autoconfig" /usr/bin/app_data_sec_autoconfig 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_autoconfig"
 fi
 
 # Устанавливаем messages_to_syslog (ВСЕГДА, если скомпилирован)
@@ -1318,6 +1348,60 @@ EOF
 echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_watchdog.service"
 
 # ============================================================================
+# СЕРВИС APP_DATA_SEC_AUTOCONFIG
+# ============================================================================
+
+cat > "$SERVICE_DIR/app_data_sec_autoconfig.service" << 'EOF'
+[Unit]
+Description=APP DATA SEC AutoConfig Service
+Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
+After=app_data_sec_loader.service app_data_sec_watchdog.service
+Wants=app_data_sec_loader.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/app_data_sec_autoconfig
+ExecStop=/bin/kill -SIGTERM $MAINPID
+Restart=always
+RestartSec=30
+
+# Ускорение
+TimeoutStartSec=10
+TimeoutStopSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=app_data_sec_autoconfig
+
+# Минимальные права - только чтение конфигов и выполнение merge_config
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+# Разрешаем только нужные пути
+ReadWritePaths=/etc/app_data_sec.conf /etc/app_data_sec.autoconfig.timestamp
+ReadOnlyPaths=/etc/app_data_sec.autoconfig /usr/local/bin/app_data_sec_merge_config /usr/bin/app_data_sec_merge_config
+
+# Минимальные capabilities для работы с файлами
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_autoconfig.service"
+
+# ============================================================================
 # СЕРВИС APP_DATA_SEC_MESSAGES (опционально)
 # ============================================================================
 
@@ -1410,6 +1494,14 @@ fi
 #    systemctl restart app_data_sec_messages
 #fi
 
+# Запускаем autoconfig
+if [ -f "$INSTALL_PATH/app_data_sec_autoconfig" ]; then
+    systemctl daemon-reload
+    systemctl enable app_data_sec_autoconfig 2>/dev/null || true
+    systemctl restart app_data_sec_autoconfig
+    echo -e "${GREEN}[OK]${NC} Service started: app_data_sec_autoconfig"
+fi
+
 sleep 3
 
 # ============================================================================
@@ -1493,6 +1585,7 @@ ${BLUE}Installed files:${NC}
   $INSTALL_PATH/app_data_sec_merge_config
   $INSTALL_PATH/app_data_sec_unprotect
   $INSTALL_PATH/app_data_sec_watchdog
+  $INSTALL_PATH/app_data_sec_autoconfig
 EOF
 
 if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
@@ -1513,6 +1606,7 @@ cat << EOF
 ${BLUE}Services:${NC}
   app_data_sec_loader   - Main protection service
   app_data_sec_watchdog - Watchdog service (creates desktop file on errors)
+  app_data_sec_autoconfig - AutoConfig service (monitors /etc/app_data_sec.autoconfig/)
 EOF
 
 #if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
