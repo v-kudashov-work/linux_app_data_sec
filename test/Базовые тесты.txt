@@ -11,7 +11,7 @@ test_app_data_sec.c пока не проверялось. Основные те�
  + 2.1 Что если в файле /etc/app_data_sec.conf отключить enable=no, то появляется доступ из dolphin к каталогам (.test_app и .test_app2)
  + 3. Что шаблоны после ~/ добавляются при появлении нового пути пользователя (нового пользователя)
  + 4. Что есть доступ к .test_app из консоли и нет доступа из dolphin
- + 5. Что создаётся каталог .test_app2/make1 при запуске комманды /app_data_sec/src/test_sh/test_mkdir ~/.test_app2/make1 к .test_app из консоли и нет доступа из dolphin
+ + 5. Что создаётся каталог .test_app2/make1 при запуске комманды /app_data_sec/src/test_sh/test_mkdir ~/.test_app2/make1 к .test_app2 из консоли и нет доступа из dolphin
 
 Дальше тесты после app_data_sec_merge_config /app_data_sec/src/configs/ и после 15 сек:
   + 7. Что yandex-browser устанавливается и через 15 секунд его можно запустить. И через 15 секунд после запуска браузера, прверить: что из консоли и dolphin нет доступа к ls -all ~/.config/yandex-browser

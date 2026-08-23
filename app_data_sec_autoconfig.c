@@ -17,8 +17,8 @@
 // ============================================================================
 // НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ
 // ============================================================================
-#define VERSION "0.5.5"
-#define VERSION_DATE "2026-08-22"
+#define VERSION "0.5.6"
+#define VERSION_DATE "2026-08-23"
 
 #define AUTOCONFIG_DIR "/etc/app_data_sec.autoconfig"
 #define AUTOCONFIG_TIMESTAMP "/etc/app_data_sec.autoconfig.timestamp"
