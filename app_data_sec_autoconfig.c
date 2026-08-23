@@ -28,7 +28,7 @@
 #define CONFIG_PATH "/etc/app_data_sec.conf"
 #define LOADER_PID_FILE "/run/app_data_sec_loader.pid"
 
-// #define DEBUG_ENABLED 1
+// #define AUTOCONFIG_DEBUG_ENABLED 1
 
 // ============================================================================
 // ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
@@ -55,7 +55,7 @@ static void log_to_syslog(int priority, const char *format, ...) {
 #define SYSLOG_WARN(fmt, ...) log_to_syslog(LOG_WARNING, "[WARNING] " fmt, ##__VA_ARGS__)
 #define SYSLOG_INFO(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__)
 
-#ifdef DEBUG_ENABLED
+#ifdef AUTOCONFIG_DEBUG_ENABLED
 #define SYSLOG_INFO_D(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__)
 #define SYSLOG_WARN_D(fmt, ...) log_to_syslog(LOG_WARNING, "[WARNING] " fmt, ##__VA_ARGS__)
 #else
