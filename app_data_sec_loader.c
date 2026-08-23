@@ -1894,6 +1894,12 @@ int main(int argc, char **argv) {
 // Обработка --rescan
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--rescan") == 0) {
+            if (geteuid() != 0) {
+                fprintf(stderr, "ERROR: This program must be run as root (UID 0)\n");
+                fprintf(stderr, "Please use: sudo %s\n", argv[0]);
+                return 1;
+            }
+
             pid_t running_pid = find_running_pid();
 
             if (running_pid > 0) {
