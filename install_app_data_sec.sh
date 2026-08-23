@@ -880,16 +880,17 @@ echo -e "\n${BLUE}[INFO]${NC} Building app_data_sec_autoconfig..."
 if [ ! -f "app_data_sec_autoconfig.c" ]; then
     echo -e "${GREEN}[OK]${NC} Not found app_data_sec_autoconfig.c"
     exit 1
-EOF
-    echo -e "${BLUE}[INFO]${NC} Compiling autoconfig..."
-    gcc -Wall -O2 -o app_data_sec_autoconfig app_data_sec_autoconfig.c 2>&1
-
-    if [ ! -f "app_data_sec_autoconfig" ]; then
-        echo -e "${RED}[ERROR]${NC} Autoconfig compilation failed!"
-        exit 1
-    fi
-    echo -e "${GREEN}[OK]${NC} Autoconfig compiled"
 fi
+
+echo -e "${BLUE}[INFO]${NC} Compiling autoconfig..."
+gcc -Wall -O2 -o app_data_sec_autoconfig app_data_sec_autoconfig.c 2>&1
+
+if [ ! -f "app_data_sec_autoconfig" ]; then
+    echo -e "${RED}[ERROR]${NC} Autoconfig compilation failed!"
+    exit 1
+fi
+echo -e "${GREEN}[OK]${NC} Autoconfig compiled"
+
 
 # ============================================================================
 # КОМПИЛЯЦИЯ UNPROTECT
