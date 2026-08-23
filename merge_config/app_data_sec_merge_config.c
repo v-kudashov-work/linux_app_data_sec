@@ -892,7 +892,7 @@ int main(int argc, char **argv) {
     free(main_entries);
 
     printf("\nDone!\n");
-    printf("To apply the changes faster: sudo app_data_sec_loader --rescan\n");
+    printf("To apply the changes faster: app_data_sec_loader --rescan\n");
 
     return 0;
 }

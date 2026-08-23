@@ -196,6 +196,8 @@ sudo systemctl stop app_data_sec_loader
 ```bash
 sudo journalctl -u app_data_sec_loader -f
 sudo journalctl -u app_data_sec_watchdog -f
+sudo journalctl -u app_data_sec_autoconfig -f
+sudo journalctl -u app_data_sec_messages -f
 ```
 
 # Принудительная перезагрузка конфигурации и сканирование (--rescan)
