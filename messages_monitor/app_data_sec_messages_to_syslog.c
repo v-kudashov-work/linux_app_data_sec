@@ -672,34 +672,44 @@ static void extract_timestamp(const char *line, char *timestamp, size_t size) {
     strftime(timestamp, size, "%Y-%m-%d %H:%M:%S", tm_info);
 }
 
+// Функция для получения ключа для сравнения записей
+static void get_entry_key(unsigned long long inode, const char *folder_path, const char *process_tree, char *key, size_t size) {
+    snprintf(key, size, "%llu|%s|%s", inode, folder_path, process_tree);
+}
+
 // Функция для обновления или добавления строки в таблицу
 static void update_table(const char *line, const char *folder_path, const char *process_tree,
                          const char *operation, unsigned long long inode, pid_t pid, time_t now) {
     char timestamp[64];
     extract_timestamp(line, timestamp, sizeof(timestamp));
 
-    // Ищем существующую запись с такой же папкой и процессом
+    char key[4096];
+    get_entry_key(inode, folder_path, process_tree, key, sizeof(key));
+
+    // Ищем существующую запись с таким же ключом
     int found = -1;
     for (int i = 0; i < table_count; i++) {
-        if (table[i].inode == inode &&
-            strcmp(table[i].folder_path, folder_path) == 0 &&
-            strcmp(table[i].process_tree, process_tree) == 0 &&
-            table[i].active) {
+        if (!table[i].active) continue;
+
+        char existing_key[4096];
+        get_entry_key(table[i].inode, table[i].folder_path, table[i].process_tree, existing_key, sizeof(existing_key));
+
+        if (strcmp(key, existing_key) == 0) {
             found = i;
             break;
         }
     }
 
     if (found >= 0) {
-        // Обновляем существующую запись
-        if (table[found].last_update < now) {
-            safe_strncpy(table[found].timestamp, timestamp, sizeof(table[found].timestamp));
-            table[found].last_update = now;
-        }
+        // Обновляем существующую запись - обновляем время
+        safe_strncpy(table[found].timestamp, timestamp, sizeof(table[found].timestamp));
+        table[found].last_update = now;
+        table[found].pid = pid; // Обновляем PID на случай если он изменился
 
         // Проверяем, есть ли уже такая операция
         char *ops = table[found].operations;
         if (strstr(ops, operation) == NULL) {
+            // Добавляем операцию через запятую
             if (strlen(ops) + strlen(operation) + 3 < sizeof(table[found].operations)) {
                 if (strlen(ops) > 0) {
                     strcat(ops, ", ");
