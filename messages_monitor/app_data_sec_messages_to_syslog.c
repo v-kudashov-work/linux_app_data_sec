@@ -87,6 +87,39 @@ static void safe_strncpy(char *dest, const char *src, size_t size) {
     dest[src_len] = '\0';
 }
 
+// Функция для удаления PID из строки дерева процессов
+static void remove_pid_from_tree(const char *tree, char *output, size_t size) {
+    if (!tree || !output || size == 0) {
+        if (output) output[0] = '\0';
+        return;
+    }
+
+    const char *p = tree;
+    int pos = 0;
+
+    while (*p && pos < (int)size - 1) {
+        // Проверяем, не начинается ли "(PID:"
+        if (strncmp(p, "(PID:", 5) == 0) {
+            // Пропускаем "(PID:"
+            p += 5;
+            // Пропускаем цифры PID
+            while (*p && isdigit(*p)) p++;
+            // Пропускаем ")"
+            if (*p == ')') p++;
+            // Пропускаем запятую и пробел после PID
+            if (*p == ',') {
+                p++;
+                if (*p == ' ') p++;
+            }
+            continue;
+        }
+        // Копируем символ
+        output[pos++] = *p;
+        p++;
+    }
+    output[pos] = '\0';
+}
+
 // Функция для получения пути по inode (рекурсивный поиск)
 static int find_path_by_inode_recursive(const char *base_path, unsigned long long target_inode, char *found_path, int depth) {
     if (depth > 20) return 0;
@@ -491,17 +524,17 @@ static void format_process_tree(process_info_t *chain, int depth, char *output, 
     int pos = 0;
 
     for (int i = depth - 1; i >= 0; i--) {
-        if (pos >= output_size - 1) break;
+        if (pos >= (int)output_size - 1) break;
 
         // Добавляем отступы для иерархии
         for (int j = 0; j < (depth - 1 - i) * 2; j++) {
-            if (pos >= output_size - 1) break;
+            if (pos >= (int)output_size - 1) break;
             output[pos++] = ' ';
         }
 
         if (i < depth - 1) {
-            if (pos < output_size - 1) output[pos++] = '|';
-            if (pos < output_size - 1) output[pos++] = '-';
+            if (pos < (int)output_size - 1) output[pos++] = '|';
+            if (pos < (int)output_size - 1) output[pos++] = '-';
         }
 
         int written = snprintf(output + pos, output_size - pos,
@@ -512,7 +545,7 @@ static void format_process_tree(process_info_t *chain, int depth, char *output, 
         if (written < 0) break;
         pos += written;
 
-        if (i > 0 && pos < output_size - 1) {
+        if (i > 0 && pos < (int)output_size - 1) {
             output[pos++] = '\n';
         }
     }
@@ -672,9 +705,14 @@ static void extract_timestamp(const char *line, char *timestamp, size_t size) {
     strftime(timestamp, size, "%Y-%m-%d %H:%M:%S", tm_info);
 }
 
-// Функция для получения ключа для сравнения записей
-static void get_entry_key(unsigned long long inode, const char *folder_path, const char *process_tree, char *key, size_t size) {
-    snprintf(key, size, "%llu|%s|%s", inode, folder_path, process_tree);
+// Функция для получения ключа для сравнения записей (без учета PID)
+static void get_entry_key(unsigned long long inode, const char *folder_path, const char *process_tree_no_pid,
+                          char *key, size_t size) {
+    // Безопасно формируем ключ с проверкой размера
+    int written = snprintf(key, size, "%llu|%s|%s", inode, folder_path, process_tree_no_pid);
+    if (written < 0 || written >= (int)size) {
+        key[size - 1] = '\0';
+    }
 }
 
 // Функция для обновления или добавления строки в таблицу
@@ -683,8 +721,12 @@ static void update_table(const char *line, const char *folder_path, const char *
     char timestamp[64];
     extract_timestamp(line, timestamp, sizeof(timestamp));
 
+    // Создаем версию дерева процессов без PID для сравнения
+    char process_tree_no_pid[2048];
+    remove_pid_from_tree(process_tree, process_tree_no_pid, sizeof(process_tree_no_pid));
+
     char key[4096];
-    get_entry_key(inode, folder_path, process_tree, key, sizeof(key));
+    get_entry_key(inode, folder_path, process_tree_no_pid, key, sizeof(key));
 
     // Ищем существующую запись с таким же ключом
     int found = -1;
@@ -692,7 +734,9 @@ static void update_table(const char *line, const char *folder_path, const char *
         if (!table[i].active) continue;
 
         char existing_key[4096];
-        get_entry_key(table[i].inode, table[i].folder_path, table[i].process_tree, existing_key, sizeof(existing_key));
+        char existing_no_pid[2048];
+        remove_pid_from_tree(table[i].process_tree, existing_no_pid, sizeof(existing_no_pid));
+        get_entry_key(table[i].inode, table[i].folder_path, existing_no_pid, existing_key, sizeof(existing_key));
 
         if (strcmp(key, existing_key) == 0) {
             found = i;
@@ -701,15 +745,15 @@ static void update_table(const char *line, const char *folder_path, const char *
     }
 
     if (found >= 0) {
-        // Обновляем существующую запись - обновляем время
+        // Обновляем существующую запись
         safe_strncpy(table[found].timestamp, timestamp, sizeof(table[found].timestamp));
+        safe_strncpy(table[found].process_tree, process_tree, sizeof(table[found].process_tree));
+        table[found].pid = pid;
         table[found].last_update = now;
-        table[found].pid = pid; // Обновляем PID на случай если он изменился
 
         // Проверяем, есть ли уже такая операция
         char *ops = table[found].operations;
         if (strstr(ops, operation) == NULL) {
-            // Добавляем операцию через запятую
             if (strlen(ops) + strlen(operation) + 3 < sizeof(table[found].operations)) {
                 if (strlen(ops) > 0) {
                     strcat(ops, ", ");
@@ -780,8 +824,18 @@ static void display_table() {
     if (table_count == 0) {
         printf("📋 No data in table yet. Waiting for logs...\n");
     } else {
+        char last_folder[PATH_MAX] = "";
+        bool first_entry = true;
+
         for (int i = 0; i < table_count && i < MAX_TABLE_ROWS; i++) {
             if (!table[i].active) continue;
+
+            // Если папка изменилась, добавляем разделитель
+            if (!first_entry && strcmp(last_folder, table[i].folder_path) != 0) {
+                printf("===========================\n");
+            }
+            safe_strncpy(last_folder, table[i].folder_path, sizeof(last_folder));
+            first_entry = false;
 
             printf("Entry #%d\n", table[i].entry_num);
             printf("Timestamp: %s\n", table[i].timestamp);
@@ -891,17 +945,22 @@ static void extract_process_tree_from_log(const char *line, char *output, size_t
         char *token = strtok(exe_chain, ">");
         int level = 0;
         int pos = 0;
-        while (token != NULL && pos < output_size - 1) {
-            for (int j = 0; j < level * 2 && pos < output_size - 1; j++) {
+        while (token != NULL && pos < (int)output_size - 1) {
+            for (int j = 0; j < level * 2 && pos < (int)output_size - 1; j++) {
                 output[pos++] = ' ';
             }
-            if (level > 0 && pos < output_size - 1) {
+            if (level > 0 && pos < (int)output_size - 1) {
                 output[pos++] = '|';
                 output[pos++] = '-';
             }
-            int written = snprintf(output + pos, output_size - pos, "%s\n", token);
+            // Используем snprintf с проверкой
+            int written = snprintf(output + pos, output_size - pos, "%s", token);
             if (written < 0) break;
             pos += written;
+            // Добавляем перенос строки, если есть место
+            if (pos < (int)output_size - 1) {
+                output[pos++] = '\n';
+            }
             token = strtok(NULL, ">");
             level++;
         }
@@ -1083,7 +1142,7 @@ int main(int argc, char *argv[]) {
                             process_log_line(line_buffer);
                         }
                         line_pos = 0;
-                    } else if (line_pos < sizeof(line_buffer) - 1) {
+                    } else if (line_pos < (int)sizeof(line_buffer) - 1) {
                         line_buffer[line_pos++] = buffer[i];
                     }
                 }
