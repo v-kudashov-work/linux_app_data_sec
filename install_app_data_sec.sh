@@ -10,6 +10,36 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# ============================================================================
+# ОБРАБОТКА АРГУМЕНТОВ КОМАНДНОЙ СТРОКИ
+# ============================================================================
+
+WITH_DEFS=0
+
+# Парсим аргументы командной строки
+for arg in "$@"; do
+    case $arg in
+        --with_defs)
+            WITH_DEFS=1
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --with_defs    Enable installation of default application configurations (with interactive selection)"
+            echo "  --help, -h     Show this help message"
+            echo ""
+            echo "Without --with_defs, default configurations will NOT be installed."
+            exit 0
+            ;;
+        *)
+            echo -e "${YELLOW}[WARNING]${NC} Unknown option: $arg"
+            echo "Use --help for usage information."
+            ;;
+    esac
+done
+
 # Конфигурация
 INSTALL_PATH="/usr/local/bin"
 CONFIG_PATH="/etc/app_data_sec.conf"
@@ -19,7 +49,6 @@ LOG_PATH="/var/log"
 SERVICE_DIR="/etc/systemd/system"
 BACKUP_DIR="/root/app_data_sec_backup"
 CONFIG_SOURCE_DIR="./configs"  # Папка с предустановленными конфигами
-CONFIG_SOURCE_DIR="./configs"                      # Папка с предустановленными конфигами
 AUTOCONFIG_DIR="/etc/app_data_sec.autoconfig"      # Папка для автоматического импорта конфигов
 
 # Флаг обновления
@@ -986,16 +1015,6 @@ if [ -n "$MESSAGES_SRC" ] && [ -f "$MESSAGES_SRC" ]; then
         echo -e "${YELLOW}[INFO]${NC} The service will read from /sys/kernel/debug/tracing/trace_pipe"
         echo "and forward BPF messages to syslog with process chain information."
         echo ""
-#         read -p "Enable app_data_sec_messages service to start automatically? (y/N) " -n 1 -r
-#         echo
-#         if [[ $REPLY =~ ^[Yy]$ ]]; then
-#             ENABLE_MESSAGES_SERVICE=1
-#             echo -e "${GREEN}[OK]${NC} Service will be enabled"
-#         else
-#             ENABLE_MESSAGES_SERVICE=0
-#             echo -e "${YELLOW}[INFO]${NC} Service will be installed but NOT enabled"
-#             echo "To enable later: sudo systemctl enable --now app_data_sec_messages"
-#         fi
     else
         echo -e "${RED}[ERROR]${NC} messages_to_syslog compilation failed!"
         INSTALL_MESSAGES=0
@@ -1182,37 +1201,45 @@ else
 fi
 
 # ============================================================================
-# ИМПОРТ КОНФИГУРАЦИЙ ПРИЛОЖЕНИЙ (НОВЫЙ БЛОК - ИСПРАВЛЕННЫЙ)
+# ИМПОРТ КОНФИГУРАЦИЙ ПРИЛОЖЕНИЙ
 # ============================================================================
 
 echo -e "\n${BLUE}[INFO]${NC} Checking for application configurations..."
 
-# Проверяем наличие папки с конфигами
-if [ -d "$CONFIG_SOURCE_DIR" ] && [ "$(ls -A "$CONFIG_SOURCE_DIR" 2>/dev/null)" ]; then
-    echo -e "${GREEN}[OK]${NC} Found configuration directory: $CONFIG_SOURCE_DIR"
+# Проверяем, был ли передан ключ --with_defs
+if [ "$WITH_DEFS" -eq 1 ]; then
+    echo -e "${GREEN}[OK]${NC} --with_defs specified, enabling default configurations"
 
-    # Проверяем, есть ли .conf файлы
-    conf_count=$(find "$CONFIG_SOURCE_DIR" -maxdepth 1 -name "*.conf" 2>/dev/null | wc -l)
-    # Удаляем пробелы из результата
-    conf_count=$(echo "$conf_count" | tr -d ' ')
+    # Проверяем наличие папки с конфигами
+    if [ -d "$CONFIG_SOURCE_DIR" ] && [ "$(ls -A "$CONFIG_SOURCE_DIR" 2>/dev/null)" ]; then
+        echo -e "${GREEN}[OK]${NC} Found configuration directory: $CONFIG_SOURCE_DIR"
 
-    # Проверяем, что переменная не пустая и является числом
-    if [ -n "$conf_count" ] && [ "$conf_count" -gt 0 ] 2>/dev/null; then
-        echo -e "${BLUE}[INFO]${NC} Found $conf_count configuration files"
+        # Проверяем, есть ли .conf файлы
+        conf_count=$(find "$CONFIG_SOURCE_DIR" -maxdepth 1 -name "*.conf" 2>/dev/null | wc -l)
+        # Удаляем пробелы из результата
+        conf_count=$(echo "$conf_count" | tr -d ' ')
 
-        # Предлагаем пользователю выбрать конфиги
-        if select_app_configs; then
-            # Импортируем выбранные конфиги
-            import_selected_configs
+        # Проверяем, что переменная не пустая и является числом
+        if [ -n "$conf_count" ] && [ "$conf_count" -gt 0 ] 2>/dev/null; then
+            echo -e "${BLUE}[INFO]${NC} Found $conf_count configuration files"
+
+            # Предлагаем пользователю выбрать конфиги (как и раньше)
+            if select_app_configs; then
+                # Импортируем выбранные конфиги
+                import_selected_configs
+            else
+                echo -e "${YELLOW}[INFO]${NC} No configurations were selected or import was cancelled"
+            fi
         else
-            echo -e "${YELLOW}[INFO]${NC} No configurations were selected or import was cancelled"
+            echo -e "${YELLOW}[INFO]${NC} No .conf files found in $CONFIG_SOURCE_DIR/"
         fi
     else
-        echo -e "${YELLOW}[INFO]${NC} No .conf files found in $CONFIG_SOURCE_DIR/"
+        echo -e "${YELLOW}[INFO]${NC} No configuration directory found: $CONFIG_SOURCE_DIR"
+        echo -e "${YELLOW}[INFO]${NC} To add application configurations, create this directory and add .conf files"
     fi
 else
-    echo -e "${YELLOW}[INFO]${NC} No configuration directory found: $CONFIG_SOURCE_DIR"
-    echo -e "${YELLOW}[INFO]${NC} To add application configurations, create this directory and add .conf files"
+    echo -e "${YELLOW}[INFO]${NC} Skipping default configurations (use --with_defs to enable)"
+    echo -e "${YELLOW}[INFO]${NC} To install default configurations, run: $0 --with_defs"
 fi
 
 # ============================================================================
@@ -1408,76 +1435,6 @@ EOF
 echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_autoconfig.service"
 
 # ============================================================================
-# СЕРВИС APP_DATA_SEC_MESSAGES (опционально)
-# ============================================================================
-
-#if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
-#    echo -e "\n${BLUE}[INFO]${NC} Creating systemd service for messages_to_syslog..."
-#
-#    cat > "$SERVICE_DIR/app_data_sec_messages.service" << 'EOF'
-#[Unit]
-#Description=APP DATA SEC Messages to Syslog Service
-#Documentation=https://gitlab.com/v.kudashov.work/linux_app_data_sec/-/blob/main/README.md
-#After=app_data_sec_loader.service
-#Before=sysinit.target
-#
-#[Service]
-#Type=simple
-#User=root
-#Group=root
-## Используем полный путь
-#ExecStart=/usr/local/bin/app_data_sec_messages_to_syslog
-#ExecStop=/bin/kill -SIGTERM $MAINPID
-#Restart=always
-#RestartSec=5
-#
-## Логи
-#StandardOutput=journal
-#StandardError=journal
-#SyslogIdentifier=app_data_sec_messages
-#
-## Снимаем все ограничения
-#PrivateTmp=false
-#ProtectSystem=false
-#ProtectHome=false
-#NoNewPrivileges=false
-#PrivateDevices=false
-#ProtectKernelTunables=false
-#ProtectKernelModules=false
-#ProtectControlGroups=false
-#RestrictAddressFamilies=false
-#RestrictNamespaces=false
-#LockPersonality=false
-#MemoryDenyWriteExecute=false
-#RestrictRealtime=false
-#RestrictSUIDSGID=false
-#
-## Разрешаем доступ к /proc и /sys
-#ReadWritePaths=/
-#ReadOnlyPaths=
-#ReadWritePaths=/sys/kernel/debug/tracing
-#ReadWritePaths=/proc
-#
-## Даем необходимые capabilities
-#CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SYSLOG CAP_DAC_OVERRIDE
-#AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SYSLOG CAP_DAC_OVERRIDE
-#
-#[Install]
-#WantedBy=multi-user.target
-#EOF
-#
-#    echo -e "${GREEN}[OK]${NC} Created: $SERVICE_DIR/app_data_sec_messages.service"
-#
-#    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
-#        systemctl enable app_data_sec_messages 2>/dev/null || true
-#        echo -e "${GREEN}[OK]${NC} Service enabled: app_data_sec_messages"
-#    else
-#        echo -e "${YELLOW}[INFO]${NC} Service installed but NOT enabled"
-#        echo "To enable: sudo systemctl enable --now app_data_sec_messages"
-#    fi
-#fi
-
-# ============================================================================
 # ЗАПУСК СЕРВИСОВ
 # ============================================================================
 
@@ -1494,11 +1451,6 @@ if [ -f "$INSTALL_PATH/app_data_sec_watchdog" ]; then
     systemctl enable app_data_sec_watchdog 2>/dev/null || true
     systemctl restart app_data_sec_watchdog
 fi
-
-# Запускаем messages (если включен)
-#if [ "$INSTALL_MESSAGES" -eq 1 ] && [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
-#    systemctl restart app_data_sec_messages
-#fi
 
 # Запускаем autoconfig
 if [ -f "$INSTALL_PATH/app_data_sec_autoconfig" ]; then
@@ -1527,17 +1479,6 @@ systemctl status app_data_sec_watchdog --no-pager || true
 echo ""
 echo -e "${BLUE}app_data_sec_autoconfig:${NC}"
 systemctl status app_data_sec_autoconfig --no-pager || true
-
-#if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
-#    echo ""
-#    echo -e "${BLUE}app_data_sec_messages:${NC}"
-#    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
-#        systemctl status app_data_sec_messages --no-pager || true
-#    else
-#        echo -e "  ${YELLOW}Service installed but not enabled${NC}"
-#        echo "  To enable: sudo systemctl enable --now app_data_sec_messages"
-#    fi
-#fi
 
 # ============================================================================
 # ПРОВЕРКА ЛОГОВ
@@ -1623,14 +1564,6 @@ ${BLUE}Services:${NC}
   app_data_sec_autoconfig - AutoConfig service (monitors /etc/app_data_sec.autoconfig/)
 EOF
 
-#if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
-#    if [ "$ENABLE_MESSAGES_SERVICE" -eq 1 ]; then
-#        echo "  app_data_sec_messages - Monitoring service (active)"
-#    else
-#        echo "  app_data_sec_messages - Monitoring service (installed, disabled)"
-#    fi
-#fi
-
 cat << EOF
 
 ${BLUE}Watchdog:${NC}
@@ -1675,6 +1608,10 @@ ${BLUE}Remove protection:${NC}
   app_data_sec_unprotect /tmp/remove.conf
   app_data_sec_unprotect -c /etc/app_data_sec.conf /tmp/remove.conf
   app_data_sec_unprotect -l
+
+${BLUE}Installation options:${NC}
+  Without arguments: install only core components
+  With --with_defs: enable interactive installation of default configurations
 
 EOF
 
