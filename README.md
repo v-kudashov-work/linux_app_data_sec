@@ -87,6 +87,12 @@ sudo ./install_app_data_sec.sh
   sudo app_data_sec_merge_config ./configs/
 ```
 
+или запустить установку с ключом --with_defs для интерактивного режима импорта конфигураций:
+```bash
+  sudo install_app_data_sec.sh --with_defs
+```
+
+
     Формат конфигурации:
     Конфигурационный файл: /etc/app_data_sec.conf
 
