@@ -86,6 +86,17 @@ static int entry_counter = 0;
 static bool redraw_needed = true;
 static bool should_exit = false;
 
+// Создайте функцию для очистки экрана:
+static void clear_screen(void) {
+    // Пробуем system("clear")
+    int ret = system("clear");
+    if (ret != 0) {
+        // Если clear не сработал, используем ANSI escape
+        printf("\033[2J\033[H");
+    }
+    fflush(stdout);
+}
+
 // Безопасная функция копирования строки
 static void safe_strncpy(char *dest, const char *src, size_t size) {
     if (!dest || !src || size == 0) return;
@@ -850,8 +861,7 @@ static void display_table() {
         // Если нет валидных записей, но есть записи в процессе загрузки
         if (table_count > 0) {
             // Просто обновляем экран с сообщением о загрузке
-            system("clear");
-            printf("\033[2J\033[H");
+            clear_screen();
             printf("\n📊 APP DATA SEC MONITOR\n");
             printf("═══════════════════════════════════════════════════════════════════════════════\n");
             printf("Loading data... (%d entries in progress)\n", table_count);
@@ -861,8 +871,7 @@ static void display_table() {
         }
 
         // Если совсем нет записей
-        system("clear");
-        printf("\033[2J\033[H");
+        clear_screen();
         printf("\n📊 APP DATA SEC MONITOR\n");
         printf("═══════════════════════════════════════════════════════════════════════════════\n");
         printf("📋 No data in table yet. Waiting for logs...\n");
@@ -872,8 +881,7 @@ static void display_table() {
     }
 
     // Очищаем экран
-    system("clear");
-    printf("\033[2J\033[H");
+    clear_screen();
 
     printf("\n📊 APP DATA SEC MONITOR\n");
     printf("═══════════════════════════════════════════════════════════════════════════════\n");
@@ -1288,8 +1296,7 @@ int main(int argc, char *argv[]) {
     // Настраиваем терминал для интерактивного режима
     setup_terminal();
 
-    system("clear");
-    printf("\033[2J\033[H");
+    clear_screen();
     printf("\n📊 APP DATA SEC MONITOR\n");
     printf("═══════════════════════════════════════════════════════════════════════════════\n");
     printf("Waiting for logs from %s...\n", TRACE_PIPE);
