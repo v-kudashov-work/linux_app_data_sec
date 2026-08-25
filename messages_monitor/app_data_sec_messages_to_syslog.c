@@ -28,6 +28,12 @@
 #define MAX_TABLE_ROWS 1000
 #define MAX_OPERATIONS 256
 
+// ============================================================================
+// ВЕРСИЯ
+// ============================================================================
+#define VERSION "0.5.6"
+#define VERSION_DATE "2026-08-25"
+
 // Структура для хранения информации о процессе
 typedef struct {
     pid_t pid;
@@ -1219,6 +1225,29 @@ static int open_trace_pipe() {
 }
 
 int main(int argc, char *argv[]) {
+    // Проверка аргументов командной строки
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
+            printf("app_data_sec_messages_to_syslog version %s (built: %s)\n", VERSION, VERSION_DATE);
+            return 0;
+        }
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            printf("Usage: %s [options]\n", argv[0]);
+            printf("Options:\n");
+            printf("  -v, --version    Show version information\n");
+            printf("  -h, --help       Show this help\n");
+            return 0;
+        }
+//        if (strcmp(argv[i], "--no-syslog") == 0 || strcmp(argv[i], "-n") == 0) {
+//            // Отключаем syslog (если нужно)
+//            // Здесь можно добавить флаг
+//            continue;
+//        }
+        fprintf(stderr, "Unknown option: %s\n", argv[i]);
+        fprintf(stderr, "Use --help for usage information\n");
+        return 1;
+    }
+
     if (geteuid() != 0) {
         fprintf(stderr, "ERROR: This program must be run as root (UID 0)\n");
         fprintf(stderr, "Please use: sudo %s\n", argv[0]);
