@@ -521,6 +521,13 @@ static int collect_process_chain_v2(pid_t pid, process_info_t *chain, int max_de
 
 // Функция для форматирования цепочки процессов в строку с иерархией
 static void format_process_tree(process_info_t *chain, int depth, char *output, size_t output_size) {
+    if (!chain || depth <= 0 || !output || output_size == 0) {
+        if (output) {
+            snprintf(output, output_size, "No process data available");
+        }
+        return;
+    }
+
     int pos = 0;
 
     for (int i = depth - 1; i >= 0; i--) {
@@ -550,6 +557,11 @@ static void format_process_tree(process_info_t *chain, int depth, char *output, 
         }
     }
     output[pos] = '\0';
+
+    // Если после форматирования строка пустая, добавляем сообщение
+    if (strlen(output) == 0) {
+        snprintf(output, output_size, "Process info not available");
+    }
 }
 
 // Функция для парсинга PID из строки лога
@@ -620,15 +632,14 @@ static void extract_operation(const char *line, char *operation, size_t size) {
         p = app_data + 13;
         // Пропускаем пробелы
         while (*p == ' ') p++;
-        // Извлекаем первую часть до пробела
-        char *end = strchr(p, ' ');
-        if (end) {
-            size_t len = end - p;
-            if (len < size - 1) {
-                safe_strncpy(operation, p, len + 1);
-                return;
-            }
-        } else {
+        // Извлекаем первую часть до пробела или конца строки
+        const char *end = p;
+        while (*end && *end != ' ' && *end != '\t' && *end != '\n' && *end != '\r') end++;
+        size_t len = end - p;
+        if (len > 0 && len < size - 1) {
+            safe_strncpy(operation, p, len + 1);
+            return;
+        } else if (len > 0) {
             safe_strncpy(operation, p, size);
             return;
         }
@@ -840,7 +851,7 @@ static void display_table() {
             printf("Entry #%d\n", table[i].entry_num);
             printf("Timestamp: %s\n", table[i].timestamp);
             printf("Folder Full Path: %s\n", table[i].folder_path);
-            printf("Process Hierarchy:\n%s\n", table[i].process_tree);
+            printf("Process Hierarchy:\n%s\n", table[i].process_tree[0] != '\0' ? table[i].process_tree : "No process data available");
             printf("Operations: %s\n", table[i].operations);
             printf("---------------------------\n");
         }
@@ -941,34 +952,42 @@ static void extract_process_tree_from_log(const char *line, char *output, size_t
             safe_strncpy(exe_chain, exe_start, sizeof(exe_chain));
         }
 
-        // Разделяем по > и форматируем как иерархию
-        char *token = strtok(exe_chain, ">");
-        int level = 0;
-        int pos = 0;
-        while (token != NULL && pos < (int)output_size - 1) {
-            for (int j = 0; j < level * 2 && pos < (int)output_size - 1; j++) {
-                output[pos++] = ' ';
+        // Если цепочка не пустая
+        if (strlen(exe_chain) > 0) {
+            // Разделяем по > и форматируем как иерархию
+            char *token = strtok(exe_chain, ">");
+            int level = 0;
+            int pos = 0;
+            while (token != NULL && pos < (int)output_size - 1) {
+                for (int j = 0; j < level * 2 && pos < (int)output_size - 1; j++) {
+                    output[pos++] = ' ';
+                }
+                if (level > 0 && pos < (int)output_size - 1) {
+                    output[pos++] = '|';
+                    output[pos++] = '-';
+                }
+                // Используем snprintf с проверкой
+                int written = snprintf(output + pos, output_size - pos, "%s", token);
+                if (written < 0) break;
+                pos += written;
+                // Добавляем перенос строки, если есть место
+                if (pos < (int)output_size - 1) {
+                    output[pos++] = '\n';
+                }
+                token = strtok(NULL, ">");
+                level++;
             }
-            if (level > 0 && pos < (int)output_size - 1) {
-                output[pos++] = '|';
-                output[pos++] = '-';
+            output[pos] = '\0';
+
+            // Если получилась непустая строка, возвращаем
+            if (strlen(output) > 0) {
+                return;
             }
-            // Используем snprintf с проверкой
-            int written = snprintf(output + pos, output_size - pos, "%s", token);
-            if (written < 0) break;
-            pos += written;
-            // Добавляем перенос строки, если есть место
-            if (pos < (int)output_size - 1) {
-                output[pos++] = '\n';
-            }
-            token = strtok(NULL, ">");
-            level++;
         }
-        output[pos] = '\0';
-        return;
     }
 
-    safe_strncpy(output, "No process info", output_size);
+    // Если ничего не нашли
+    snprintf(output, output_size, "Process info not available from log");
 }
 
 // Функция для обработки строки лога
