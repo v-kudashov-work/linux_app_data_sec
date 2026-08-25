@@ -1,4 +1,4 @@
-// app_data_sec_messages_to_syslog.c - с полной информацией о директории (исправленная версия)
+// app_data_sec_messages_to_syslog.c - с полной информацией о директории (с таблицей в консоли)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +15,8 @@
 #include <pwd.h>
 #include <grp.h>
 #include <time.h>
+#include <signal.h>
+#include <termios.h>
 
 #define TRACE_PIPE "/sys/kernel/debug/tracing/trace_pipe"
 #define BUFFER_SIZE 8192
@@ -22,6 +24,8 @@
 #define MAX_MSG_LEN 8192
 #define MAX_PROCESS_CHAIN 32
 #define MAX_PATH_LEN 4096
+#define MAX_TABLE_ROWS 1000
+#define MAX_OPERATIONS 256
 
 // Структура для хранения информации о процессе
 typedef struct {
@@ -51,6 +55,25 @@ typedef struct {
     unsigned long long protected_inode;
     char protected_path[PATH_MAX];
 } dir_info_t;
+
+// Структура для хранения строки таблицы
+typedef struct {
+    char timestamp[64];
+    char folder_path[PATH_MAX];
+    char process_tree[2048];
+    char operations[2048];
+    unsigned long long inode;
+    pid_t pid;
+    time_t last_update;
+    bool active;
+} table_row_t;
+
+// Глобальные переменные для таблицы
+static table_row_t table[MAX_TABLE_ROWS];
+static int table_count = 0;
+static bool terminal_mode = false;
+static struct termios orig_termios;
+static int pipe_fd = -1;
 
 // Безопасная функция копирования строки
 static void safe_strncpy(char *dest, const char *src, size_t size) {
@@ -494,17 +517,6 @@ static void format_process_chain(process_info_t *chain, int depth, char *output,
     output[pos] = '\0';
 }
 
-// Функция для безопасного обрезания строки
-static void safe_truncate(char *str, size_t max_len) {
-    size_t len = strlen(str);
-    if (len >= max_len) {
-        str[max_len - 4] = '.';
-        str[max_len - 3] = '.';
-        str[max_len - 2] = '.';
-        str[max_len - 1] = '\0';
-    }
-}
-
 // Функция для парсинга PID из строки лога
 static pid_t extract_pid(const char *line) {
     const char *pid_str = NULL;
@@ -557,55 +569,289 @@ static unsigned long long extract_folder_inode(const char *line) {
     return inode;
 }
 
-// Функция для форматирования информации о директории (переработанная)
+// Функция для извлечения операции из строки лога
+static void extract_operation(const char *line, char *operation, size_t size) {
+    const char *op_start = NULL;
+    const char *p = line;
+
+    // Ищем "OPERATION="
+    while (*p) {
+        if (strncmp(p, "OPERATION=", 10) == 0) {
+            op_start = p + 10;
+            break;
+        }
+        p++;
+    }
+
+    if (!op_start) {
+        safe_strncpy(operation, "unknown", size);
+        return;
+    }
+
+    // Извлекаем операцию до пробела или конца строки
+    char *op_end = strchr(op_start, ' ');
+    if (op_end) {
+        size_t len = op_end - op_start;
+        if (len < size - 1) {
+            safe_strncpy(operation, op_start, len + 1);
+        } else {
+            safe_strncpy(operation, op_start, size);
+        }
+    } else {
+        safe_strncpy(operation, op_start, size);
+    }
+}
+
+// Функция для извлечения временной метки из строки лога
+static void extract_timestamp(const char *line, char *timestamp, size_t size) {
+    // Ищем формат "YYYY-MM-DD HH:MM:SS"
+    const char *p = line;
+    while (*p) {
+        if (isdigit(p[0]) && isdigit(p[1]) && isdigit(p[2]) && isdigit(p[3]) &&
+            p[4] == '-' && isdigit(p[5]) && isdigit(p[6]) && p[7] == '-' &&
+            isdigit(p[8]) && isdigit(p[9]) && p[10] == ' ') {
+            // Нашли начало даты
+            const char *end = p + 19; // "YYYY-MM-DD HH:MM:SS"
+            if (end[0] && (end[0] == ' ' || end[0] == '\0' || end[0] == ':' || end[0] == '.')) {
+                size_t len = 19;
+                if (len < size - 1) {
+                    safe_strncpy(timestamp, p, len + 1);
+                    return;
+                }
+            }
+            }
+            p++;
+    }
+    safe_strncpy(timestamp, "no timestamp", size);
+}
+
+// Функция для обновления или добавления строки в таблицу
+static void update_table(const char *line, const char *folder_path, const char *process_tree,
+                         const char *operation, unsigned long long inode, pid_t pid, time_t now) {
+    char timestamp[64];
+    extract_timestamp(line, timestamp, sizeof(timestamp));
+
+    // Ищем существующую запись с такой же папкой и процессом
+    int found = -1;
+    for (int i = 0; i < table_count; i++) {
+        if (table[i].inode == inode &&
+            strcmp(table[i].folder_path, folder_path) == 0 &&
+            strcmp(table[i].process_tree, process_tree) == 0 &&
+            table[i].active) {
+            found = i;
+        break;
+            }
+    }
+
+    if (found >= 0) {
+        // Обновляем существующую запись
+        if (table[found].last_update < now) {
+            safe_strncpy(table[found].timestamp, timestamp, sizeof(table[found].timestamp));
+            table[found].last_update = now;
+        }
+
+        // Проверяем, есть ли уже такая операция
+        char *ops = table[found].operations;
+        if (strstr(ops, operation) == NULL) {
+            // Добавляем операцию через запятую
+            if (strlen(ops) + strlen(operation) + 3 < sizeof(table[found].operations)) {
+                if (strlen(ops) > 0) {
+                    strcat(ops, ", ");
+                }
+                strcat(ops, operation);
+            }
+        }
+    } else if (table_count < MAX_TABLE_ROWS) {
+        // Добавляем новую запись
+        safe_strncpy(table[table_count].timestamp, timestamp, sizeof(table[table_count].timestamp));
+        safe_strncpy(table[table_count].folder_path, folder_path, sizeof(table[table_count].folder_path));
+        safe_strncpy(table[table_count].process_tree, process_tree, sizeof(table[table_count].process_tree));
+        safe_strncpy(table[table_count].operations, operation, sizeof(table[table_count].operations));
+        table[table_count].inode = inode;
+        table[table_count].pid = pid;
+        table[table_count].last_update = now;
+        table[table_count].active = true;
+        table_count++;
+    }
+}
+
+// Функция для очистки таблицы
+static void clear_table() {
+    memset(table, 0, sizeof(table));
+    table_count = 0;
+    printf("\033[2J\033[H"); // Очищаем экран
+    printf("\n=== TABLE CLEARED ===\n");
+    printf("Press 'c' to copy, 'r' to refresh, 'q' to quit\n");
+}
+
+// Функция для копирования таблицы в буфер обмена (Linux)
+static void copy_table_to_clipboard() {
+    FILE *fp = popen("xclip -selection clipboard 2>/dev/null || xsel -b 2>/dev/null || cat", "w");
+    if (!fp) {
+        printf("\nClipboard tool not found (install xclip or xsel)\n");
+        return;
+    }
+
+    // Заголовок таблицы
+    fprintf(fp, "┌─────────────────────┬──────────────────────────────────────────────────┬──────────────────────────────────────────────────┬──────────────────────┐\n");
+    fprintf(fp, "│ %-19s │ %-48s │ %-48s │ %-20s │\n",
+            "Last Log Time", "Folder (Full Path)", "Process (Hierarchy)", "Operations");
+    fprintf(fp, "├─────────────────────┼──────────────────────────────────────────────────┼──────────────────────────────────────────────────┼──────────────────────┤\n");
+
+    for (int i = 0; i < table_count && i < MAX_TABLE_ROWS; i++) {
+        if (!table[i].active) continue;
+
+        // Обрезаем длинные строки для отображения
+        char folder_short[256];
+        char process_short[256];
+        char ops_short[256];
+
+        safe_strncpy(folder_short, table[i].folder_path, sizeof(folder_short));
+        safe_strncpy(process_short, table[i].process_tree, sizeof(process_short));
+        safe_strncpy(ops_short, table[i].operations, sizeof(ops_short));
+
+        // Обрезаем если слишком длинные
+        if (strlen(folder_short) > 48) {
+            strcpy(folder_short + 45, "...");
+        }
+        if (strlen(process_short) > 48) {
+            strcpy(process_short + 45, "...");
+        }
+        if (strlen(ops_short) > 20) {
+            strcpy(ops_short + 17, "...");
+        }
+
+        fprintf(fp, "│ %-19s │ %-48s │ %-48s │ %-20s │\n",
+                table[i].timestamp,
+                folder_short,
+                process_short,
+                ops_short);
+    }
+
+    fprintf(fp, "└─────────────────────┴──────────────────────────────────────────────────┴──────────────────────────────────────────────────┴──────────────────────┘\n");
+
+    int ret = pclose(fp);
+    if (ret == 0) {
+        printf("\n✅ Table copied to clipboard!\n");
+    } else {
+        printf("\n❌ Failed to copy to clipboard\n");
+    }
+}
+
+// Функция для отображения таблицы
+static void display_table() {
+    printf("\033[2J\033[H"); // Очищаем экран
+
+    if (table_count == 0) {
+        printf("\n📋 No data in table yet. Waiting for logs...\n");
+        printf("\nControls: 'c' - Copy table, 'r' - Refresh, 'q' - Quit\n");
+        return;
+    }
+
+    printf("\n📊 LOG TABLE (Total: %d entries)\n", table_count);
+    printf("┌─────────────────────┬──────────────────────────────────────────────────┬──────────────────────────────────────────────────┬──────────────────────┐\n");
+    printf("│ %-19s │ %-48s │ %-48s │ %-20s │\n",
+        "Last Log Time", "Folder (Full Path)", "Process (Hierarchy)", "Operations");
+    printf("├─────────────────────┼──────────────────────────────────────────────────┼──────────────────────────────────────────────────┼──────────────────────┤\n");
+
+    for (int i = 0; i < table_count && i < MAX_TABLE_ROWS; i++) {
+        if (!table[i].active) continue;
+
+        char folder_short[256];
+        char process_short[256];
+        char ops_short[256];
+
+        safe_strncpy(folder_short, table[i].folder_path, sizeof(folder_short));
+        safe_strncpy(process_short, table[i].process_tree, sizeof(process_short));
+        safe_strncpy(ops_short, table[i].operations, sizeof(ops_short));
+
+        if (strlen(folder_short) > 48) {
+            strcpy(folder_short + 45, "...");
+        }
+        if (strlen(process_short) > 48) {
+            strcpy(process_short + 45, "...");
+        }
+        if (strlen(ops_short) > 20) {
+            strcpy(ops_short + 17, "...");
+        }
+
+        printf("│ %-19s │ %-48s │ %-48s │ %-20s │\n",
+            table[i].timestamp,
+            folder_short,
+            process_short,
+            ops_short);
+    }
+
+    printf("└─────────────────────┴──────────────────────────────────────────────────┴──────────────────────────────────────────────────┴──────────────────────┘\n");
+    printf("\nControls: 'c' - Copy table, 'r' - Refresh, 'q' - Quit\n");
+}
+
+// Функция для обработки ввода с клавиатуры
+static void handle_input() {
+    char ch;
+    struct timeval tv;
+    fd_set fds;
+
+    tv.tv_sec = 0;
+    tv.tv_usec = 10000;
+
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+
+    if (select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0) {
+        if (read(STDIN_FILENO, &ch, 1) > 0) {
+            switch (ch) {
+                case 'c':
+                case 'C':
+                    copy_table_to_clipboard();
+                    break;
+                case 'r':
+                case 'R':
+                    display_table();
+                    break;
+                case 'q':
+                case 'Q':
+                    if (terminal_mode) {
+                        printf("\nExiting...\n");
+                        tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+                        exit(0);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+}
+
+// Функция для форматирования информации о директории
 static void format_directory_info(unsigned long long inode, char *output, size_t output_size) {
     if (inode == 0) {
-        snprintf(output, output_size, "DIR: unknown");
+        snprintf(output, output_size, "unknown");
         return;
     }
 
     dir_info_t info = get_directory_info(inode);
-
-    // Используем фиксированный размер для каждого поля
     char path_short[128];
-    char name_short[64];
-    char parent_short[128];
-
-    // Обрезаем длинные строки
     safe_strncpy(path_short, info.path, sizeof(path_short));
-    safe_strncpy(name_short, info.name, sizeof(name_short));
-    safe_strncpy(parent_short, info.parent_path, sizeof(parent_short));
 
-    // Форматируем с использованием фиксированных размеров
-    snprintf(output, output_size,
-             "DIR: INODE=%llu PATH=%.120s NAME=%.60s PARENT=%.120s OWNER=%.60s GROUP=%.60s PERMS=%.10s SIZE=%ld MTIME=%.30s IS_DIR=%d",
-             info.inode,
-             path_short[0] ? path_short : "unknown",
-             name_short[0] ? name_short : "unknown",
-             parent_short[0] ? parent_short : "unknown",
-             info.owner[0] ? info.owner : "unknown",
-             info.group[0] ? info.group : "unknown",
-             info.permissions[0] ? info.permissions : "unknown",
-             (long)info.size,
-             info.mtime_str[0] ? info.mtime_str : "unknown",
-             info.is_directory);
+    // Возвращаем только путь для таблицы
+    if (path_short[0]) {
+        safe_strncpy(output, path_short, output_size);
+    } else {
+        snprintf(output, output_size, "unknown (inode: %llu)", inode);
+    }
 }
 
 // Функция для обработки строки лога
 static void process_log_line(char *line) {
-    // Удаляем перевод строки
     size_t len = strlen(line);
     while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
         line[len-1] = '\0';
         len--;
     }
-
-    if (len == 0) {
-        return;
-    }
-
     // Проверяем, что это наше сообщение
-    if (strstr(line, "APP_DATA_SEC:") == NULL) {
+    if (len == 0 || strstr(line, "APP_DATA_SEC:") == NULL) {
         return;
     }
 
@@ -616,94 +862,87 @@ static void process_log_line(char *line) {
     unsigned long long folder_inode = extract_folder_inode(line);
 
     // Формируем сообщение для syslog
-    char syslog_msg[MAX_MSG_LEN];
-    char chain_str[4096] = "";
-    char process_tree[4096] = "";
-    char dir_info_str[2048] = "";
+    char operation[256];
+    extract_operation(line, operation, sizeof(operation));
 
-    format_directory_info(folder_inode, dir_info_str, sizeof(dir_info_str));
+    char folder_path[PATH_MAX];
+    format_directory_info(folder_inode, folder_path, sizeof(folder_path));
+
+    char chain_str[4096] = "";
+    char process_tree_str[2048] = "";
 
     if (pid > 0) {
         // Собираем цепочку процессов
         process_info_t chain[MAX_PROCESS_CHAIN];
         int depth = collect_process_chain_v2(pid, chain, MAX_PROCESS_CHAIN);
-
-        // Форматируем цепочку с полными путями
         format_process_chain(chain, depth, chain_str, sizeof(chain_str));
 
-        // Формируем дополнительное дерево процессов для наглядности
-        int tree_pos = 0;
+        // Формируем иерархическое дерево для таблицы
+        int pos = 0;
         for (int i = depth - 1; i >= 0; i--) {
-            if (tree_pos >= sizeof(process_tree) - 1) {
-                break;
+            if (pos >= sizeof(process_tree_str) - 1) break;
+            if (i < depth - 1) {
+                for (int j = 0; j < (depth - 1 - i) * 2; j++) {
+                    if (pos >= sizeof(process_tree_str) - 1) break;
+                    process_tree_str[pos++] = ' ';
+                }
+                if (pos < sizeof(process_tree_str) - 1) {
+                    process_tree_str[pos++] = '|';
+                }
+                if (pos < sizeof(process_tree_str) - 1) {
+                    process_tree_str[pos++] = '-';
+                }
             }
-
-            // Добавляем отступы для иерархии
-            for (int j = 0; j < (depth - 1 - i) * 2; j++) {
-                if (tree_pos >= sizeof(process_tree) - 1) break;
-                process_tree[tree_pos++] = ' ';
-            }
-
-            // Добавляем информацию о процессе
-            int written = snprintf(process_tree + tree_pos, sizeof(process_tree) - tree_pos,
-                                   "|-%s (PID:%d, EXE:%s)\n",
-                                   chain[i].comm[0] != '\0' ? chain[i].comm : "unknown",
-                                   chain[i].pid,
-                                   chain[i].exe_path);
-
+            int written = snprintf(process_tree_str + pos, sizeof(process_tree_str) - pos,
+                                "%s:%d",
+                                chain[i].comm[0] != '\0' ? chain[i].comm : "unknown",
+                                chain[i].pid);
             if (written < 0) break;
-            tree_pos += written;
+            pos += written;
+            if (i > 0 && pos < sizeof(process_tree_str) - 1) {
+                process_tree_str[pos++] = ' ';
+                process_tree_str[pos++] = '>';
+                process_tree_str[pos++] = ' ';
+            }
         }
-        process_tree[tree_pos] = '\0';
-
-        // Получаем информацию о текущем процессе для дополнительных деталей
-        process_info_t current_info;
-        if (get_process_info(pid, &current_info)) {
-            // Обрезаем слишком длинные строки
-            if (strlen(current_info.exe_path) > 256) {
-                safe_truncate(current_info.exe_path, 256);
-            }
-            if (strlen(current_info.cmdline) > 512) {
-                safe_truncate(current_info.cmdline, 512);
-            }
-
-            // Формируем сообщение с полной информацией
-//            int written = snprintf(syslog_msg, sizeof(syslog_msg),
-//                                   "%s | CHAIN: %s | CURRENT: PID=%d EXE=%s CMDLINE=%s | %s",
-//                                   line, chain_str, pid, current_info.exe_path,
-//                                   current_info.cmdline, dir_info_str);
-
-            // Формируем сообщение с полной информацией
-            int written = snprintf(syslog_msg, sizeof(syslog_msg),
-                                   "%s | CHAIN: %s | CURRENT: PID=%d EXE=%s | %s",
-                                   line, chain_str, pid, current_info.exe_path, dir_info_str);
-
-            if (written >= (int)sizeof(syslog_msg) - 1) {
-                syslog_msg[sizeof(syslog_msg) - 4] = '.';
-                syslog_msg[sizeof(syslog_msg) - 3] = '.';
-                syslog_msg[sizeof(syslog_msg) - 2] = '.';
-                syslog_msg[sizeof(syslog_msg) - 1] = '\0';
-            }
-
-            // Дополнительно отправляем дерево процессов отдельным сообщением
-            if (depth > 1) {
-                syslog(LOG_INFO, "PROCESS TREE for PID %d:\n%s", pid, process_tree);
-            }
-        } else {
-            snprintf(syslog_msg, sizeof(syslog_msg), "%s | CHAIN: %s (PID=%d) | %s",
-                     line, chain_str, pid, dir_info_str);
-        }
-
-        syslog(LOG_INFO, "%s", syslog_msg);
-
+        process_tree_str[pos] = '\0';
     } else {
-        snprintf(syslog_msg, sizeof(syslog_msg), "%s | %s", line, dir_info_str);
-        syslog(LOG_INFO, "%s", syslog_msg);
+        safe_strncpy(process_tree_str, "unknown", sizeof(process_tree_str));
+    }
+
+    time_t now = time(NULL);
+    update_table(line, folder_path, process_tree_str, operation, folder_inode, pid, now);
+
+    if (terminal_mode) {
+        display_table();
     }
 }
 
-int main(int argc, char *argv[]) {
+// Обработчик сигналов
+static void signal_handler(int sig) {
+    if (sig == SIGINT || sig == SIGTERM) {
+        if (terminal_mode) {
+            tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+        }
+        syslog(LOG_INFO, "Application terminated by signal %d", sig);
+        closelog();
+        exit(0);
+    }
+}
 
+// Настройка терминала для неблокирующего ввода
+static void setup_terminal() {
+    struct termios new_termios;
+    tcgetattr(STDIN_FILENO, &orig_termios);
+    new_termios = orig_termios;
+    new_termios.c_lflag &= ~(ICANON | ECHO);
+    new_termios.c_cc[VMIN] = 0;
+    new_termios.c_cc[VTIME] = 1;
+    tcsetattr(STDIN_FILENO, TCSANOW, &new_termios);
+    terminal_mode = true;
+}
+
+int main(int argc, char *argv[]) {
     if (geteuid() != 0) {
         fprintf(stderr, "ERROR: This program must be run as root (UID 0)\n");
         fprintf(stderr, "Please use: sudo %s\n", argv[0]);
@@ -715,6 +954,10 @@ int main(int argc, char *argv[]) {
     ssize_t bytes_read;
     char line_buffer[BUFFER_SIZE];
     int line_pos = 0;
+
+    // Установка обработчиков сигналов
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
 
     // Открываем системный журнал
     openlog("app_data_sec_messages", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
@@ -728,32 +971,48 @@ int main(int argc, char *argv[]) {
         closelog();
         return 1;
     }
+    pipe_fd = fd;
 
-    // Читаем и обрабатываем строки
+    // Настраиваем терминал для интерактивного режима
+    setup_terminal();
+
+    printf("\033[2J\033[H");
+    printf("\n📊 APP DATA SEC MONITOR\n");
+    printf("═══════════════════════════════════════════════════════════════════════════════\n");
+    printf("Waiting for logs from %s...\n", TRACE_PIPE);
+    printf("\nControls: 'c' - Copy table, 'r' - Refresh, 'q' - Quit\n\n");
+
+    // Основной цикл чтения
     while (1) {
-        bytes_read = read(fd, buffer, sizeof(buffer) - 1);
-        if (bytes_read > 0) {
-            buffer[bytes_read] = '\0';
+        // Проверяем ввод с клавиатуры
+        handle_input();
 
-            // Обрабатываем каждую строку
-            for (int i = 0; i < bytes_read; i++) {
-                if (buffer[i] == '\n') {
-                    line_buffer[line_pos] = '\0';
-                    if (line_pos > 0) {
-                        process_log_line(line_buffer);
+        // Читаем данные из trace_pipe (неблокирующий режим)
+        fd_set read_fds;
+        struct timeval tv;
+
+        FD_ZERO(&read_fds);
+        FD_SET(fd, &read_fds);
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;
+
+        if (select(fd + 1, &read_fds, NULL, NULL, &tv) > 0) {
+            bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+            if (bytes_read > 0) {
+                buffer[bytes_read] = '\0';
+
+                for (int i = 0; i < bytes_read; i++) {
+                    if (buffer[i] == '\n') {
+                        line_buffer[line_pos] = '\0';
+                        if (line_pos > 0) {
+                            process_log_line(line_buffer);
+                        }
+                        line_pos = 0;
+                    } else if (line_pos < sizeof(line_buffer) - 1) {
+                        line_buffer[line_pos++] = buffer[i];
                     }
-                    line_pos = 0;
-                } else if (line_pos < sizeof(line_buffer) - 1) {
-                    line_buffer[line_pos++] = buffer[i];
                 }
-            }
-
-            // Если остались данные без перевода строки
-            if (line_pos > 0 && bytes_read > 0 && buffer[bytes_read - 1] != '\n') {
-                // Не завершаем строку, ждем продолжения
-            }
-        } else if (bytes_read < 0) {
-            if (errno != EINTR) {
+            } else if (bytes_read < 0 && errno != EINTR) {
                 syslog(LOG_ERR, "Read error: %s", strerror(errno));
                 break;
             }
@@ -761,6 +1020,7 @@ int main(int argc, char *argv[]) {
     }
 
     close(fd);
+    tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
     closelog();
     return 0;
 }
