@@ -850,6 +850,7 @@ static void display_table() {
         // Если нет валидных записей, но есть записи в процессе загрузки
         if (table_count > 0) {
             // Просто обновляем экран с сообщением о загрузке
+            system("clear");
             printf("\033[2J\033[H");
             printf("\n📊 APP DATA SEC MONITOR\n");
             printf("═══════════════════════════════════════════════════════════════════════════════\n");
@@ -860,6 +861,7 @@ static void display_table() {
         }
 
         // Если совсем нет записей
+        system("clear");
         printf("\033[2J\033[H");
         printf("\n📊 APP DATA SEC MONITOR\n");
         printf("═══════════════════════════════════════════════════════════════════════════════\n");
@@ -870,6 +872,7 @@ static void display_table() {
     }
 
     // Очищаем экран
+    system("clear");
     printf("\033[2J\033[H");
 
     printf("\n📊 APP DATA SEC MONITOR\n");
@@ -1285,6 +1288,7 @@ int main(int argc, char *argv[]) {
     // Настраиваем терминал для интерактивного режима
     setup_terminal();
 
+    system("clear");
     printf("\033[2J\033[H");
     printf("\n📊 APP DATA SEC MONITOR\n");
     printf("═══════════════════════════════════════════════════════════════════════════════\n");
