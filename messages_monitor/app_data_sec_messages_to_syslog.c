@@ -824,38 +824,85 @@ static void copy_table_to_clipboard() {
     }
 }
 
-// Функция для отображения таблицы в многострочном формате
+// Добавьте эту функцию перед display_table()
+// Функция для проверки, есть ли в таблице записи с данными
+static bool has_valid_entries() {
+    for (int i = 0; i < table_count && i < MAX_TABLE_ROWS; i++) {
+        if (table[i].active &&
+            table[i].process_tree[0] != '\0' &&
+            strcmp(table[i].process_tree, "No process data available") != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Функция для отображения таблицы в многострочном формате (исправленная)
 static void display_table() {
-    printf("\033[2J\033[H"); // Очищаем экран
+    // Проверяем, есть ли хотя бы одна запись с данными
+    if (!has_valid_entries()) {
+        // Если нет валидных записей, но есть записи в процессе загрузки
+        if (table_count > 0) {
+            // Просто обновляем экран с сообщением о загрузке
+            printf("\033[2J\033[H");
+            printf("\n📊 APP DATA SEC MONITOR\n");
+            printf("═══════════════════════════════════════════════════════════════════════════════\n");
+            printf("Loading data... (%d entries in progress)\n", table_count);
+            printf("\nControls: 'c' - Copy, 'r' - Refresh, 'x' - Clear, 'q' - Quit\n");
+            redraw_needed = false;
+            return;
+        }
+
+        // Если совсем нет записей
+        printf("\033[2J\033[H");
+        printf("\n📊 APP DATA SEC MONITOR\n");
+        printf("═══════════════════════════════════════════════════════════════════════════════\n");
+        printf("📋 No data in table yet. Waiting for logs...\n");
+        printf("\nControls: 'c' - Copy, 'r' - Refresh, 'x' - Clear, 'q' - Quit\n");
+        redraw_needed = false;
+        return;
+    }
+
+    // Очищаем экран
+    printf("\033[2J\033[H");
 
     printf("\n📊 APP DATA SEC MONITOR\n");
     printf("═══════════════════════════════════════════════════════════════════════════════\n");
     printf("Total entries: %d\n", table_count);
     printf("\n");
 
-    if (table_count == 0) {
-        printf("📋 No data in table yet. Waiting for logs...\n");
-    } else {
-        char last_folder[PATH_MAX] = "";
-        bool first_entry = true;
+    char last_folder[PATH_MAX] = "";
+    bool first_entry = true;
+    bool has_visible_entries = false;
 
-        for (int i = 0; i < table_count && i < MAX_TABLE_ROWS; i++) {
-            if (!table[i].active) continue;
+    for (int i = 0; i < table_count && i < MAX_TABLE_ROWS; i++) {
+        if (!table[i].active) continue;
 
-            // Если папка изменилась, добавляем разделитель
-            if (!first_entry && strcmp(last_folder, table[i].folder_path) != 0) {
-                printf("===========================\n");
-            }
-            safe_strncpy(last_folder, table[i].folder_path, sizeof(last_folder));
-            first_entry = false;
-
-            printf("Entry #%d\n", table[i].entry_num);
-            printf("Timestamp: %s\n", table[i].timestamp);
-            printf("Folder Full Path: %s\n", table[i].folder_path);
-            printf("Process Hierarchy:\n%s\n", table[i].process_tree[0] != '\0' ? table[i].process_tree : "No process data available");
-            printf("Operations: %s\n", table[i].operations);
-            printf("---------------------------\n");
+        // Пропускаем записи без данных
+        if (table[i].process_tree[0] == '\0' ||
+            strcmp(table[i].process_tree, "No process data available") == 0) {
+            continue;
         }
+
+        // Если папка изменилась, добавляем разделитель
+        if (!first_entry && strcmp(last_folder, table[i].folder_path) != 0) {
+            printf("===========================\n");
+        }
+        safe_strncpy(last_folder, table[i].folder_path, sizeof(last_folder));
+        first_entry = false;
+        has_visible_entries = true;
+
+        printf("Entry #%d\n", table[i].entry_num);
+        printf("Timestamp: %s\n", table[i].timestamp);
+        printf("Folder Full Path: %s\n", table[i].folder_path);
+        printf("Process Hierarchy:\n%s\n", table[i].process_tree);
+        printf("Operations: %s\n", table[i].operations);
+        printf("---------------------------\n");
+    }
+
+    // Если нет видимых записей (все с пустыми данными)
+    if (!has_visible_entries) {
+        printf("📋 No complete data yet. Waiting for full log entries...\n");
     }
 
     printf("\nControls: 'c' - Copy, 'r' - Refresh, 'x' - Clear, 'q' - Quit\n");
@@ -1064,6 +1111,14 @@ static void process_log_line(char *line) {
 
     time_t now = time(NULL);
     update_table(line, folder_path, process_tree_str, operation, folder_inode, pid, now);
+
+    // Добавляем небольшую задержку перед первой перерисовкой, чтобы данные успели загрузиться
+    static bool first_update = true;
+    if (first_update) {
+        first_update = false;
+        // Даем время на загрузку данных
+        usleep(100000); // 100ms
+    }
 
     if (terminal_mode && redraw_needed) {
         display_table();
