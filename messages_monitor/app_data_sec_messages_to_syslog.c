@@ -78,6 +78,7 @@ static struct termios orig_termios;
 static int pipe_fd = -1;
 static int entry_counter = 0;
 static bool redraw_needed = true;
+static bool should_exit = false;
 
 // Безопасная функция копирования строки
 static void safe_strncpy(char *dest, const char *src, size_t size) {
@@ -892,9 +893,8 @@ static void handle_input() {
                 case 'q':
                 case 'Q':
                     if (terminal_mode) {
+                        should_exit = true;
                         printf("\nExiting...\n");
-                        tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
-                        exit(0);
                     }
                     break;
                 default:
@@ -1070,15 +1070,52 @@ static void process_log_line(char *line) {
     }
 }
 
+// Функция для закрытия всех ресурсов
+static void cleanup_resources() {
+    // Закрываем pipe
+    if (pipe_fd >= 0) {
+        close(pipe_fd);
+        pipe_fd = -1;
+    }
+
+    // Восстанавливаем терминал
+    if (terminal_mode) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+        terminal_mode = false;
+    }
+
+    // Закрываем системный журнал
+    closelog();
+}
+
 // Обработчик сигналов
 static void signal_handler(int sig) {
-    if (sig == SIGINT || sig == SIGTERM) {
-        if (terminal_mode) {
-            tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
-        }
-        syslog(LOG_INFO, "Application terminated by signal %d", sig);
-        closelog();
-        exit(0);
+    syslog(LOG_INFO, "Received signal %d, cleaning up...", sig);
+
+    // Устанавливаем флаг выхода
+    should_exit = true;
+
+    // Восстанавливаем терминал
+    if (terminal_mode) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+    }
+
+    // Закрываем pipe если открыт
+    if (pipe_fd >= 0) {
+        close(pipe_fd);
+        pipe_fd = -1;
+    }
+
+    // Закрываем системный журнал
+    closelog();
+
+    // Выходим с соответствующим кодом
+    if (sig == SIGINT) {
+        printf("\n\nProgram interrupted by Ctrl+C\n");
+        exit(130); // Стандартный код для SIGINT
+    } else if (sig == SIGTERM) {
+        printf("\n\nProgram terminated\n");
+        exit(143); // Стандартный код для SIGTERM
     }
 }
 
@@ -1092,6 +1129,38 @@ static void setup_terminal() {
     new_termios.c_cc[VTIME] = 1;
     tcsetattr(STDIN_FILENO, TCSANOW, &new_termios);
     terminal_mode = true;
+}
+
+// Функция для открытия trace_pipe с повторными попытками
+static int open_trace_pipe() {
+    int fd;
+    int attempts = 0;
+    const int max_attempts = 5;
+    const int delay_seconds = 1;
+
+    while (attempts < max_attempts) {
+        fd = open(TRACE_PIPE, O_RDONLY);
+        if (fd >= 0) {
+            return fd;
+        }
+
+        if (errno == EBUSY) {
+            attempts++;
+            if (attempts < max_attempts) {
+                fprintf(stderr, "Device or resource busy (attempt %d/%d), retrying in %d second%s...\n",
+                        attempts, max_attempts, delay_seconds, (delay_seconds > 1) ? "s" : "");
+                sleep(delay_seconds);
+                continue;
+            }
+        } else {
+            // Другая ошибка
+            fprintf(stderr, "Failed to open %s: %s\n", TRACE_PIPE, strerror(errno));
+            return -1;
+        }
+    }
+
+    fprintf(stderr, "Failed to open %s after %d attempts: Device or resource busy\n", TRACE_PIPE, max_attempts);
+    return -1;
 }
 
 int main(int argc, char *argv[]) {
@@ -1108,18 +1177,22 @@ int main(int argc, char *argv[]) {
     int line_pos = 0;
 
     // Установка обработчиков сигналов
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    struct sigaction sa;
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     // Открываем системный журнал
     openlog("app_data_sec_messages", LOG_PID | LOG_CONS | LOG_NDELAY, LOG_DAEMON);
     syslog(LOG_INFO, "App Data Sec Messages Reader started");
     syslog(LOG_INFO, "Reading from: %s", TRACE_PIPE);
 
-    // Открываем trace_pipe
-    fd = open(TRACE_PIPE, O_RDONLY);
+    // Открываем trace_pipe с повторными попытками
+    fd = open_trace_pipe();
     if (fd < 0) {
-        syslog(LOG_ERR, "Failed to open %s: %s", TRACE_PIPE, strerror(errno));
+        syslog(LOG_ERR, "Failed to open %s", TRACE_PIPE);
         closelog();
         return 1;
     }
@@ -1136,9 +1209,14 @@ int main(int argc, char *argv[]) {
     redraw_needed = true;
 
     // Основной цикл чтения
-    while (1) {
+    while (!should_exit) {
         // Проверяем ввод с клавиатуры
         handle_input();
+
+        // Проверяем флаг выхода после обработки ввода
+        if (should_exit) {
+            break;
+        }
 
         // Читаем данные из trace_pipe (неблокирующий режим)
         fd_set read_fds;
@@ -1166,19 +1244,25 @@ int main(int argc, char *argv[]) {
                     }
                 }
             } else if (bytes_read < 0 && errno != EINTR) {
+                if (errno == EBUSY || errno == EAGAIN) {
+                    // Если устройство занято, ждем и продолжаем
+                    usleep(100000);
+                    continue;
+                }
                 syslog(LOG_ERR, "Read error: %s", strerror(errno));
                 break;
             }
         }
 
         // Перерисовываем таблицу если нужно
-        if (redraw_needed) {
+        if (redraw_needed && !should_exit) {
             display_table();
         }
     }
 
-    close(fd);
-    tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
-    closelog();
+    // Очистка ресурсов
+    cleanup_resources();
+
+    printf("\nProgram exited normally\n");
     return 0;
 }
