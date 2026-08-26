@@ -181,7 +181,7 @@ fi
 if command -v app_data_sec_merge_config &> /dev/null; then
     # Run merge_config with the autoconfig directory (quietly, without unnecessary messages)
     app_data_sec_merge_config --autoconfig -y 2>/dev/null || true
-    app_data_sec_loader --rescan # Отправляем комманду на пересканирование конфигурации и файлов
+    app_data_sec_loader --rescan # We are sending a command to scan the configuration and files
 else
     # The utility was not found - just ignore it (not an error). The config will be applied when installing app_data_sec.
     echo -e "${YELLOW}[INFO]${NC} app_data_sec_merge_config not found, skipping autoconfig import"
