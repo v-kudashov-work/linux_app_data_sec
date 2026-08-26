@@ -198,6 +198,17 @@ echo -e "\n${BLUE}[INFO]${NC} Reloading systemd..."
 systemctl daemon-reload
 
 # ============================================================================
+# УДАЛЕНИЕ UNINSTALL SCRIPT
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Removing uninstall script..."
+
+# Удаляем сам скрипт деинсталляции
+rm -f /usr/local/bin/app_data_sec_uninstall.sh
+rm -f /usr/bin/app_data_sec_uninstall 2>/dev/null || true
+echo -e "${GREEN}[OK]${NC} Removed uninstall script and symlink"
+
+# ============================================================================
 # ПРОВЕРКА
 # ============================================================================
 
@@ -220,17 +231,6 @@ if [ -n "$REMAINING" ]; then
 else
     echo -e "${GREEN}[OK]${NC} No remaining files found"
 fi
-
-# ============================================================================
-# УДАЛЕНИЕ UNINSTALL SCRIPT
-# ============================================================================
-
-echo -e "\n${BLUE}[INFO]${NC} Removing uninstall script..."
-
-# Удаляем сам скрипт деинсталляции
-rm -f /usr/local/bin/app_data_sec_uninstall.sh
-rm -f /usr/bin/app_data_sec_uninstall 2>/dev/null || true
-echo -e "${GREEN}[OK]${NC} Removed uninstall script and symlink"
 
 # ============================================================================
 # ВЫВОД
