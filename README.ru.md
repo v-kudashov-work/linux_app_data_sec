@@ -300,7 +300,7 @@ sudo ./uninstall_app_data_sec.sh
     #define MAX_PROTECTED_PATHS 5000   - максимальное количество защищаемых папок
     #define MAX_ALLOWED_PROGRAMS 20  - сколько исполняемых файлов возможно для каждой папки из MAX_PROTECTED_PATHS
     #define MAX_DEPTH_FOR_APP 8 - максимальный уровень вложенности путей исполняемых файлов
-    #define MAX_DEPTH_FOR_PATH 64 - максимальный уровень вложенности путей защищаемых папко
+    #define MAX_DEPTH_FOR_PATH 64 - максимальный уровень вложенности путей защищаемых папок
     #define MAX_NAME_LEN_FOR_LOG 10 - только для логирования, максимальная длинна имени файла
     #define MAX_LOG_PATH_LEN 128 - максимальная длинна пути для логирования команды запуска исполняемого файла
     #define MAX_DEPTH_FOR_APP_LOG 4 - максимальная вложенность для логирования вложенности процесса
@@ -314,8 +314,8 @@ sudo ./uninstall_app_data_sec.sh
     #define MAX_PATH_LEN 256 - максимальная длинна пути к файлу или папке
     #define CHECK_INTERVAL 5 - период проверки конфига на наличие изменений
     #define RETRY_INTERVAL 15 - период проверки файлов на доступность или удаление
-    #define MAX_SCAN_MOUNT_PATHS 500 - Максимальное количество путей для scan_mount
-    #define MAX_HOME_USERS 1000 - Максимальное количество папок в папке /home/ (количество пользователей)
+    #define MAX_SCAN_MOUNT_PATHS 500 - максимальное количество путей для scan_mount
+    #define MAX_HOME_USERS 1000 - максимальное количество папок в папке /home/ (количество пользователей)
 ```
 
 # Статус

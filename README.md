@@ -7,8 +7,8 @@
 ## Main Features
 
 - 🔒 **Folder Protection** — blocks access to specified directories for all processes except allowed ones 
-- 📋 **Compatibility** Access blocking is in addition to standard Linux file access rules
-- 📋 **Administration** Root access is not restricted (UID=0)
+- 📋 **Compatibility** — Access blocking is in addition to standard Linux file access rules
+- 📋 **Administration** — Root access is not restricted (UID=0)
 - 📋 **Application Whitelist** — ability to specify programs allowed access for each protected folder individually
 - 👤 **User Home Directory Support** — automatic application of rules to all users (`~/.folder`)
 - 🔄 **Dynamic Reload** — automatic application of configuration changes without system restart
@@ -20,32 +20,32 @@
 ## Architecture
 ```code
 ┌────────────────────────────────────────────────────┐
-│ Пользовательское пространство                      │
+│ User space                      │
 ├────────────────────────────────────────────────────┤
 │ app_data_sec_loader     │ app_data_sec_watchdog    │
-│ (управление BPF)        │ (мониторинг сервиса)     │
+│ (BPF management)        │ (service monitoring)     │
 ├─────────────────────────┼──────────────────────────┤
 │ app_data_sec_merge      │ app_data_sec_unprotect   │
-│ (слияние конфигов)      │ (удаление защиты)        │
+│ (merging configs)       │ (removing protection)    │
 ├─────────────────────────┼──────────────────────────┤
 │ app_data_sec_messages   │ /etc/app_data_sec.conf   │
-│ (логирование в syslog)  │ (конфигурация)           │
+│ (logging in syslog   )  │ (configuration)          │
 └─────────────────────────┴──────────────────────────┘
 
 ┌────────────────────────────────────────────────────┐
-│ Ядро Linux (eBPF)                                  │
+│ The Linux kernel (eBPF)                            │
 ├────────────────────────────────────────────────────┤
-│ LSM хуки:                                          │
+│ LSM hooks:                                         │
 │ - inode_getattr - file_open                        │
 │ - path_unlink - path_rmdir                         │
 │ - path_mkdir - path_rename                         │
 │ - inode_create - inode_mkdir                       │
 ├────────────────────────────────────────────────────┤
-│ eBPF карты:                                        │
-│ - folder_config_map - конфигурация папок           │
+│ eBPF cards:                                        │
+│ - folder_config_map - folder configuration         │
 │ - folder_allowed_programs_map                      │
-│    - разрешённые программы                         │
-│ - log_level_map - уровень логирования              │
+│    - permitted programs                            │
+│ - log_level_map - logging level                    │
 └────────────────────────────────────────────────────┘
 ```
 
@@ -59,7 +59,7 @@
 ## Quick Installation
 
 ```bash
-# Клонирование репозитория
+# Cloning a repository
 git clone https://gitlab.com/v.kudashov.work/linux_app_data_sec.git
 cd linux_app_data_sec
 ```
@@ -96,10 +96,10 @@ Configuration format:
     Configuration file: /etc/app_data_sec.conf
 
 ```text
-# enable = yes|no — включает или отключает защиту
+# enable = yes|no — enables or disables protection
 enable = yes
 
-# Защита папки и список разрешённых программ
+# Folder protection and a list of allowed programs
 protect /home/user/.secret_folder /bin/konsole /usr/bin/bash
 protect ~/.test_app /bin/my_app
 ```
@@ -134,14 +134,14 @@ scan_mount <путь>
 ### Usage Examples
 
 ```conf
-# Отслеживание внешних носителей
+# Tracking external media
 scan_mount /mnt/external
 scan_mount /media/usb
 
-# Отслеживание сетевых разделов
+# Network partition tracking
 scan_mount /mnt/nfs/share
 
-# Пути с пробелами
+# Paths with spaces
 scan_mount "/mnt/My Drive"
 ```
 
@@ -155,7 +155,7 @@ For automatic application of configurations during installation/update, the `/et
 All `.conf` files from this directory are automatically imported into the main configuration when `install_app_data_sec.sh` is launched, without requiring confirmation.
 
 ```code
-# Создание автоконфигурации
+# Creating an autoconfiguration
 sudo mkdir -p /etc/app_data_sec.autoconfig/
 sudo chown root:root /etc/app_data_sec.autoconfig/
 sudo chmod 750 /etc/app_data_sec.autoconfig/
@@ -177,13 +177,13 @@ if [ ! -d "$AUTOCONFIG_DIR" ]; then
     chmod 750 "$AUTOCONFIG_DIR"
 fi
 
-# Проверяем наличие merge_config и запускаем, если есть
+# We check for merge_config and run if there is
 if command -v app_data_sec_merge_config &> /dev/null; then
-    # Запускаем merge_config с autoconfig директорией (тихо, без лишних сообщений)
+    # Run merge_config with the autoconfig directory (quietly, without unnecessary messages)
     app_data_sec_merge_config --autoconfig -y 2>/dev/null || true
     app_data_sec_loader --rescan # Отправляем комманду на пересканирование конфигурации и файлов
 else
-    # Утилита не найдена - просто игнорируем (не ошибка). Конфиг будет применён при установке app_data_sec
+    # The utility was not found - just ignore it (not an error). The config will be applied when installing app_data_sec.
     echo -e "${YELLOW}[INFO]${NC} app_data_sec_merge_config not found, skipping autoconfig import"
 fi
 ```
@@ -216,7 +216,7 @@ This mechanism allows you to:
 - Check for new programs in the whitelist
 
 ```bash
-# Отправить сигнал на пересканирование
+# Send a signal to re-scan
 sudo app_data_sec_loader --rescan
 ```
 
@@ -234,7 +234,7 @@ sudo app_data_sec_merge_config /etc/app_data_sec.d/
 
 # Removing Protection
 ```bash
-# Создание файла со списком для удаления
+# Creating a file with a list to delete
 echo "protect /home/user/.secret_folder" > /tmp/remove.conf
 ```
 
@@ -284,36 +284,36 @@ sudo ./uninstall_app_data_sec.sh
 # Security
     Kernel-level operation — protection against user-level bypass
 
-Process tree verification — blocking access through parent processes
+    Process tree verification — blocking access through parent processes
 
-Root support — root access is not restricted (UID=0)
+    Root support — root access is not restricted (UID=0)
 
-Tampering protection — using inode for file identification
+    Tampering protection — using inode for file identification
 
 # Limitations
     After installing an application that is involved in configuring a folder for protection, you may need to wait 15 seconds before launching the application. This time is necessary for the module data to update.
     Python and sh script programs are not supported. They can be used if launched within a parent process of a regular executable file and access to it is configured.
 For the eBPF module
 ```text
-    #define MAX_PROTECTED_PATHS 5000   - максимальное количество защищаемых папок
-    #define MAX_ALLOWED_PROGRAMS 20  - сколько исполняемых файлов возможно для каждой папки из MAX_PROTECTED_PATHS
-    #define MAX_DEPTH_FOR_APP 8 - максимальный уровень вложенности путей исполняемых файлов
-    #define MAX_DEPTH_FOR_PATH 64 - максимальный уровень вложенности путей защищаемых папко
-    #define MAX_NAME_LEN_FOR_LOG 10 - только для логирования, максимальная длинна имени файла
-    #define MAX_LOG_PATH_LEN 128 - максимальная длинна пути для логирования команды запуска исполняемого файла
-    #define MAX_DEPTH_FOR_APP_LOG 4 - максимальная вложенность для логирования вложенности процесса
+    #define MAX_PROTECTED_PATHS 5000   - maximum number of protected folders
+    #define MAX_ALLOWED_PROGRAMS 20  - how many executable files are possible for each folder from MAX_PROTECTED_PATHS
+    #define MAX_DEPTH_FOR_APP 8 - maximum nesting level of executable file paths
+    #define MAX_DEPTH_FOR_PATH 64 - maximum nesting level of protected folder paths
+    #define MAX_NAME_LEN_FOR_LOG 10 - for logging only, the maximum length of the file name
+    #define MAX_LOG_PATH_LEN 128 - the maximum length of the path for logging the command to run the executable file
+    #define MAX_DEPTH_FOR_APP_LOG 4 - maximum nesting for process nesting logging
 ```
 
 For the loader
 ```text
-    #define MAX_LINE_LEN 1024 - максимальная длина строки в файле конфигурации
-    #define MAX_PATHS 5000  - максимальное количество защищаемых папок
-    #define MAX_ALLOWED 20 - сколько исполняемых файлов возможно для каждой папки из MAX_PROTECTED_PATHS
-    #define MAX_PATH_LEN 256 - максимальная длинна пути к файлу или папке
-    #define CHECK_INTERVAL 5 - период проверки конфига на наличие изменений
-    #define RETRY_INTERVAL 15 - период проверки файлов на доступность или удаление
-    #define MAX_SCAN_MOUNT_PATHS 500 - Максимальное количество путей для scan_mount
-    #define MAX_HOME_USERS 1000 - Максимальное количество папок в папке /home/ (количество пользователей)
+    #define MAX_LINE_LEN 1024 - maximum line length in the configuration file
+    #define MAX_PATHS 5000  - maximum number of protected folders
+    #define MAX_ALLOWED 20 - how many executable files are possible for each folder from MAX_PROTECTED_PATHS
+    #define MAX_PATH_LEN 256 - maximum length of the path to a file or folder
+    #define CHECK_INTERVAL 5 - the period of checking the config for changes
+    #define RETRY_INTERVAL 15 - the period for checking files for availability or deletion
+    #define MAX_SCAN_MOUNT_PATHS 500 - maximum number of paths for scan_mount
+    #define MAX_HOME_USERS 1000 - maximum number of folders in the /home/ folder (number of users)
 ```
 
 # Status
