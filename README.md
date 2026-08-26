@@ -20,7 +20,7 @@
 ## Architecture
 ```code
 ┌────────────────────────────────────────────────────┐
-│ User space                      │
+│ User space                                         │
 ├────────────────────────────────────────────────────┤
 │ app_data_sec_loader     │ app_data_sec_watchdog    │
 │ (BPF management)        │ (service monitoring)     │
@@ -104,12 +104,12 @@ protect /home/user/.secret_folder /bin/konsole /usr/bin/bash
 protect ~/.test_app /bin/my_app
 ```
 
-Protect directive format
+    Protect directive format
     protect <path> [allowed_program1] [allowed_program2] ..
 
-<path> — absolute path to the folder to be protected or ~ for the home directory
+    <path> — absolute path to the folder to be protected or ~ for the home directory
 
-allowed_program — absolute path to the program that can bypass protection 
+    allowed_program — absolute path to the program that can bypass protection 
         (gains access to this folder if access is granted based on standard Linux folder access rules)
 
 ## scan_mount Directive
