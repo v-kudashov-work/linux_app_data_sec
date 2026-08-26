@@ -56,7 +56,7 @@ IS_UPDATE=0
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}   APP DATA SEC - INSTALL/UPDATE${NC}"
-echo -e "${BLUE}          for ALT Linux / Ubuntu${NC}"
+echo -e "${BLUE}          for ALT Linux / Ubuntu / Debian${NC}"
 echo -e "${BLUE}========================================${NC}\n"
 
 # ============================================================================
@@ -1105,6 +1105,25 @@ fi
 if [ "$INSTALL_MESSAGES" -eq 1 ] && [ -f "$INSTALL_PATH/app_data_sec_messages_to_syslog" ]; then
     ln -sf "$INSTALL_PATH/app_data_sec_messages_to_syslog" /usr/bin/app_data_sec_messages_to_syslog 2>/dev/null || true
     echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_messages_to_syslog"
+fi
+
+# ============================================================================
+# УСТАНОВКА UNINSTALL SCRIPT
+# ============================================================================
+
+echo -e "\n${BLUE}[INFO]${NC} Installing uninstall script..."
+
+# Копируем скрипт удаления в систему
+if [ -f "app_data_sec_uninstall.sh" ]; then
+    cp -f app_data_sec_uninstall.sh "$INSTALL_PATH/app_data_sec_uninstall.sh"
+    chmod 755 "$INSTALL_PATH/app_data_sec_uninstall.sh"
+    echo -e "${GREEN}[OK]${NC} Installed: $INSTALL_PATH/app_data_sec_uninstall.sh"
+
+    # Создаём символическую ссылку
+    ln -sf "$INSTALL_PATH/app_data_sec_uninstall.sh" /usr/bin/app_data_sec_uninstall 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC} Created symlink: /usr/bin/app_data_sec_uninstall"
+else
+    echo -e "${YELLOW}[WARNING]${NC} app_data_sec_uninstall.sh not found in current directory"
 fi
 
 
