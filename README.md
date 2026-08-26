@@ -118,7 +118,7 @@ The `scan_mount` directive is designed for automatic detection of new folders wh
 
 ### Syntax
 ```conf
-scan_mount <путь>
+scan_mount <path>
 ```
 
 ### Parameters
