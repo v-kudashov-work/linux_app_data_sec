@@ -325,5 +325,8 @@ For the loader
 # Author
     Vladimir Kudashov, 2026
 
+# Contacts
+    If you have a question, please [send me an email](mailto:v.kudashov.83@yandex.ru).
+
 # Links
     GitLab repository: https://gitlab.com/v.kudashov.work/linux_app_data_sec
