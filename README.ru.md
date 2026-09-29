@@ -332,4 +332,5 @@ sudo ./uninstall_app_data_sec.sh
 
 # Ссылки
     GitLab репозиторий: https://gitlab.com/v.kudashov.work/linux_app_data_sec
+    GitHub репозиторий: https://github.com/v-kudashov-work/linux_app_data_sec
 

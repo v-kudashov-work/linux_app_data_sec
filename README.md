@@ -330,3 +330,4 @@ If you have a question, please [send me an email](mailto:v.kudashov.83@yandex.ru
 
 # Links
     GitLab repository: https://gitlab.com/v.kudashov.work/linux_app_data_sec
+    GitHub repository: https://github.com/v-kudashov-work/linux_app_data_sec
