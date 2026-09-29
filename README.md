@@ -317,7 +317,7 @@ For the loader
 ```
 
 # Status
-    Alpha version. Written using automatic code generation tools (AI) and subsequent refactoring. There may be errors; the main focus is on the eBpf module itself and its loader.
+    Beta version. Written using automatic code generation tools (AI) and subsequent refactoring. There may be errors; the main focus is on the eBpf module itself and its loader.
 
 # License
     GNU General Public License v2.0
