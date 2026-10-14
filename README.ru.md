@@ -330,6 +330,9 @@ sudo ./uninstall_app_data_sec.sh
 # Контакты
 Если у вас есть вопросы, вы можете [написать мне email](mailto:v.kudashov.83@yandex.ru).
 
+# Помочь проекту
+Вы можете оставить [чаевые по ссылке](https://pay.cloudtips.ru/p/ab9cd155)
+
 # Ссылки
     GitLab репозиторий: https://gitlab.com/v.kudashov.work/linux_app_data_sec
     GitHub репозиторий: https://github.com/v-kudashov-work/linux_app_data_sec

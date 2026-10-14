@@ -328,6 +328,9 @@ For the loader
 # Contacts
 If you have a question, please [send me an email](mailto:v.kudashov.83@yandex.ru).
 
+# Help the project
+You can leave a [tip via the link](https://pay.cloudtips.ru/p/ab9cd155)
+
 # Links
     GitLab repository: https://gitlab.com/v.kudashov.work/linux_app_data_sec
     GitHub repository: https://github.com/v-kudashov-work/linux_app_data_sec
