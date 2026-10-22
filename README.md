@@ -53,7 +53,7 @@
 
 - **Linux Kernel**: version 5.8+ with BPF LSM and BTF (CO-RE) support
 - **Architecture**: x86_64
-- **Distributions**: ALT Linux, Ubuntu, Debian. May work but not tested: RHEL/CentOS. Does not work: Fedora.
+- **Distributions**: ALT Linux, Ubuntu, Debian, Linux Mint. May work but not tested: RHEL/CentOS. Does not work: Fedora.
 - **Dependencies**: libbpf, libelf, zlib, clang, bpftool
 
 ## Quick Installation
