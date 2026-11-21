@@ -293,6 +293,9 @@ sudo ./uninstall_app_data_sec.sh
 # Limitations
     After installing an application that is involved in configuring a folder for protection, you may need to wait 15 seconds before launching the application. This time is necessary for the module data to update.
     Python and sh script programs are not supported. They can be used if launched within a parent process of a regular executable file and access to it is configured.
+
+    THE SYSTEM CAN OPERATE ONLY ON ONE FILE SYSTEM VOLUME. MATCHES OF NODE_ID MAY OCCUR BETWEEN DIFFERENT VOLUMES MOUNTED IN THE SYSTEM, AND IN THEORY, SOMEWHERE THE PROTECTION MAY FAIL. A METHOD FOR CORRECTING THIS SITUATION IS BEING STUDIED. THIS DOES NOT AFFECT STANDARD ACCESS RIGHTS.
+
 For the eBPF module
 ```text
     #define MAX_PROTECTED_PATHS 5000   - maximum number of protected folders
