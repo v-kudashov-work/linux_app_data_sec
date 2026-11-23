@@ -22,22 +22,29 @@
 #define MAX_DEPTH_FOR_APP_LOG 4
 
 struct folder_program_key {
+    __u64 dev;          // Идентификатор устройства (s_dev)
     __u64 folder_inode;
     __u32 prog_idx;
 } __attribute__((packed));
 
 // СТРУКТУРЫ ДЛЯ НОВОЙ АРХИТЕКТУРЫ
 struct protected_folder_config {
+    __u64 dev;
     __u64 folder_inode;
     __u32 allowed_program_count;
     // __u32 script_count;
+};
+
+struct folder_key {
+    __u64 dev;
+    __u64 inode;
 };
 
 // Карта: inode папки -> конфигурация папки
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PROTECTED_PATHS);
-    __type(key, __u64);
+    __type(key, struct folder_key);
     __type(value, struct protected_folder_config);
 } folder_config_map SEC(".maps");
 
@@ -46,7 +53,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PROTECTED_PATHS * MAX_ALLOWED_PROGRAMS);
     __type(key, struct folder_program_key);
-    __type(value, __u64);
+    __type(value, struct folder_key);
 } folder_allowed_programs_map SEC(".maps");
 
 // Карта: inode папки + индекс скрипта -> путь к скрипту
@@ -75,6 +82,16 @@ struct {
 
 // ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
+// Вспомогательная функция: получить dev из inode
+static __always_inline __u64 get_inode_dev(struct inode *inode) {
+    if (!inode) return 0;
+    struct super_block *sb = NULL;
+    bpf_probe_read_kernel(&sb, sizeof(sb), &inode->i_sb);
+    if (!sb) return 0;
+    __u64 dev = 0;
+    bpf_probe_read_kernel(&dev, sizeof(dev), &sb->s_dev);
+    return dev;
+}
 
 // Получение имени dentry (ИСПРАВЛЕНА - использует bpf_probe_read_kernel_str)
 static __always_inline void get_dentry_name(struct dentry *dentry, char *name, int size)
@@ -235,7 +252,7 @@ static __always_inline struct task_struct *get_parent_task(struct task_struct *t
 }
 
 // Проверка, является ли процесс разрешенным для конкретной папки
-static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64 folder_inode)
+static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64 folder_dev, __u64 folder_inode)
 {
     if (!task || folder_inode == 0) {
         return 0;
@@ -644,15 +661,16 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
 }
 
 // Проверка, является ли inode защищенным
-static __always_inline __u64 get_protected_folder_inode(struct dentry *dentry)
+static __always_inline struct folder_key get_protected_folder(struct dentry *dentry)
 {
     if (!dentry) {
-        return 0;
+        struct folder_key not_found = { .dev = 0, .ino = 0 };
+        return not_found;
     }
 
     struct dentry *current = dentry;
 
-    #pragma unroll
+#pragma unroll
     for (int depth = 0; depth < MAX_DEPTH_FOR_PATH; depth++) {
         if (!current) {
             break;
@@ -662,12 +680,15 @@ static __always_inline __u64 get_protected_folder_inode(struct dentry *dentry)
         bpf_probe_read_kernel(&inode, sizeof(inode), &current->d_inode);
 
         if (inode) {
-            __u64 inode_num = 0;
-            bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
+            struct folder_key key = {};
 
-            struct protected_folder_config *config = bpf_map_lookup_elem(&folder_config_map, &inode_num);
+            bpf_probe_read_kernel(&key.ino, sizeof(key.ino), &inode->i_ino);
+            bpf_probe_read_kernel(&key.dev, sizeof(key.dev), &inode->i_sb->s_dev);
+
+            struct protected_folder_config *config =
+                    bpf_map_lookup_elem(&folder_config_map, &key);
             if (config) {
-                return inode_num;
+                return key;
             }
         }
 
@@ -679,7 +700,8 @@ static __always_inline __u64 get_protected_folder_inode(struct dentry *dentry)
         current = parent;
     }
 
-    return 0;
+    struct folder_key not_found = { .dev = 0, .ino = 0 };
+    return not_found;
 }
 
 // Получение уровня логирования
