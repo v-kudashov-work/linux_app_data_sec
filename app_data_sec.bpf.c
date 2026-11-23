@@ -84,17 +84,6 @@ struct {
 
 // ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
-// Вспомогательная функция: получить dev из inode
-static __always_inline __u64 get_inode_dev(struct inode *inode) {
-    if (!inode) return 0;
-    struct super_block *sb = NULL;
-    bpf_probe_read_kernel(&sb, sizeof(sb), &inode->i_sb);
-    if (!sb) return 0;
-    __u64 dev = 0;
-    bpf_probe_read_kernel(&dev, sizeof(dev), &sb->s_dev);
-    return dev;
-}
-
 // Получить key из inode
 static __always_inline struct inode_key get_inode_key(struct inode *inode)
 {
@@ -314,6 +303,10 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
                     .prog_idx = i
             };
             struct inode_key *allowed_inode_key = bpf_map_lookup_elem(&folder_allowed_programs_map, &key);
+
+            if (!allowed_inode_key)          // <-- проверка на NULL
+                continue;
+
             if (allowed_inode_key->inode != 0
                 && allowed_inode_key->inode == exe_inode.inode
                 && allowed_inode_key->dev == exe_inode.dev) {
