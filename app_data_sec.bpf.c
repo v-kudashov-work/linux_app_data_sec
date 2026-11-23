@@ -35,16 +35,18 @@ struct protected_folder_config {
     // __u32 script_count;
 };
 
-struct folder_key {
+struct inode_key {
     __u64 dev;
     __u64 inode;
 };
+
+#define INODE_KEY_NOT_FOUND (struct inode_key){ .dev = 0, .inode = 0 }
 
 // Карта: inode папки -> конфигурация папки
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PROTECTED_PATHS);
-    __type(key, struct folder_key);
+    __type(key, struct inode_key);
     __type(value, struct protected_folder_config);
 } folder_config_map SEC(".maps");
 
@@ -53,7 +55,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PROTECTED_PATHS * MAX_ALLOWED_PROGRAMS);
     __type(key, struct folder_program_key);
-    __type(value, struct folder_key);
+    __type(value, struct inode_key);
 } folder_allowed_programs_map SEC(".maps");
 
 // Карта: inode папки + индекс скрипта -> путь к скрипту
@@ -91,6 +93,21 @@ static __always_inline __u64 get_inode_dev(struct inode *inode) {
     __u64 dev = 0;
     bpf_probe_read_kernel(&dev, sizeof(dev), &sb->s_dev);
     return dev;
+}
+
+// Получить key из inode
+static __always_inline struct inode_key get_inode_key(struct inode *inode)
+{
+    if (inode) {
+        struct inode_key key = {};
+
+        bpf_probe_read_kernel(&key.ino, sizeof(key.ino), &inode->i_ino);
+        bpf_probe_read_kernel(&key.dev, sizeof(key.dev), &inode->i_sb->s_dev);
+
+        return key
+    }
+
+    return INODE_KEY_NOT_FOUND;
 }
 
 // Получение имени dentry (ИСПРАВЛЕНА - использует bpf_probe_read_kernel_str)
@@ -210,33 +227,32 @@ static __always_inline void get_parent_name(struct dentry *dentry, char *name, i
 
 
 // Получение inode процесса
-static __always_inline __u64 get_process_exe_inode(struct task_struct *task)
+static __always_inline struct inode_key get_process_exe_inode(struct task_struct *task)
 {
     if (!task) {
-        return 0;
+        return INODE_KEY_NOT_FOUND;
     }
 
     struct mm_struct *mm = NULL;
     bpf_probe_read_kernel(&mm, sizeof(mm), &task->mm);
     if (!mm) {
-        return 0;
+        return INODE_KEY_NOT_FOUND;
     }
 
     struct file *exe_file = NULL;
     bpf_probe_read_kernel(&exe_file, sizeof(exe_file), &mm->exe_file);
     if (!exe_file) {
-        return 0;
+        return INODE_KEY_NOT_FOUND;
     }
 
     struct inode *inode = NULL;
     bpf_probe_read_kernel(&inode, sizeof(inode), &exe_file->f_inode);
     if (!inode) {
-        return 0;
+        return INODE_KEY_NOT_FOUND;
     }
 
-    __u64 inode_num = 0;
-    bpf_probe_read_kernel(&inode_num, sizeof(inode_num), &inode->i_ino);
-    return inode_num;
+    struct inode_key key = get_inode_key(inode)
+    return key;
 }
 
 // Получение родительского процесса
@@ -258,7 +274,9 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
         return 0;
     }
 
-    struct protected_folder_config *config = bpf_map_lookup_elem(&folder_config_map, &folder_inode);
+    struct inode_key f_key = { .dev = folder_dev, .inode = folder_inode };
+
+    struct protected_folder_config *config = bpf_map_lookup_elem(&folder_config_map, &f_key);
     if (!config) {
         return 0;
     }
@@ -284,6 +302,7 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
                 break;
             }
             struct folder_program_key key = {
+                    .dev = dev
                     .folder_inode = folder_inode,
                     .prog_idx = i
             };
@@ -582,7 +601,7 @@ static __always_inline void get_exe_full_path_for_log(struct task_struct *task, 
 // }
 
 // Проверка дерева процессов для конкретной папки
-static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode, int log_level)
+static __always_inline int is_allowed_process_tree_for_folder(__u64 dev, __u64 folder_inode, int log_level)
 {
     if (folder_inode == 0) {
         return 0;
@@ -629,7 +648,7 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
             break;
         }
 
-        if (is_allowed_for_folder(task, folder_inode)) {
+        if (is_allowed_for_folder(task, dev, folder_inode)) {
             return 1;
         }
 
@@ -661,11 +680,10 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 folder_inode
 }
 
 // Проверка, является ли inode защищенным
-static __always_inline struct folder_key get_protected_folder(struct dentry *dentry)
+static __always_inline struct inode_key get_protected_folder(struct dentry *dentry)
 {
     if (!dentry) {
-        struct folder_key not_found = { .dev = 0, .ino = 0 };
-        return not_found;
+        return INODE_KEY_NOT_FOUND;
     }
 
     struct dentry *current = dentry;
@@ -680,10 +698,7 @@ static __always_inline struct folder_key get_protected_folder(struct dentry *den
         bpf_probe_read_kernel(&inode, sizeof(inode), &current->d_inode);
 
         if (inode) {
-            struct folder_key key = {};
-
-            bpf_probe_read_kernel(&key.ino, sizeof(key.ino), &inode->i_ino);
-            bpf_probe_read_kernel(&key.dev, sizeof(key.dev), &inode->i_sb->s_dev);
+            struct inode_key key = get_inode_key(inode)
 
             struct protected_folder_config *config =
                     bpf_map_lookup_elem(&folder_config_map, &key);
@@ -700,8 +715,7 @@ static __always_inline struct folder_key get_protected_folder(struct dentry *den
         current = parent;
     }
 
-    struct folder_key not_found = { .dev = 0, .ino = 0 };
-    return not_found;
+    return INODE_KEY_NOT_FOUND;
 }
 
 // Получение уровня логирования
@@ -737,8 +751,8 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
 
     __u64 pid = bpf_get_current_pid_tgid() >> 32;
 
-    __u64 folder_inode = get_protected_folder_inode(dentry);
-    int is_protected = (folder_inode != 0);
+    struct inode_key f_key = get_protected_folder(dentry);
+    int is_protected = (f_key.inode != 0);
 
     if (!is_protected) {
         // if (log_level >= 2) {
@@ -750,7 +764,7 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         return 0;
     }
 
-    int allowed = is_allowed_process_tree_for_folder(folder_inode, log_level);
+    int allowed = is_allowed_process_tree_for_folder(f_key.dev, f_key.inode, log_level);
 
     if (allowed) {
         if (log_level >= 2) {
@@ -772,11 +786,9 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         __u64 current_inode = 0;
         struct inode *inode = NULL;
         bpf_probe_read_kernel(&inode, sizeof(inode), &dentry->d_inode);
-        if (inode) {
-            bpf_probe_read_kernel(&current_inode, sizeof(current_inode), &inode->i_ino);
-        }
+        struct inode_key current_key = get_inode_key(inode);
 
-        int is_folder_itself = (current_inode == folder_inode);
+        int is_folder_itself = (current_key.dev == f_key.dev && current_key.inode == f_key.inode);
 
         if (is_folder_itself) {
             blocked = 0;
