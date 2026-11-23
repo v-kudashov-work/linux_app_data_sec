@@ -87,9 +87,9 @@ static void log_to_syslog(int priority, const char *format, ...) {
     fflush(stdout);
 }
 
-#define SYSLOG_ERR(fmt, ...) log_to_syslog(LOG_ERR, "[ERROR] " fmt, ##__VA_ARGS__)
-#define SYSLOG_WARN(fmt, ...) log_to_syslog(LOG_WARNING, "[WARNING] " fmt, ##__VA_ARGS__)
-#define SYSLOG_INFO(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__)
+#define SYSLOG_ERR(fmt, ...) log_to_syslog(LOG_ERR, "[ERROR] " fmt, ##__VA_ARGS__); DEBUG_PRINT(fmt, ##__VA_ARGS__)
+#define SYSLOG_WARN(fmt, ...) log_to_syslog(LOG_WARNING, "[WARNING] " fmt, ##__VA_ARGS__); DEBUG_PRINT(fmt, ##__VA_ARGS__)
+#define SYSLOG_INFO(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__); DEBUG_PRINT(fmt, ##__VA_ARGS__)
 
 #ifdef DEBUG_ENABLED
 #define SYSLOG_INFO_D(fmt, ...) log_to_syslog(LOG_INFO, "[INFO] " fmt, ##__VA_ARGS__)
@@ -103,11 +103,11 @@ static void log_to_syslog(int priority, const char *format, ...) {
 struct inode_key {
     __u64 dev;
     __u64 inode;
-};
+} __attribute__((packed));
 
 // DEV: ключ программы теперь содержит dev
 struct folder_program_key {
-    __u64 dev;
+    __u64 dev;          // Идентификатор устройства (s_dev)
     __u64 folder_inode;
     __u32 prog_idx;
 } __attribute__((packed));
@@ -117,7 +117,7 @@ struct protected_folder_config {
     __u64 dev;
     __u64 folder_inode;
     __u32 allowed_program_count;
-};
+} __attribute__((packed));
 
 struct protect_entry {
     char path[MAX_PATH_LEN];

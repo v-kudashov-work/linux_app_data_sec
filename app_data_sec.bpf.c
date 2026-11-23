@@ -33,12 +33,12 @@ struct protected_folder_config {
     __u64 folder_inode;
     __u32 allowed_program_count;
     // __u32 script_count;
-};
+} __attribute__((packed));
 
 struct inode_key {
     __u64 dev;
     __u64 inode;
-};
+} __attribute__((packed));
 
 #define INODE_KEY_NOT_FOUND (struct inode_key){ .dev = 0, .inode = 0 }
 
@@ -97,6 +97,16 @@ struct {
 
 // ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
+static __always_inline __u64 kernel_dev_to_user(__u32 sdev)
+{
+    __u32 major = sdev >> 20;
+    __u32 minor = sdev & 0xFFFFF;
+
+    return ((__u64)(minor & 0xFF))
+        | ((__u64)major << 8)
+        | ((__u64)(minor & ~0xFFU) << 12);
+}
+
 // Получить key из inode
 static struct inode_key get_inode_key(struct inode *inode)
 {
@@ -111,7 +121,10 @@ static struct inode_key get_inode_key(struct inode *inode)
             return INODE_KEY_NOT_FOUND;
         }
 
-        bpf_probe_read_kernel(&key.dev, sizeof(key.dev), &sb->s_dev);
+        // s_dev в ядре — 32-битный dev_t, читаем ровно 4 байта
+        __u32 s_dev = 0;
+        bpf_probe_read_kernel(&s_dev, sizeof(s_dev), &sb->s_dev);
+        key.dev = kernel_dev_to_user(s_dev);   // <-- нормализация обязательна
 
         return key;
     }
@@ -719,10 +732,12 @@ static __always_inline struct inode_key get_protected_folder(struct dentry *dent
         if (inode) {
             struct inode_key key = get_inode_key(inode);
 
-            struct protected_folder_config *config =
-                    bpf_map_lookup_elem(&folder_config_map, &key);
-            if (config) {
-                return key;
+            if (key.inode) {
+                struct protected_folder_config *config =
+                        bpf_map_lookup_elem(&folder_config_map, &key);
+                if (config) {
+                    return key;
+                }
             }
         }
 
