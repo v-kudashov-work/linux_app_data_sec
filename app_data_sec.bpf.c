@@ -102,7 +102,14 @@ static __always_inline struct inode_key get_inode_key(struct inode *inode)
         struct inode_key key = {};
 
         bpf_probe_read_kernel(&key.inode, sizeof(key.inode), &inode->i_ino);
-        bpf_probe_read_kernel(&key.dev, sizeof(key.dev), &inode->i_sb->s_dev);
+
+        struct super_block *sb = NULL;
+        bpf_probe_read_kernel(&sb, sizeof(sb), &inode->i_sb);
+        if (!sb) {
+            return INODE_KEY_NOT_FOUND;
+        }
+
+        bpf_probe_read_kernel(&key.dev, sizeof(key.dev), &sb->s_dev);
 
         return key;
     }
