@@ -343,7 +343,7 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
 }
 
 // Получение пути к исполняемому файлу процесса для лога (с обходом дерева процессов)
-static void get_exe_full_path_for_log(struct task_struct *task, char *path_buf, int size)
+static __always_inline void get_exe_full_path_for_log(struct task_struct *task, char *path_buf, int size)
 {
     if (!task || !path_buf || size <= 0) {
         if (path_buf && size > 0) {
@@ -620,7 +620,7 @@ static void get_exe_full_path_for_log(struct task_struct *task, char *path_buf, 
 // }
 
 // Проверка дерева процессов для конкретной папки
-static int is_allowed_process_tree_for_folder(__u64 dev, __u64 folder_inode, int log_level)
+static __always_inline int is_allowed_process_tree_for_folder(__u64 dev, __u64 folder_inode, int log_level)
 {
     if (folder_inode == 0) {
         return 0;
@@ -661,6 +661,7 @@ static int is_allowed_process_tree_for_folder(__u64 dev, __u64 folder_inode, int
 
     struct task_struct *task = current_task;
 
+    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH_FOR_APP; depth++) {
         if (!task) {
             break;
@@ -748,7 +749,7 @@ static __always_inline int get_log_level(void)
 }
 
 // ОСНОВНАЯ ФУНКЦИЯ ПРОВЕРКИ ДОСТУПА
-static int check_access(struct dentry *dentry, const char *operation, int block_self)
+static __always_inline int check_access(struct dentry *dentry, const char *operation, int block_self)
 {
     if (!dentry) {
         return 0;

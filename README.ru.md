@@ -51,7 +51,7 @@
 
 ## Требования к системе
 
-- **Ядро Linux**: версия 5.8+ с поддержкой BPF LSM и BTF (CO-RE)
+- **Ядро Linux**: версия 5.14+ с поддержкой BPF LSM и BTF (CO-RE)
 - **Архитектура**: x86_64
 - **Дистрибутивы**: ALT Linux, Ubuntu, Debian, Linux Mint. Возможно будет работать, но не тестировалось: RHEL/CentOS. Не работает: Fedora.
 - **Зависимости**: libbpf, libelf, zlib, clang, bpftool
