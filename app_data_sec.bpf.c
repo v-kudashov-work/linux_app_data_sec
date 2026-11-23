@@ -1,5 +1,6 @@
 // app_data_sec.bpf.c - С ИСПОЛЬЗОВАНИЕМ bpf_probe_read_kernel_str
 #include "vmlinux.h"
+#include <linux/version.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
@@ -943,6 +944,28 @@ int BPF_PROG(block_inode_mkdir, struct inode *dir, struct dentry *dentry, umode_
 {
     return check_access(dentry->d_parent, "INODE_MKDIR", 1);
 }
+
+SEC("lsm/path_truncate")
+int BPF_PROG(block_path_truncate, const struct path *path)
+{
+    if (!path || !path->dentry) {
+        return 0;
+    }
+    return check_access(path->dentry, "TRUNCATE", 1);
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+SEC("lsm/file_truncate")
+int BPF_PROG(block_file_truncate, struct file *file)
+{
+    if (!file || !file->f_path.dentry) {
+        return 0;
+    }
+    return check_access(file->f_path.dentry, "FTRUNCATE", 1);
+}
+#endif
+
+
 //
 //SEC("lsm/path_unlink")
 //int BPF_PROG(block_path_unlink, const struct path *dir, struct dentry *dentry)

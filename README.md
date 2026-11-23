@@ -51,7 +51,7 @@
 
 ## System Requirements
 
-- **Linux Kernel**: version 5.14+ with BPF LSM and BTF (CO-RE) support
+- **Linux Kernel**: version 5.19+ with BPF LSM and BTF (CO-RE) support
 - **Architecture**: x86_64
 - **Distributions**: ALT Linux, Ubuntu, Debian, Linux Mint. May work but not tested: RHEL/CentOS. Does not work: Fedora.
 - **Dependencies**: libbpf, libelf, zlib, clang, bpftool
