@@ -101,10 +101,10 @@ static __always_inline struct inode_key get_inode_key(struct inode *inode)
     if (inode) {
         struct inode_key key = {};
 
-        bpf_probe_read_kernel(&key.ino, sizeof(key.ino), &inode->i_ino);
+        bpf_probe_read_kernel(&key.inode, sizeof(key.inode), &inode->i_ino);
         bpf_probe_read_kernel(&key.dev, sizeof(key.dev), &inode->i_sb->s_dev);
 
-        return key
+        return key;
     }
 
     return INODE_KEY_NOT_FOUND;
@@ -251,7 +251,7 @@ static __always_inline struct inode_key get_process_exe_inode(struct task_struct
         return INODE_KEY_NOT_FOUND;
     }
 
-    struct inode_key key = get_inode_key(inode)
+    struct inode_key key = get_inode_key(inode);
     return key;
 }
 
@@ -289,8 +289,8 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
             break;
         }
 
-        __u64 exe_inode = get_process_exe_inode(current_task);
-        if (exe_inode == 0) {
+        struct inode_key exe_inode = get_process_exe_inode(current_task);
+        if (exe_inode.inode == 0) {
             current_task = get_parent_task(current_task);
             continue;
         }
@@ -302,12 +302,14 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
                 break;
             }
             struct folder_program_key key = {
-                    .dev = dev
+                    .dev = folder_dev,
                     .folder_inode = folder_inode,
                     .prog_idx = i
             };
-            __u64 *allowed_inode = bpf_map_lookup_elem(&folder_allowed_programs_map, &key);
-            if (allowed_inode && *allowed_inode == exe_inode) {
+            struct inode_key *allowed_inode_key = bpf_map_lookup_elem(&folder_allowed_programs_map, &key);
+            if (allowed_inode_key->inode != 0
+                && allowed_inode_key->inode == exe_inode.inode
+                && allowed_inode_key->dev == exe_inode.dev) {
                 found = 1;
                 break;
             }
@@ -698,7 +700,7 @@ static __always_inline struct inode_key get_protected_folder(struct dentry *dent
         bpf_probe_read_kernel(&inode, sizeof(inode), &current->d_inode);
 
         if (inode) {
-            struct inode_key key = get_inode_key(inode)
+            struct inode_key key = get_inode_key(inode);
 
             struct protected_folder_config *config =
                     bpf_map_lookup_elem(&folder_config_map, &key);
@@ -827,7 +829,7 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
             //            operation, pid, uid, exe_path, folder_inode, reason, comm);
 
             bpf_printk("APP_DATA_SEC: %s BLOCKED_PID=%llu NAME=%s PARENT_NAME=%s, UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s",
-                       operation, pid, uid, name, parent_name, exe_path, folder_inode, reason);
+                       operation, pid, uid, name, parent_name, exe_path, f_key.inode, reason);
         }
         return -EPERM;
     } else {
