@@ -458,12 +458,13 @@ static int remove_program_from_entry(struct bpf_object *obj, int entry_idx, int 
     __u64 folder_dev = entries[entry_idx].dev;
     __u64 folder_inode = entries[entry_idx].inode;
     __u64 program_inode = entries[entry_idx].allowed_inodes[prog_idx];
+    __u64 program_dev = entries[entry_idx].allowed_devs[prog_idx];
     char *path = entries[entry_idx].path;
 
     SYSLOG_INFO_D("=== REMOVE PROGRAM ===");
     SYSLOG_INFO_D("  Folder: %s (dev: %lu, inode: %lu)", path, (unsigned long)folder_dev, (unsigned long)folder_inode);
-    SYSLOG_INFO_D("  Program: %s (inode: %lu)",
-                  entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_inode);
+    SYSLOG_INFO_D("  Program: %s (dev: %lu, inode: %lu)",
+                  entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_dev, (unsigned long)program_inode);
 
     if (obj) {
         struct bpf_map *map = bpf_object__find_map_by_name(obj, "folder_allowed_programs_map");
@@ -491,8 +492,8 @@ static int remove_program_from_entry(struct bpf_object *obj, int entry_idx, int 
     }
     entries[entry_idx].allowed_count--;
 
-    SYSLOG_INFO("Removed program from %s: %s (inode: %lu)",
-                path, entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_inode);
+    SYSLOG_INFO("Removed program from %s: %s (dev: %lu, inode: %lu)",
+                path, entries[entry_idx].allowed_paths[prog_idx],(unsigned long)program_dev, (unsigned long)program_inode);
 
     SYSLOG_INFO_D("=== REMOVE PROGRAM COMPLETE ===");
     return 0;
@@ -512,12 +513,13 @@ static int disable_program_from_ebpf(struct bpf_object *obj, int entry_idx, int 
     __u64 folder_dev = entries[entry_idx].dev;
     __u64 folder_inode = entries[entry_idx].inode;
     __u64 program_inode = entries[entry_idx].allowed_inodes[prog_idx];
+    __u64 program_dev = entries[entry_idx].allowed_devs[prog_idx];
     char *path = entries[entry_idx].path;
 
     SYSLOG_INFO_D("=== DISABLE PROGRAM ===");
     SYSLOG_INFO_D("  Folder: %s (dev: %lu, inode: %lu)", path, (unsigned long)folder_dev, (unsigned long)folder_inode);
-    SYSLOG_INFO_D("  Program: %s (inode: %lu)",
-                  entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_inode);
+    SYSLOG_INFO_D("  Program: %s (dev: %lu, inode: %lu)",
+                  entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_dev, (unsigned long)program_inode);
 
     // Удаляем из BPF
     if (obj) {
@@ -542,8 +544,8 @@ static int disable_program_from_ebpf(struct bpf_object *obj, int entry_idx, int 
     entries[entry_idx].allowed_inodes[prog_idx] = 0;
     entries[entry_idx].allowed_devs[prog_idx] = 0;   // DEV: сбрасываем и dev
 
-    SYSLOG_INFO("Disable program from %s: %s (inode: %lu)",
-                path, entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_inode);
+    SYSLOG_INFO("Disable program from %s: %s (dev: %lu, inode: %lu)",
+                path, entries[entry_idx].allowed_paths[prog_idx], (unsigned long)program_dev, (unsigned long)program_inode);
 
     SYSLOG_INFO_D("=== DISABLE PROGRAM COMPLETE ===");
     return 0;
@@ -827,6 +829,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
                             }
                         }
                         entries[j].allowed_inodes[k] = 0;
+                        entries[j].allowed_devs[k] = 0;
                     }
 
                     if (!prog_found) {
