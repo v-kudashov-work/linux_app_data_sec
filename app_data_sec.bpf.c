@@ -82,10 +82,23 @@ struct {
     __type(value, __u32);
 } log_level_map SEC(".maps");
 
+struct log_bufs {
+    char exe_path[MAX_LOG_PATH_LEN];
+    char name[MAX_NAME_LEN_FOR_LOG];
+    char parent_name[MAX_NAME_LEN_FOR_LOG];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct log_bufs);
+} log_buf_map SEC(".maps");
+
 // ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
 // Получить key из inode
-static __always_inline struct inode_key get_inode_key(struct inode *inode)
+static struct inode_key get_inode_key(struct inode *inode)
 {
     if (inode) {
         struct inode_key key = {};
@@ -291,17 +304,21 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
             continue;
         }
 
+        struct folder_program_key key = {
+                .dev = folder_dev,
+                .folder_inode = folder_inode,
+                .prog_idx = 0
+        };
+
         int found = 0;
         #pragma unroll
         for (int i = 0; i < MAX_ALLOWED_PROGRAMS; i++) {
             if (i >= config->allowed_program_count) {
                 break;
             }
-            struct folder_program_key key = {
-                    .dev = folder_dev,
-                    .folder_inode = folder_inode,
-                    .prog_idx = i
-            };
+
+            key.prog_idx = i;
+
             struct inode_key *allowed_inode_key = bpf_map_lookup_elem(&folder_allowed_programs_map, &key);
 
             if (!allowed_inode_key)          // <-- проверка на NULL
@@ -326,7 +343,7 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
 }
 
 // Получение пути к исполняемому файлу процесса для лога (с обходом дерева процессов)
-static __always_inline void get_exe_full_path_for_log(struct task_struct *task, char *path_buf, int size)
+static void get_exe_full_path_for_log(struct task_struct *task, char *path_buf, int size)
 {
     if (!task || !path_buf || size <= 0) {
         if (path_buf && size > 0) {
@@ -603,7 +620,7 @@ static __always_inline void get_exe_full_path_for_log(struct task_struct *task, 
 // }
 
 // Проверка дерева процессов для конкретной папки
-static __always_inline int is_allowed_process_tree_for_folder(__u64 dev, __u64 folder_inode, int log_level)
+static int is_allowed_process_tree_for_folder(__u64 dev, __u64 folder_inode, int log_level)
 {
     if (folder_inode == 0) {
         return 0;
@@ -644,7 +661,6 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 dev, __u64 f
 
     struct task_struct *task = current_task;
 
-    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH_FOR_APP; depth++) {
         if (!task) {
             break;
@@ -732,7 +748,7 @@ static __always_inline int get_log_level(void)
 }
 
 // ОСНОВНАЯ ФУНКЦИЯ ПРОВЕРКИ ДОСТУПА
-static __always_inline int check_access(struct dentry *dentry, const char *operation, int block_self)
+static int check_access(struct dentry *dentry, const char *operation, int block_self)
 {
     if (!dentry) {
         return 0;
@@ -803,41 +819,49 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
 
     if (blocked) {
         if (log_level >= 1) {
-            char name[MAX_NAME_LEN_FOR_LOG] = {};
-            char parent_name[MAX_NAME_LEN_FOR_LOG] = {};
-            // char full_path[MAX_LOG_PATH_LEN] = {};
-            // char comm[MAX_LOG_PATH_LEN] = {};
-            char exe_path[MAX_LOG_PATH_LEN] = {};
+            __u32 log_key = 0;
+            struct log_bufs *bufs = bpf_map_lookup_elem(&log_buf_map, &log_key);
+            if (bufs) {
+                // Обнуляем буферы, чтобы не тащить мусор с предыдущего вызова
+                bufs->name[0] = '\0';
+                bufs->parent_name[0] = '\0';
+                bufs->exe_path[0] = '\0';
 
-            // // Получаем полный путь
-            // get_full_path(dentry, full_path, MAX_LOG_PATH_LEN);
+                struct task_struct *current_task = (struct task_struct *)bpf_get_current_task();
+                if (current_task) {
+                    get_exe_full_path_for_log(current_task, bufs->exe_path, MAX_LOG_PATH_LEN);
+                }
 
-            struct task_struct *current_task = (struct task_struct *)bpf_get_current_task();
-            if (current_task) {
-                // Получаем путь к исполняемому файлу процесса
-                get_exe_full_path_for_log(current_task, exe_path, MAX_LOG_PATH_LEN);
+                get_dentry_name(dentry, bufs->name, MAX_NAME_LEN_FOR_LOG);
+                get_parent_name(dentry, bufs->parent_name, MAX_NAME_LEN_FOR_LOG);
+
+                bpf_printk("APP_DATA_SEC: %s BLOCKED_PID=%llu NAME=%s PARENT_NAME=%s UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s",
+                           operation,
+                           pid,
+                           bufs->name,
+                           bufs->parent_name,
+                           uid,
+                           bufs->exe_path,
+                           f_key.inode,
+                           reason);
             }
-
-            get_dentry_name(dentry, name, MAX_NAME_LEN_FOR_LOG);
-            get_parent_name(dentry, parent_name, MAX_NAME_LEN_FOR_LOG);
-            // bpf_get_current_comm(&comm, sizeof(comm));
-
-            // bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu TARGET=%s EXE=%s FOLDER_INODE=%llu REASON=%s COMM=%s\n",
-            //            operation, pid, uid, full_path, exe_path, folder_inode, reason, comm);
-
-            // bpf_printk("APP_DATA_SEC: %s BLOCKED PID=%llu UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s COMM=%s\n",
-            //            operation, pid, uid, exe_path, folder_inode, reason, comm);
-
-            bpf_printk("APP_DATA_SEC: %s BLOCKED_PID=%llu NAME=%s PARENT_NAME=%s, UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s",
-                       operation, pid, uid, name, parent_name, exe_path, f_key.inode, reason);
         }
         return -EPERM;
     } else {
         if (log_level >= 2) {
-            char name[MAX_NAME_LEN_FOR_LOG] = {};
-            get_dentry_name(dentry, name, MAX_NAME_LEN_FOR_LOG);
-            bpf_printk("APP_DATA_SEC: %s ALLOWED PID=%llu UID=%llu PATH=%s REASON=%s\n",
-                       operation, pid, uid, name, reason);
+            __u32 log_key = 0;
+            struct log_bufs *bufs = bpf_map_lookup_elem(&log_buf_map, &log_key);
+            if (bufs) {
+                // Обнуляем буферы, чтобы не тащить мусор с предыдущего вызова
+                bufs->name[0] = '\0';
+                bufs->parent_name[0] = '\0';
+                bufs->exe_path[0] = '\0';
+
+
+                get_dentry_name(dentry, bufs->name, MAX_NAME_LEN_FOR_LOG);
+                bpf_printk("APP_DATA_SEC: %s ALLOWED PID=%llu UID=%llu PATH=%s REASON=%s\n",
+                           operation, pid, uid, bufs->name, reason);
+            }
         }
         return 0;
     }
