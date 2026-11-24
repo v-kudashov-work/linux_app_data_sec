@@ -22,6 +22,13 @@
 #define MAX_LOG_PATH_LEN 128
 #define MAX_DEPTH_FOR_APP_LOG 4
 
+#define MINORBITS	20
+#define MINORMASK	0xFFFFF
+
+#define BPF_MAJOR(dev)	((unsigned int) ((dev) >> MINORBITS))
+#define BPF_MINOR(dev)	((unsigned int) ((dev) & MINORMASK))
+#define MKDEV(ma,mi)	(((ma) << MINORBITS) | (mi))
+
 struct folder_program_key {
     __u64 dev;          // Идентификатор устройства (s_dev)
     __u64 folder_inode;
@@ -59,22 +66,6 @@ struct {
     __type(value, struct inode_key);
 } folder_allowed_programs_map SEC(".maps");
 
-// Карта: inode папки + индекс скрипта -> путь к скрипту
-// struct {
-//     __uint(type, BPF_MAP_TYPE_HASH);
-//     __uint(max_entries, MAX_PROTECTED_PATHS * MAX_SCRIPTS_PER_FOLDER);
-//     __type(key, __u64);
-//     __type(value, char[MAX_PATH_LEN]);
-// } folder_scripts_map SEC(".maps");
-
-// Карта для контроля включения проверки скриптов (глобально)
-// struct {
-//     __uint(type, BPF_MAP_TYPE_HASH);
-//     __uint(max_entries, 1);
-//     __type(key, __u32);
-//     __type(value, __u32);
-// } scripts_enabled_map SEC(".maps");
-
 // Карта для уровня логирования
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -100,8 +91,8 @@ struct {
 
 static __always_inline __u64 kernel_dev_to_user(__u32 sdev)
 {
-    __u32 major = sdev >> 20;
-    __u32 minor = sdev & 0xFFFFF;
+    __u32 major = BPF_MAJOR(sdev);
+    __u32 minor = BPF_MINOR(sdev);
 
     return ((__u64)(minor & 0xFF))
         | ((__u64)major << 8)
@@ -306,7 +297,7 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
 
     struct task_struct *current_task = task;
 
-    #pragma unroll
+//    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH_FOR_APP; depth++) {
         if (!current_task) {
             break;
@@ -325,7 +316,7 @@ static __always_inline int is_allowed_for_folder(struct task_struct *task, __u64
         };
 
         int found = 0;
-        #pragma unroll
+//        #pragma unroll
         for (int i = 0; i < MAX_ALLOWED_PROGRAMS; i++) {
             if (i >= config->allowed_program_count) {
                 break;
@@ -375,7 +366,7 @@ static __always_inline void get_exe_full_path_for_log(struct task_struct *task, 
         path_buf[0] = '\0';
     }
 
-    #pragma unroll
+//    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH_FOR_APP_LOG; depth++) {
         if (!current_task) {
             break;
@@ -675,7 +666,7 @@ static __always_inline int is_allowed_process_tree_for_folder(__u64 dev, __u64 f
 
     struct task_struct *task = current_task;
 
-    #pragma unroll
+//    #pragma unroll
     for (int depth = 0; depth < MAX_DEPTH_FOR_APP; depth++) {
         if (!task) {
             break;
@@ -721,7 +712,7 @@ static __always_inline struct inode_key get_protected_folder(struct dentry *dent
 
     struct dentry *current = dentry;
 
-#pragma unroll
+//#pragma unroll
     for (int depth = 0; depth < MAX_DEPTH_FOR_PATH; depth++) {
         if (!current) {
             break;
