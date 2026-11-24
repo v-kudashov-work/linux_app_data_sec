@@ -10,6 +10,7 @@
 #include <dirent.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#include <bpf/btf.h>
 #include <linux/types.h>
 #include <errno.h>
 #include <time.h>
@@ -143,6 +144,12 @@ struct protect_template {
     int is_home;
 };
 
+struct btrfs_off {
+    unsigned int off_vfs_inode;
+    unsigned int off_root;
+    unsigned int off_anon_dev;
+} __attribute__((packed));
+
 static struct protect_entry entries[MAX_PATHS];
 static struct protect_template templates[MAX_PATHS];
 
@@ -195,6 +202,75 @@ static int is_home_user_processed(const char *username);
 static void add_processed_home_user(const char *username);
 static int check_new_home_directories(struct bpf_object *obj, int without_rescan);
 static void perform_full_scan(struct bpf_object *obj);
+
+static int btf_member_offset(struct btf *btf, const char *sname, const char *mname)
+{
+    __s32 id = btf__find_by_name_kind(btf, sname, BTF_KIND_STRUCT);
+    if (id < 0) {
+        return -1;
+    }
+    const struct btf_type *t = btf__type_by_id(btf, id);
+    const struct btf_member *m = btf_members(t);
+    __u16 n = btf_vlen(t);
+
+    for (int i = 0; i < n; i++) {
+        const char *nm = btf__name_by_offset(btf, m[i].name_off);
+        if (nm && strcmp(nm, mname) == 0) {
+            return (int)(btf_member_bit_offset(t, i) / 8);
+        }
+    }
+    return -1;
+}
+
+static int fill_btrfs_offsets(struct bpf_object *obj)
+{
+    struct bpf_map *map = bpf_object__find_map_by_name(obj, "btrfs_off_map");
+    if (!map) {
+        SYSLOG_ERR("btrfs_off_map not found");
+        return -1;
+    }
+
+    struct btf *base = btf__parse("/sys/kernel/btf/vmlinux", NULL);
+    if (!base) {
+        SYSLOG_ERR("Cannot parse kernel BTF");
+        return -1;
+    }
+
+    struct btf *btf = btf__load_module_btf("btrfs", base);
+    if (!btf) {
+        SYSLOG_WARN("Module BTF 'btrfs' unavailable, fallback to sb->s_dev");
+        btf__free(base);
+        return 0;   // офсеты нулевые -> BPF откатится на sb->s_dev
+    }
+
+    int r1 = btf_member_offset(btf, "btrfs_inode", "vfs_inode");
+    int r2 = btf_member_offset(btf, "btrfs_inode", "root");
+    int r3 = btf_member_offset(btf, "btrfs_root", "anon_dev");
+
+    btf__free(btf);
+    btf__free(base);
+
+    if (r1 < 0 || r2 < 0 || r3 < 0) {
+        SYSLOG_WARN("btrfs fields not found in module BTF, fallback to sb->s_dev");
+        return 0;
+    }
+
+    struct btrfs_off offs = {
+            .off_vfs_inode = (unsigned int)r1,
+            .off_root      = (unsigned int)r2,
+            .off_anon_dev  = (unsigned int)r3,
+    };
+
+    __u32 key = 0;
+    if (bpf_map_update_elem(bpf_map__fd(map), &key, &offs, BPF_ANY) != 0) {
+        SYSLOG_ERR("Failed to update btrfs_off_map: errno=%d", errno);
+        return -1;
+    }
+
+    SYSLOG_INFO("btrfs offsets: vfs_inode=%u root=%u anon_dev=%u",
+                offs.off_vfs_inode, offs.off_root, offs.off_anon_dev);
+    return 0;
+}
 
 static int update_module_enabled(struct bpf_object *obj, int enabled)
 {
@@ -903,6 +979,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
     // 4. Обновляем глобальные флаги
     // ============================================================
     config_enabled = temp_config_enabled;
+    fill_btrfs_offsets(obj);
     update_module_enabled(obj, 1);
 
     SYSLOG_INFO("Sync complete: %d entries, %d templates", entry_count, template_count);

@@ -95,6 +95,19 @@ struct {
     __type(value, struct log_bufs);
 } log_buf_map SEC(".maps");
 
+struct btrfs_off {
+    __u32 off_vfs_inode;    // offsetof(struct btrfs_inode, vfs_inode)
+    __u32 off_root;         // offsetof(struct btrfs_inode, root)
+    __u32 off_anon_dev;     // offsetof(struct btrfs_root, anon_dev)
+} __attribute__((packed));
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct btrfs_off);
+} btrfs_off_map SEC(".maps");
+
 // ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
 // Проверка, включён ли модуль. Нет записи = выключен (безопасный дефолт)
@@ -118,29 +131,78 @@ static __always_inline __u64 kernel_dev_to_user(__u32 sdev)
         | ((__u64)(minor & ~0xFFU) << 12);
 }
 
-// Получить key из inode
-static struct inode_key get_inode_key(struct inode *inode)
+// btrfs отдаёт в stat() anon_dev подтома, а не sb->s_dev
+static __always_inline int is_btrfs_sb(struct super_block *sb)
 {
-    if (inode) {
-        struct inode_key key = {};
+    struct file_system_type *fst = NULL;
+    char name[8] = {};
 
-        bpf_probe_read_kernel(&key.inode, sizeof(key.inode), &inode->i_ino);
+    bpf_probe_read_kernel(&fst, sizeof(fst), &sb->s_type);
+    if (!fst) {
+        return 0;
+    }
+    bpf_probe_read_kernel_str(name, sizeof(name), fst->name);
 
-        struct super_block *sb = NULL;
-        bpf_probe_read_kernel(&sb, sizeof(sb), &inode->i_sb);
-        if (!sb) {
-            return INODE_KEY_NOT_FOUND;
-        }
+    return name[0] == 'b' && name[1] == 't' && name[2] == 'r' &&
+           name[3] == 'f' && name[4] == 's' && name[5] == '\0';
+}
 
-        // s_dev в ядре — 32-битный dev_t, читаем ровно 4 байта
-        __u32 s_dev = 0;
-        bpf_probe_read_kernel(&s_dev, sizeof(s_dev), &sb->s_dev);
-        key.dev = kernel_dev_to_user(s_dev);   // <-- нормализация обязательна
-
-        return key;
+// Прочитать anon_dev подтома по офсетам из карты. 0 = не удалось
+static __always_inline int get_btrfs_anon_dev(struct inode *inode, __u32 *out)
+{
+    __u32 key = 0;
+    struct btrfs_off *offs = bpf_map_lookup_elem(&btrfs_off_map, &key);
+    if (!offs || !offs->off_vfs_inode || !offs->off_root || !offs->off_anon_dev) {
+        return 0;
     }
 
-    return INODE_KEY_NOT_FOUND;
+    // адрес btrfs_inode = адрес vfs_inode - смещение
+    unsigned long bi = (unsigned long)inode - offs->off_vfs_inode;
+
+    void *root = NULL;
+    bpf_probe_read_kernel(&root, sizeof(root), (void *)(bi + offs->off_root));
+    if (!root) {
+        return 0;
+    }
+
+    __u32 anon = 0;
+    bpf_probe_read_kernel(&anon, sizeof(anon), (void *)((unsigned long)root + offs->off_anon_dev));
+    if (!anon) {
+        return 0;
+    }
+    *out = anon;
+    return 1;
+}
+
+// Возвращает 0 при успехе, -1 при неудаче. Ключ — через out_key
+static int get_inode_key(struct inode *inode, struct inode_key *out_key)
+{
+    if (!inode || !out_key) {
+        return -1;
+    }
+
+    struct inode_key key = {};
+    bpf_probe_read_kernel(&key.inode, sizeof(key.inode), &inode->i_ino);
+
+    struct super_block *sb = NULL;
+    bpf_probe_read_kernel(&sb, sizeof(sb), &inode->i_sb);
+    if (!sb) {
+        return -1;
+    }
+
+    __u32 s_dev = 0;
+
+    if (is_btrfs_sb(sb)) {
+        get_btrfs_anon_dev(inode, &s_dev);
+    }
+    if (!s_dev) {
+        // обычные ФС: generic_fillattr() кладёт в st_dev ровно sb->s_dev
+        bpf_probe_read_kernel(&s_dev, sizeof(s_dev), &sb->s_dev);
+    }
+
+    key.dev = kernel_dev_to_user(s_dev);
+    *out_key = key;
+    return 0;
 }
 
 // Получение имени dentry (ИСПРАВЛЕНА - использует bpf_probe_read_kernel_str)
@@ -284,7 +346,11 @@ static __always_inline struct inode_key get_process_exe_inode(struct task_struct
         return INODE_KEY_NOT_FOUND;
     }
 
-    struct inode_key key = get_inode_key(inode);
+    struct inode_key key = {};
+    if (get_inode_key(inode, &key) < 0) {
+        return INODE_KEY_NOT_FOUND;
+    }
+
     return key;
 }
 
@@ -741,9 +807,8 @@ static __always_inline struct inode_key get_protected_folder(struct dentry *dent
         bpf_probe_read_kernel(&inode, sizeof(inode), &current->d_inode);
 
         if (inode) {
-            struct inode_key key = get_inode_key(inode);
-
-            if (key.inode) {
+            struct inode_key key = {};
+            if (get_inode_key(inode, &key) >= 0) {
                 struct protected_folder_config *config =
                         bpf_map_lookup_elem(&folder_config_map, &key);
                 if (config) {
@@ -836,7 +901,10 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
         __u64 current_inode = 0;
         struct inode *inode = NULL;
         bpf_probe_read_kernel(&inode, sizeof(inode), &dentry->d_inode);
-        struct inode_key current_key = get_inode_key(inode);
+        struct inode_key current_key = {};
+        if (get_inode_key(inode, &current_key) < 0) {
+            current_key = INODE_KEY_NOT_FOUND;
+        }
 
         int is_folder_itself = (current_key.dev == f_key.dev && current_key.inode == f_key.inode);
 
