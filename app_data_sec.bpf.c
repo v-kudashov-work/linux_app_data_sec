@@ -29,6 +29,9 @@
 #define BPF_MINOR(dev)	((unsigned int) ((dev) & MINORMASK))
 #define MKDEV(ma,mi)	(((ma) << MINORBITS) | (mi))
 
+// Смещение члена name в struct file_system_type — из vmlinux.h, применится CO-RE
+#define FST_NAME_OFF __builtin_offsetof(struct file_system_type, name)
+
 struct folder_program_key {
     __u64 dev;          // Идентификатор устройства (s_dev)
     __u64 folder_inode;
@@ -99,6 +102,7 @@ struct btrfs_off {
     __u32 off_vfs_inode;    // offsetof(struct btrfs_inode, vfs_inode)
     __u32 off_root;         // offsetof(struct btrfs_inode, root)
     __u32 off_anon_dev;     // offsetof(struct btrfs_root, anon_dev)
+    __u32 valid;
 } __attribute__((packed));
 
 struct {
@@ -134,17 +138,28 @@ static __always_inline __u64 kernel_dev_to_user(__u32 sdev)
 // btrfs отдаёт в stat() anon_dev подтома, а не sb->s_dev
 static __always_inline int is_btrfs_sb(struct super_block *sb)
 {
-    struct file_system_type *fst = NULL;
-    char name[8] = {};
-
+    // 1. Читаем сам указатель s_type (значение поля)
+    unsigned long fst = 0;
     bpf_probe_read_kernel(&fst, sizeof(fst), &sb->s_type);
     if (!fst) {
         return 0;
     }
-    bpf_probe_read_kernel_str(name, sizeof(name), fst->name);
 
-    return name[0] == 'b' && name[1] == 't' && name[2] == 'r' &&
-           name[3] == 'f' && name[4] == 's' && name[5] == '\0';
+    // 2. fst для верификатора - scalar, поэтому fst->name читаем по смещению
+    //    через probe-read, а не прямой загрузкой
+    const char *name_ptr = NULL;
+    bpf_probe_read_kernel(&name_ptr, sizeof(name_ptr),
+                          (void *)(fst + FST_NAME_OFF));
+    if (!name_ptr) {
+        return 0;
+    }
+
+    // 3. Читаем строку имени ФС
+    char nm[8] = {};
+    bpf_probe_read_kernel_str(nm, sizeof(nm), name_ptr);
+
+    return nm[0] == 'b' && nm[1] == 't' && nm[2] == 'r' &&
+           nm[3] == 'f' && nm[4] == 's' && nm[5] == '\0';
 }
 
 // Прочитать anon_dev подтома по офсетам из карты. 0 = не удалось
@@ -152,7 +167,7 @@ static __always_inline int get_btrfs_anon_dev(struct inode *inode, __u32 *out)
 {
     __u32 key = 0;
     struct btrfs_off *offs = bpf_map_lookup_elem(&btrfs_off_map, &key);
-    if (!offs || !offs->off_vfs_inode || !offs->off_root || !offs->off_anon_dev) {
+    if (!offs || !offs->valid) {
         return 0;
     }
 

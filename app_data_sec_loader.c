@@ -148,6 +148,7 @@ struct btrfs_off {
     unsigned int off_vfs_inode;
     unsigned int off_root;
     unsigned int off_anon_dev;
+    __u32 valid;
 } __attribute__((packed));
 
 static struct protect_entry entries[MAX_PATHS];
@@ -259,6 +260,7 @@ static int fill_btrfs_offsets(struct bpf_object *obj)
             .off_vfs_inode = (unsigned int)r1,
             .off_root      = (unsigned int)r2,
             .off_anon_dev  = (unsigned int)r3,
+            .valid         = 1,
     };
 
     __u32 key = 0;
