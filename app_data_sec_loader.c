@@ -196,6 +196,26 @@ static void add_processed_home_user(const char *username);
 static int check_new_home_directories(struct bpf_object *obj, int without_rescan);
 static void perform_full_scan(struct bpf_object *obj);
 
+static int update_module_enabled(struct bpf_object *obj, int enabled)
+{
+    struct bpf_map *map = bpf_object__find_map_by_name(obj, "module_enabled_map");
+    if (!map) {
+        SYSLOG_ERR("module_enabled_map not found");
+        return -1;
+    }
+
+    __u32 key = 0;
+    __u32 val = enabled ? 1 : 0;
+
+    if (bpf_map_update_elem(bpf_map__fd(map), &key, &val, BPF_ANY) != 0) {
+        SYSLOG_ERR("Failed to update module_enabled_map: errno=%d", errno);
+        return -1;
+    }
+
+    SYSLOG_INFO("Module protection state: %s", enabled ? "ENABLED" : "DISABLED");
+    return 0;
+}
+
 // ============================================================================
 // БЕЗОПАСНОЕ КОПИРОВАНИЕ СТРОК
 // ============================================================================
@@ -776,6 +796,8 @@ static int sync_config_to_entries(struct bpf_object *obj,
         SYSLOG_INFO_D("Config disabled or empty, clearing all entries");
         int res = clear_all_entries(obj);
         config_enabled = temp_config_enabled;
+        // Модуль выключаем ПОСЛЕ очистки папок
+        update_module_enabled(obj, 0);
         SYSLOG_INFO_D("=== SYNC COMPLETE (cleared) ===");
         return res;
     }
@@ -881,6 +903,7 @@ static int sync_config_to_entries(struct bpf_object *obj,
     // 4. Обновляем глобальные флаги
     // ============================================================
     config_enabled = temp_config_enabled;
+    update_module_enabled(obj, 1);
 
     SYSLOG_INFO("Sync complete: %d entries, %d templates", entry_count, template_count);
     SYSLOG_INFO_D("=== SYNC COMPLETE ===");

@@ -66,6 +66,14 @@ struct {
     __type(value, struct inode_key);
 } folder_allowed_programs_map SEC(".maps");
 
+// Карта: включён ли модуль (1 - включен, 0 или пусто - выключен)
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} module_enabled_map SEC(".maps");
+
 // Карта для уровня логирования
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -88,6 +96,17 @@ struct {
 } log_buf_map SEC(".maps");
 
 // ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
+
+// Проверка, включён ли модуль. Нет записи = выключен (безопасный дефолт)
+static __always_inline int get_module_enabled(void)
+{
+    __u32 key = 0;
+    __u32 *enabled = bpf_map_lookup_elem(&module_enabled_map, &key);
+    if (!enabled) {
+        return 0;
+    }
+    return *enabled == 1;
+}
 
 static __always_inline __u64 kernel_dev_to_user(__u32 sdev)
 {
@@ -759,6 +778,11 @@ static __always_inline int get_log_level(void)
 static __always_inline int check_access(struct dentry *dentry, const char *operation, int block_self)
 {
     if (!dentry) {
+        return 0;
+    }
+
+    // Модуль выключен или лоадер ещё не инициализировал карту - ничего не блокируем
+    if (!get_module_enabled()) {
         return 0;
     }
 
