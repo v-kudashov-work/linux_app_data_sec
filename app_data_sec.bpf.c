@@ -12,7 +12,7 @@
 //#define EACCES 13
 //#endif
 
-#define VERSION "0.6.0"
+#define VERSION "0.6.1"
 #define VERSION_DATE "2026-11-23"
 
 #define MAX_PROTECTED_PATHS 5000

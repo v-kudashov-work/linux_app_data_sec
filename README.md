@@ -2,7 +2,7 @@
 
 **app_data_sec** is a system for protecting user data from unauthorized access using eBPF (Extended Berkeley Packet Filter) and LSM (Linux Security Module) technology. The solution provides kernel-level access control to protected folders, blocking read, write, delete, and rename operations for processes not on the allowlist.
 
-# Version 0.6.0
+# Version 0.6.1
 
 ## Main Features
 
