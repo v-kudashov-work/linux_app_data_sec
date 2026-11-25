@@ -742,7 +742,6 @@ echo -e "${BLUE}[INFO]${NC} BPF include paths: $BPF_INCLUDE_DIRS"
 
 echo -e "\n${BLUE}[INFO]${NC} Generating vmlinux.h..."
 
-if [ ! -f "vmlinux.h" ]; then
     if command -v bpftool &> /dev/null; then
         if [ -f "/sys/kernel/btf/vmlinux" ]; then
             bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h 2>/dev/null
@@ -809,9 +808,6 @@ struct stat {
 EOF
         echo -e "${GREEN}[OK]${NC} Minimal vmlinux.h created"
     fi
-else
-    echo -e "${GREEN}[OK]${NC} vmlinux.h already exists"
-fi
 
 # ============================================================================
 # КОМПИЛЯЦИЯ BPF
