@@ -139,7 +139,12 @@ static void remove_pid_from_tree(const char *tree, char *output, size_t size) {
 }
 
 // Функция для получения пути по inode (рекурсивный поиск)
-static int find_path_by_inode_recursive(const char *base_path, unsigned long long target_inode, char *found_path, int depth) {
+// target_dev: 0 = фильтрация по dev отключена (старый формат лога)
+static int find_path_by_inode_recursive(const char *base_path,
+                                        unsigned long long target_dev,
+                                        unsigned long long target_inode,
+                                        char *found_path,
+                                        int depth) {
     if (depth > 20) return 0;
 
     DIR *dir;
@@ -160,14 +165,16 @@ static int find_path_by_inode_recursive(const char *base_path, unsigned long lon
         snprintf(full_path, sizeof(full_path), "%s/%s", base_path, entry->d_name);
 
         if (lstat(full_path, &st) == 0) {
-            if (st.st_ino == target_inode) {
+            if (st.st_ino == target_inode &&
+                (target_dev == 0 || (unsigned long long)st.st_dev == target_dev)) {
                 safe_strncpy(found_path, full_path, MAX_PATH_LEN);
                 closedir(dir);
                 return 1;
             }
 
             if (S_ISDIR(st.st_mode)) {
-                if (find_path_by_inode_recursive(full_path, target_inode, found_path, depth + 1)) {
+                if (find_path_by_inode_recursive(full_path, target_dev, target_inode,
+                                                 found_path, depth + 1)) {
                     closedir(dir);
                     return 1;
                 }
@@ -180,27 +187,27 @@ static int find_path_by_inode_recursive(const char *base_path, unsigned long lon
 }
 
 // Функция для получения пути по inode
-static char* get_path_by_inode(unsigned long long inode) {
+static char* get_path_by_inode(unsigned long long dev, unsigned long long inode) {
     static char path[MAX_PATH_LEN];
     path[0] = '\0';
 
-    if (find_path_by_inode_recursive("/", inode, path, 0)) {
+    if (find_path_by_inode_recursive("/", dev, inode, path, 0)) {
         return path;
     }
 
-    if (find_path_by_inode_recursive("/home", inode, path, 0)) {
+    if (find_path_by_inode_recursive("/home", dev, inode, path, 0)) {
         return path;
     }
 
-    if (find_path_by_inode_recursive("/opt", inode, path, 0)) {
+    if (find_path_by_inode_recursive("/opt", dev, inode, path, 0)) {
         return path;
     }
 
-    if (find_path_by_inode_recursive("/var", inode, path, 0)) {
+    if (find_path_by_inode_recursive("/var", dev, inode, path, 0)) {
         return path;
     }
 
-    snprintf(path, sizeof(path), "unknown (inode: %llu)", inode);
+    snprintf(path, sizeof(path), "unknown (dev: %llu, inode: %llu)", dev, inode);
     return path;
 }
 
@@ -250,7 +257,7 @@ static void format_time(time_t t, char *buf, size_t size) {
 }
 
 // Функция для получения информации о директории по inode
-static dir_info_t get_directory_info(unsigned long long inode) {
+static dir_info_t get_directory_info(unsigned long long dev, unsigned long long inode) {
     dir_info_t info;
     memset(&info, 0, sizeof(info));
 
@@ -263,7 +270,7 @@ static dir_info_t get_directory_info(unsigned long long inode) {
         return info;
     }
 
-    char *path = get_path_by_inode(inode);
+    char *path = get_path_by_inode(dev, inode);
     if (path) {
         safe_strncpy(info.path, path, sizeof(info.path));
     }
@@ -639,6 +646,34 @@ static unsigned long long extract_folder_inode(const char *line) {
     return inode;
 }
 
+// Функция для извлечения dev директории из строки лога
+// Возвращает 0, если поле FOLDER_DEV отсутствует (старый формат лога,
+// ALLOWED-сообщения) — тогда фильтрация по dev в поиске пути отключается
+static unsigned long long extract_folder_dev(const char *line) {
+    const char *dev_str = NULL;
+    const char *p = line;
+
+    while (*p) {
+        if (strncmp(p, "FOLDER_DEV=", 11) == 0) {
+            dev_str = p + 11;
+            break;
+        }
+        p++;
+    }
+
+    if (!dev_str) {
+        return 0;   // поля нет — dev неизвестен
+    }
+
+    unsigned long long dev = 0;
+    while (*dev_str && isdigit((unsigned char)*dev_str)) {
+        dev = dev * 10 + (*dev_str - '0');
+        dev_str++;
+    }
+
+    return dev;
+}
+
 // Функция для извлечения операции из строки лога
 static void extract_operation(const char *line, char *operation, size_t size) {
     const char *op_start = NULL;
@@ -795,7 +830,7 @@ static void update_table(const char *line, const char *folder_path, const char *
         safe_strncpy(table[table_count].timestamp, timestamp, sizeof(table[table_count].timestamp));
         safe_strncpy(table[table_count].folder_path, folder_path, sizeof(table[table_count].folder_path));
         safe_strncpy(table[table_count].process_tree, process_tree, sizeof(table[table_count].process_tree));
-        safe_strncpy(table[table_count].operations, operation, sizeof(table[table_count].operations));
+        safe_strncpy(table[table_count].operations, operation, MAX_OPERATIONS);
         table[table_count].inode = inode;
         table[table_count].pid = pid;
         table[table_count].last_update = now;
@@ -969,13 +1004,13 @@ static void handle_input() {
 }
 
 // Функция для форматирования информации о директории
-static void format_directory_info(unsigned long long inode, char *output, size_t output_size) {
+static void format_directory_info(unsigned long long dev, unsigned long long inode, char *output, size_t output_size) {
     if (inode == 0) {
         snprintf(output, output_size, "unknown");
         return;
     }
 
-    dir_info_t info = get_directory_info(inode);
+    dir_info_t info = get_directory_info(dev, inode);
     if (info.path[0]) {
         safe_strncpy(output, info.path, output_size);
     } else {
@@ -1102,12 +1137,13 @@ static void process_log_line(char *line) {
 
     pid_t pid = extract_pid(line);
     unsigned long long folder_inode = extract_folder_inode(line);
+    unsigned long long folder_dev = extract_folder_dev(line);
 
     char operation[256];
     extract_operation(line, operation, sizeof(operation));
 
     char folder_path[PATH_MAX];
-    format_directory_info(folder_inode, folder_path, sizeof(folder_path));
+    format_directory_info(folder_dev, folder_inode, folder_path, sizeof(folder_path));
 
     char process_tree_str[2048] = "";
 

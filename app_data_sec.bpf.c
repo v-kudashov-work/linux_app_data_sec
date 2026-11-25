@@ -950,13 +950,14 @@ static __always_inline int check_access(struct dentry *dentry, const char *opera
                 get_dentry_name(dentry, bufs->name, MAX_NAME_LEN_FOR_LOG);
                 get_parent_name(dentry, bufs->parent_name, MAX_NAME_LEN_FOR_LOG);
 
-                bpf_printk("APP_DATA_SEC: %s BLOCKED_PID=%llu NAME=%s PARENT_NAME=%s UID=%llu EXE=%s FOLDER_INODE=%llu REASON=%s",
+                bpf_printk("APP_DATA_SEC: %s BLOCKED_PID=%llu NAME=%s PARENT_NAME=%s UID=%llu EXE=%s FOLDER_DEV=%llu FOLDER_INODE=%llu REASON=%s",
                            operation,
                            pid,
                            bufs->name,
                            bufs->parent_name,
                            uid,
                            bufs->exe_path,
+                           f_key.dev,
                            f_key.inode,
                            reason);
             }
