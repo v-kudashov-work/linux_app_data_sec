@@ -54,6 +54,7 @@
 - **Linux Kernel**: version 5.19+ with BPF LSM and BTF (CO-RE) support
 - **Architecture**: x86_64
 - **Distributions**: ALT Linux, Ubuntu, Debian, Linux Mint. May work but not tested: RHEL/CentOS. Does not work: Fedora.
+- - **File system**: Ext4 or Btrfs. Not tested on other file systems.
 - **Dependencies**: libbpf, libelf, zlib, clang, bpftool
 - **Specificity**: After each kernel update, the module must be reinstalled in order to rebuild it with the new kernel headers. Additionally, see Limitations.
 
