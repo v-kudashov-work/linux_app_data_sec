@@ -138,8 +138,9 @@ static __always_inline __u64 kernel_dev_to_user(__u32 sdev)
         | ((__u64)(minor & ~0xFFU) << 12);
 }
 
-// btrfs отдаёт в stat() anon_dev подтома, а не sb->s_dev
-static __always_inline int is_btrfs_sb(struct super_block *sb)
+// Определение типа ФС по имени из super_block->s_type->name.
+// Возвращает: 2 = btrfs, 1 = ext4, 0 = другая ФС или ошибка чтения
+static __always_inline int get_fs_type(struct super_block *sb)
 {
     // 1. Читаем сам указатель s_type (значение поля)
     unsigned long fst = 0;
@@ -157,12 +158,21 @@ static __always_inline int is_btrfs_sb(struct super_block *sb)
         return 0;
     }
 
-    // 3. Читаем строку имени ФС
-    char nm[8] = {};
+    // 3. Читаем имя ФС: не более 5 символов (+ терминатор)
+    char nm[6] = {};
     bpf_probe_read_kernel_str(nm, sizeof(nm), name_ptr);
 
-    return nm[0] == 'b' && nm[1] == 't' && nm[2] == 'r' &&
-           nm[3] == 'f' && nm[4] == 's' && nm[5] == '\0';
+    // 4. Сравнение: btrfs / ext4
+    if (nm[0] == 'b' && nm[1] == 't' && nm[2] == 'r' &&
+        nm[3] == 'f' && nm[4] == 's' && nm[5] == '\0') {
+        return 2;
+    }
+    if (nm[0] == 'e' && nm[1] == 'x' && nm[2] == 't' &&
+        nm[3] == '4' && nm[4] == '\0') {
+        return 1;
+    }
+
+    return 0;
 }
 
 // Прочитать anon_dev подтома по офсетам из карты. 0 = не удалось
@@ -209,15 +219,20 @@ static int get_inode_key(struct inode *inode, struct inode_key *out_key)
     }
 
     __u32 s_dev = 0;
+    int fst = get_fs_type(sb);
 
-    if (is_btrfs_sb(sb)) {
+    if (fst == 2) {
+        // btrfs отдаёт в stat() anon_dev подтома, а не sb->s_dev
         get_btrfs_anon_dev(inode, &s_dev);
     }
-    if (!s_dev) {
-        // обычные ФС: generic_fillattr() кладёт в st_dev ровно sb->s_dev
+    else if (fst == 1) {
+        // ext4 (fst == 1)
+        // generic_fillattr() кладёт в st_dev ровно sb->s_dev
         bpf_probe_read_kernel(&s_dev, sizeof(s_dev), &sb->s_dev);
     }
-
+    else {
+        return -1;
+    }
     key.dev = kernel_dev_to_user(s_dev);
     *out_key = key;
     return 0;
