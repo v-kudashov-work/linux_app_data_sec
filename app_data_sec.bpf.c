@@ -12,6 +12,9 @@
 //#define EACCES 13
 //#endif
 
+#define VERSION "0.6.0"
+#define VERSION_DATE "2026-11-23"
+
 #define MAX_PROTECTED_PATHS 5000
 #define MAX_ALLOWED_PROGRAMS 20
 // #define MAX_UNIQUE_SCRIPTS 10
