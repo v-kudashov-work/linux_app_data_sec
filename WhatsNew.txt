@@ -1,0 +1,11 @@
+v0.6.0
+25.11.2026
+En
++ The functionality for handling multiple volumes (file systems) has been fixed
++ Support for the btrfs file system has been added
++ Now, when disabled in the configuration (enable=no) or when the configuration is empty, the module disables all checks and has a minimal impact on system performance.
+
+Ru
++ Исправлена работа с несколькими томами (файловыми системами)
++ Добавлена поддержка файловой системы btrfs
++ Теперь при отключении в конфигурации (enable=no) или при пустой конфигурации модуль отключает все проверки и минимально влияет на работу системы.
