@@ -55,6 +55,7 @@
 - **Architecture**: x86_64
 - **Distributions**: ALT Linux, Ubuntu, Debian, Linux Mint. May work but not tested: RHEL/CentOS. Does not work: Fedora.
 - **Dependencies**: libbpf, libelf, zlib, clang, bpftool
+- **Specificity**: After each kernel update, the module must be reinstalled in order to rebuild it with the new kernel headers. Additionally, see Limitations.
 
 ## Quick Installation
 
@@ -291,6 +292,7 @@ sudo ./uninstall_app_data_sec.sh
     Tampering protection — using inode for file identification
 
 # Limitations
+    After each kernel update, the module must be reinstalled in order to rebuild it with the new kernel headers.
     After installing an application that is involved in configuring a folder for protection, you may need to wait 15 seconds before launching the application. This time is necessary for the module data to update.
     Python and sh script programs are not supported. They can be used if launched within a parent process of a regular executable file and access to it is configured.
 
