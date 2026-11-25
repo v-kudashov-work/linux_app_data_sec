@@ -5,3 +5,5 @@ gcc -o read_file read_file.c
 ./read_file /etc/app_data_sec.conf
 
 ./read_file /home/vladimir_a/.cache/yandex-browser/1/2/3/4/5/6/7/8/9/test.text
+
+./read_file /run/media/vladimir-vb/ab45e974-ca45-45c8-8357-62f3f19bc625/test/text_ex/text.txt
