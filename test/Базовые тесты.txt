@@ -16,7 +16,7 @@ test_app_data_sec.c пока не проверялось. Основные те�
  + 5. Что создаётся каталог .test_app2/make1 при запуске комманды /app_data_sec/src/test_sh/test_mkdir ~/.test_app2/make1 к .test_app2 из консоли и нет доступа из dolphin
 
 Дальше можно короткий тест:
-  7-9. Что если удалили /app_data_sec/src/test_sh/test_mkdir и создали его заново через make, то создаётся каталог .test_app2/make1 при запуске комманды /app_data_sec/src/test_sh/test_mkdir ~/.test_app2/make1 к .test_app2 из консоли и нет доступа из dolphin
+  + 7-9. Что если удалили /app_data_sec/src/test_sh/test_mkdir и создали его заново через make, то создаётся каталог .test_app2/make1 при запуске комманды /app_data_sec/src/test_sh/test_mkdir ~/.test_app2/make1 к .test_app2 из консоли и нет доступа из dolphin
 
 Или долгий тест:
 Дальше тесты после app_data_sec_merge_config /app_data_sec/src/configs/ и после 15 сек:
@@ -39,10 +39,6 @@ test_app_data_sec.c пока не проверялось. Основные те�
 16.08.2026 v.0.4.0 тесты пройдены
 15.08.2026 v.0.3.1 тесты пройдены на Ubuntu
 15.08.2026 v.0.3.0 тесты пройдены на Alt Linux K
-
-======================================
-
-Версии операционных систем для тестирования:
 
 Операционная система: ALT 11.4
 Версия KDE Plasma: 6.6.5
@@ -75,3 +71,17 @@ test_app_data_sec.c пока не проверялось. Основные те�
 Версия системы: 1.2
 Файловая система: Ext4
 
+25.11.2026 v0.6.0
+Operating System: ALT 11.4
+KDE Plasma Version: 6.7.4
+KDE Frameworks Version: 6.28.0
+Qt Version: 6.10.3
+Kernel Version: 6.12.103-6.12-alt1 (64-bit)
+Graphics Platform: Wayland
+Processors: 3 x AMD Ryzen 5 PRO 4650G with Radeon Graphics
+Memory: 8.5 GB of usable RAM
+Graphics Processor: llvmpipe
+Manufacturer: innotek GmbH
+Product Name: VirtualBox
+System Version: 1.2
+Файловая система: Btrfs
