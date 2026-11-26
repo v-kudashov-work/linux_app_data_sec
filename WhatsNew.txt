@@ -13,7 +13,7 @@ Ru
 v0.6.1
 25.11.2026
 En
-Fixing the operation on NTFS and other unsupported systems (which were not tested)
+Fixing the operation on NTFS and other unsupported systems (which were not tested). Only ext4 and btrfs are supported.
 
 Ru
-Исправление работы на ntfs и других не поддерживаемых системах (на которых не тестировалось)
+Исправление работы на ntfs и других не поддерживаемых системах (на которых не тестировалось). Поддерживаются только ext4 и btrfs.
