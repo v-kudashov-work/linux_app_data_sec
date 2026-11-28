@@ -55,11 +55,19 @@ watchdog: app_data_sec_watchdog
 # ==== vmlinux.h ====
 
 vmlinux.h:
-	@if command -v bpftool > /dev/null; then \
-		bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h; \
+	@BPFTOOL=""; \
+	for c in /usr/sbin/bpftool /usr/bin/bpftool /usr/lib/linux-tools/*/bpftool; do \
+		if [ -x "$$c" ]; then BPFTOOL="$$c"; break; fi; \
+	done; \
+	if command -v bpftool >/dev/null 2>&1; then BPFTOOL="$$($(BPF_CLANG) -E /dev/null >/dev/null 2>&1; command -v bpftool)"; fi; \
+	if [ -z "$$BPFTOOL" ] && command -v bpftool >/dev/null 2>&1; then BPFTOOL=bpftool; fi; \
+	if [ -n "$$BPFTOOL" ] && [ -f /sys/kernel/btf/vmlinux ]; then \
+		"$$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > $@; \
 	else \
-		echo "Warning: bpftool not found, using fallback vmlinux.h"; \
-		touch vmlinux.h; \
+		echo "ERROR: bpftool not found or /sys/kernel/btf/vmlinux missing"; \
+		echo "  Ubuntu/Debian: sudo apt install linux-tools-generic"; \
+		echo "  Fedora: sudo dnf install bpftool"; \
+		exit 1; \
 	fi
 
 # ==== Остальное ====
